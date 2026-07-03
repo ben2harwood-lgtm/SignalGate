@@ -1,0 +1,54 @@
+SIGNALGATE — QUICK START  (no Terminal typing needed)
+======================================================
+DEMO ONLY. Never use a live trading account.
+
+Full instructions, common mistakes, and FAQ are in:
+    INSTALL_AND_USER_GUIDE.md
+
+------------------------------------------------------
+BEFORE YOU START
+------------------------------------------------------
+1. Install Python 3.10+ (python.org). On Windows, tick "Add Python to PATH".
+2. Create your own Telegram bot:
+   - In Telegram, message @BotFather, send /newbot, follow the prompts.
+   - Copy the token it gives you (a long line like 12345:AAH...).
+   (See Part 4 of the guide for pictures-in-words.)
+
+------------------------------------------------------
+START IT (MAC)
+------------------------------------------------------
+1. Double-click  "Start Backend.command"
+   - The first time, it creates a .env file and opens it.
+     Paste your bot token and your Telegram admin id, SAVE the file,
+     then double-click "Start Backend.command" AGAIN.
+   - If macOS says "unidentified developer": right-click the file -> Open -> Open.
+2. Double-click  "Start Bot.command"
+3. In Telegram, message your bot:  /start   then   /status
+   (The /status reply shows your admin id if you still need it.)
+
+------------------------------------------------------
+START IT (WINDOWS)
+------------------------------------------------------
+1. Double-click  "Start Backend.bat"  (same first-run .env step as above)
+2. Double-click  "Start Bot.bat"
+3. In Telegram, message your bot:  /start   then   /status
+
+------------------------------------------------------
+THEN: METATRADER 5  (the actual trading)
+------------------------------------------------------
+Follow Part 10 of INSTALL_AND_USER_GUIDE.md carefully.
+The trickiest bit is the NETWORK ADDRESS the EA uses:
+  - MT5 on the same PC as the backend ......... http://127.0.0.1:8000
+  - MT5 in Parallels on a Mac ................. http://10.211.55.2:8000
+  - MT5 on another computer on your network ... http://<that-Mac/PC's-LAN-IP>:8000
+And the backend must be started so others can reach it (the launchers already
+use host 0.0.0.0, which covers all of the above).
+
+Weekend tip: forex/gold are CLOSED on weekends. Test with BTCUSD (crypto trades
+24/7). Raise the EA's MaxSpreadPoints to 10000 for crypto.
+
+------------------------------------------------------
+TO STOP
+------------------------------------------------------
+Close the launcher windows (or press Ctrl+C in them).
+In MT5: turn off Algo Trading or remove the EA from the chart.

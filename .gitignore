@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Env / secrets
+.env
+telegram_bot/provider_ids.json
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+signalgate.db
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# MT5 compiled
+*.ex5
+
+# Claude Code local (machine-specific) settings
+.claude/settings.local.json
+
+# Share / packaging artifacts (redundant snapshots of the source tree)
+SignalGate_share.zip
+*_share.zip
+
+# Local demo-site request log
+site-mockups/demo-requests.jsonl

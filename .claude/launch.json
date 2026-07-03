@@ -1,0 +1,34 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd backend && exec .venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
+      ],
+      "port": 8000
+    },
+    {
+      "name": "telegram-bot",
+      "runtimeExecutable": "/Users/benharwood/Desktop/signalgate/telegram_bot/.venv/bin/python",
+      "runtimeArgs": [
+        "/Users/benharwood/Desktop/signalgate/telegram_bot/run_bot.py"
+      ]
+    },
+    {
+      "name": "ea-simulator",
+      "runtimeExecutable": "/Users/benharwood/Desktop/signalgate/backend/.venv/bin/python",
+      "runtimeArgs": [
+        "/Users/benharwood/Desktop/signalgate/simulator/ea_simulator.py",
+        "--user-id",
+        "USER-000001",
+        "--api-key",
+        "local-demo-ea-key",
+        "--backend",
+        "http://127.0.0.1:8000"
+      ]
+    }
+  ]
+}

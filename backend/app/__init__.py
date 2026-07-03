@@ -1,0 +1,1 @@
+"""SignalGate backend application package."""

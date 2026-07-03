@@ -1,0 +1,7 @@
+# Hosted/server deployment requirements.
+# Installs everything from the local requirements PLUS the PostgreSQL driver.
+# Local demo users do NOT need this file — they use requirements.txt (SQLite).
+-r requirements.txt
+psycopg2-binary==2.9.9
+# Vision extraction of signal screenshots uses the Anthropic API over httpx
+# (already in requirements.txt) — no extra SDK needed. Just set ANTHROPIC_API_KEY.
