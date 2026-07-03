@@ -73,35 +73,62 @@ def _signal_provider_headers(user_id: int) -> Dict[str, str]:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
+    # ALWAYS register (idempotent create-or-update). Previously admins and
+    # signal providers skipped registration entirely, so tapping YES on a trade
+    # card looped forever on "You are not registered. Send /start first."
+    result = await _backend_post(
+        "/register_user",
+        json={
+            "telegram_user_id": str(user.id),
+            "telegram_username": user.username,
+            "first_name": user.first_name,
+        },
+    )
+    if not result or "id" not in result:
+        # Don't claim success when the backend is unreachable (the old bug hid
+        # this until the YES tap failed with USER_NOT_FOUND).
+        await update.message.reply_text(
+            "Could not reach the SignalGate backend to register you.\n"
+            "Make sure the backend is running (Start Backend), then send "
+            "/start again."
+        )
+        return
+
+    backend_user_id = result["id"]
+    lines = [
+        "SignalGate demo tester registered.",
+        "Demo mode only. No live trades.",
+        "",
+        f"Your backend user id: {backend_user_id}",
+        "Put this in the EA's UserID input when you set up MetaTrader.",
+    ]
     if config.is_signal_provider(user.id):
-        await update.message.reply_text(
-            "SignalGate screenshot provider ready.\n"
-            f"Your Telegram id is {user.id}.\n\n"
-            "Send me a signal screenshot. I will read it, show you the extracted "
-            "SL/TP details, and wait for you to Confirm before anything is sent."
-        )
-    else:
-        await _backend_post(
-            "/register_user",
-            json={
-                "telegram_user_id": str(user.id),
-                "telegram_username": user.username,
-                "first_name": user.first_name,
-            },
-        )
-        await update.message.reply_text(
-            "SignalGate demo tester registered.\nDemo mode only. No live trades."
-        )
+        lines += [
+            "",
+            "You are also a screenshot provider. Send me a signal screenshot and "
+            "I will read it, show the extracted SL/TP details, and wait for your "
+            "Confirm before anything is sent.",
+        ]
+    await update.message.reply_text("\n".join(lines))
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     health = await _backend_get("/health")
-
     backend_ok = health is not None
     paused = health.get("admin_paused") if health else "unknown"
-    lines = [
-        f"Registered: yes (telegram id {user.id})",
+
+    # Ask the backend whether this user is actually registered instead of
+    # hardcoding "yes" (which lied when registration had failed).
+    me = await _backend_get(f"/users/{user.id}")
+    registered = bool(me and me.get("id"))
+
+    lines = [f"Registered: {'yes' if registered else 'no — send /start'}"]
+    if registered:
+        lines.append(f"Your backend user id: {me['id']} (use as EA UserID)")
+        lines.append(f"Account status: {me.get('status')}")
+    lines += [
+        f"Telegram id: {user.id}",
         f"Role: {_role_name(user.id)}",
         f"Backend reachable: {'yes' if backend_ok else 'no'}",
         f"Demo only mode: {health.get('demo_only_mode') if health else 'unknown'}",
