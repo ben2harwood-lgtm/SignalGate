@@ -85,3 +85,48 @@ def test_expiry_is_set_for_valid():
     r = parse_signal("XAUUSD BUY SL 2343 TP1 2353", expiry_minutes=5)
     assert r.is_valid
     assert r.expires_at is not None
+
+
+# --- Malformed / unsafe number handling (P0-1 / P1-4) --------------------
+
+def test_crypto_symbols_valid():
+    assert parse_signal("BTCUSD BUY SL 60000 TP1 62000 TP2 64000").is_valid
+    assert parse_signal("ETH SELL SL 3600 TP1 3500").is_valid
+
+
+def test_comma_grouped_number_rejected():
+    # "2,343" must NOT be silently truncated to 2.0 and marked VALID.
+    r = parse_signal("XAUUSD BUY SL 2,343 TP1 2353 TP2 2358 TP3 2363")
+    assert not r.is_valid
+    assert "comma" in (r.parser_error or "").lower()
+
+
+def test_euro_decimal_comma_rejected():
+    r = parse_signal("XAUUSD BUY SL 2343 TP1 2353,50")
+    assert not r.is_valid
+    assert "comma" in (r.parser_error or "").lower()
+
+
+def test_scientific_notation_rejected():
+    r = parse_signal("XAUUSD BUY SL 2e3 TP1 2353")
+    assert not r.is_valid
+    assert "scientific" in (r.parser_error or "").lower()
+
+
+def test_negative_price_rejected():
+    r = parse_signal("XAUUSD BUY SL -2343 TP1 2353")
+    assert not r.is_valid
+    assert "positive" in (r.parser_error or "").lower()
+
+
+def test_zero_price_rejected():
+    r = parse_signal("XAUUSD BUY SL 0 TP1 2353")
+    assert not r.is_valid
+    assert "positive" in (r.parser_error or "").lower()
+
+
+def test_implausible_stop_distance_rejected():
+    # A truncated/mis-read stop (2 for gold at ~2353) sits > 50% from TP1.
+    r = parse_signal("XAUUSD BUY SL 2 TP1 2353")
+    assert not r.is_valid
+    assert "implausibl" in (r.parser_error or "").lower()

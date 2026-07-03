@@ -88,6 +88,21 @@ def parse_signal(
     upper = upper.replace("STOP", "SL")
     upper = upper.replace("TAKE PROFIT", "TP").replace("TAKEPROFIT", "TP")
 
+    # --- Malformed-number guard ------------------------------------------
+    # SAFETY: the number extractor (_NUM) stops at the first non-numeric
+    # character, so "2,343" would silently become 2.0 and "2e3" would become
+    # 2.0 — a catastrophic (or zero) stop loss that still passes every
+    # directional check downstream. Refuse these formats outright rather than
+    # guess a price. A comma directly between digits (thousands separator or
+    # euro decimal) and scientific notation are both rejected.
+    if re.search(r"\d,\d", upper):
+        return _reject(
+            result,
+            "Numbers must not contain commas — write 2343 or 2343.50, not 2,343",
+        )
+    if re.search(r"\d[eE][-+]?\d", upper):
+        return _reject(result, "Scientific notation is not allowed in prices")
+
     # --- Symbol -----------------------------------------------------------
     symbol = None
     for token in re.findall(r"[A-Z]{3,6}", upper):
@@ -95,7 +110,10 @@ def parse_signal(
             symbol = SYMBOL_ALIASES[token]
             break
     if symbol is None:
-        return _reject(result, "No recognised symbol (expected GOLD/XAU/XAUUSD)")
+        return _reject(
+            result,
+            "No recognised symbol (expected XAUUSD/GOLD, BTCUSD, or ETHUSD)",
+        )
     result.symbol = symbol
 
     # --- Direction --------------------------------------------------------
@@ -162,6 +180,23 @@ def parse_signal(
     # --- Directional sanity checks ---------------------------------------
     # Reference price for SL validity: entry price if given, else TP1 side.
     tps = [t for t in (result.tp1, result.tp2, result.tp3) if t is not None]
+
+    # SAFETY: every price must be a positive, finite number. A zero or
+    # negative stop/target is never a real level and would produce a nonsense
+    # trade if it reached MetaTrader.
+    all_prices = [p for p in (result.entry_price, sl, *tps) if p is not None]
+    if any(p <= 0 for p in all_prices):
+        return _reject(result, "Prices must be positive numbers")
+
+    # SAFETY: plausibility backstop. A mis-parse (e.g. a truncated stop of 2.0
+    # for gold at 2350) leaves the stop loss sitting more than half the price
+    # away from TP1. No real signal has a stop that far from its first target,
+    # so treat it as a mis-read level and reject rather than trade it.
+    if abs(sl - result.tp1) > 0.5 * result.tp1:
+        return _reject(
+            result,
+            "Stop loss is implausibly far from TP1 (possible mis-read number)",
+        )
 
     if result.direction == "BUY":
         # SL must be below all TP levels.
