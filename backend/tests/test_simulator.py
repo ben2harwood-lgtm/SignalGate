@@ -90,3 +90,31 @@ def test_simulator_local_idempotency(client):
     assert sim.run_once() is True
     # No more pending commands; second run finds nothing.
     assert sim.run_once() is False
+
+
+def test_stop_out_scenario_records_loss(client):
+    """The stop-out scenario must book a LOSS, not a fabricated TP win (P1-8)."""
+    user = register_user(client, "123")
+    sig = create_signal(client, VALID)
+    approve = client.post(
+        f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"}
+    ).json()
+
+    sim = EASimulator(http=client, user_id=user["id"], api_key="test-ea-key",
+                      delay=0, verbose=False, scenario="stop_out")
+    assert sim.run_once() is True
+
+    cid = approve["command_id"]
+    assert _command_status(cid) == "FULLY_CLOSED"
+
+    db = SessionLocal()
+    try:
+        led = (
+            db.query(models.PerformanceLedger)
+            .filter(models.PerformanceLedger.signal_id == sig["id"])
+            .first()
+        )
+        assert led.result_status == "STOPPED_OUT"
+        assert led.r_result == -1.0
+    finally:
+        db.close()

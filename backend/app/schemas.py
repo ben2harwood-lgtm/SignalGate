@@ -103,12 +103,19 @@ class PendingCommandResponse(BaseModel):
 
 # --- EA: received / execution / management --------------------------------
 
+# EA-identity fields on report requests let the backend verify, in hosted
+# multi-customer mode, that the reporting EA actually owns the command. They
+# are optional so the local single-tenant demo keeps working unchanged.
 class CommandReceivedRequest(BaseModel):
     note: Optional[str] = None
+    license_key: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 class ExecutionRequest(BaseModel):
     status: str  # SUCCESS / FAILED
+    license_key: Optional[str] = None
+    user_id: Optional[str] = None
     broker_ticket: Optional[str] = None
     child_tickets_json: Optional[str] = None
     executed_symbol: Optional[str] = None
@@ -127,6 +134,8 @@ class ExecutionRequest(BaseModel):
 
 
 class ManagementEventRequest(BaseModel):
+    license_key: Optional[str] = None
+    user_id: Optional[str] = None
     broker_ticket: Optional[str] = None
     event_type: str
     stage: Optional[str] = None

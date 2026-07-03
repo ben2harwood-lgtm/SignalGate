@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import crud
+from ..config import get_settings
 from ..database import get_db
 from ..models import Command
 from ..schemas import (
@@ -23,6 +24,28 @@ from ..security import require_ea_api_key
 from ..telegram_service import notify_user_and_admins
 
 router = APIRouter(tags=["commands"])
+_settings = get_settings()
+
+
+def _authorize_ea_for_command(
+    db: Session,
+    command: Command,
+    license_key: Optional[str],
+    user_id: Optional[str],
+) -> None:
+    """In hosted (REQUIRE_LICENSE) mode, ensure the reporting EA owns the command.
+
+    All EAs share one X-EA-API-Key, so without this any customer's EA could
+    post executions / management events onto another customer's command_id and
+    corrupt their ledger. Locally (single tenant) the shared key is enough.
+    """
+    if not _settings.require_license:
+        return
+    user = crud.resolve_ea_user(db, user_id=user_id, license_key=license_key)
+    if user is None or user.id != command.user_id:
+        raise HTTPException(
+            status_code=403, detail="EA not authorized for this command"
+        )
 
 
 def serialize_command(command: Command) -> CommandOut:
@@ -112,6 +135,7 @@ def command_received(
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
     command = _get_command_or_404(db, command_id)
+    _authorize_ea_for_command(db, command, payload.license_key, payload.user_id)
     crud.mark_command_received(db, command)
     db.commit()
     return SimpleStatus(status="received")
@@ -125,7 +149,12 @@ def report_execution(
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
     command = _get_command_or_404(db, command_id)
-    execution = crud.record_execution(db, command, payload)
+    _authorize_ea_for_command(db, command, payload.license_key, payload.user_id)
+    try:
+        execution = crud.record_execution(db, command, payload)
+    except crud.CommandStateError as exc:
+        db.commit()  # persist the ILLEGAL_EXECUTION_REPORT audit entry
+        raise HTTPException(status_code=409, detail=str(exc))
     db.commit()
 
     user = db.get(crud.models.User, command.user_id)
@@ -165,6 +194,7 @@ def report_management_event(
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
     command = _get_command_or_404(db, command_id)
+    _authorize_ea_for_command(db, command, payload.license_key, payload.user_id)
     crud.record_management_event(db, command, payload)
     db.commit()
 

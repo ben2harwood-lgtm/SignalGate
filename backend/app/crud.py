@@ -21,6 +21,60 @@ from .parser import parse_signal
 settings = get_settings()
 
 
+class CommandStateError(Exception):
+    """Raised when an EA report is illegal for the command's current status.
+
+    The route layer maps this to HTTP 409 so a mis-sequenced or replayed EA
+    report cannot silently corrupt the command lifecycle / performance ledger.
+    """
+
+
+# Terminal command statuses. Once reached, a management event must never
+# silently reopen the command (e.g. a stray OPENED after FULLY_CLOSED).
+_TERMINAL_COMMAND_STATUSES = {
+    "FULLY_CLOSED",
+    "FAILED",
+    "EXPIRED",
+    "CANCELLED",
+    "REJECTED",
+}
+
+# Command statuses that mean a trade is genuinely open and being managed.
+_ACTIVE_COMMAND_STATUSES = {
+    "EXECUTED_OPEN",
+    "PARTIAL_TP1_DONE",
+    "PARTIAL_TP2_DONE",
+}
+
+# For each status-changing management event, the command statuses from which
+# applying it is legal. Events not listed here never change status (they are
+# informational, e.g. TP1_REACHED, SL_MOVE_*) and are only recorded.
+_EVENT_ALLOWED_FROM = {
+    "OPENED": {"SENT_TO_EA", "EXECUTED_OPEN"},
+    "TP1_CLOSE_SUCCESS": {"EXECUTED_OPEN", "PARTIAL_TP1_DONE"},
+    "TP2_CLOSE_SUCCESS": {"EXECUTED_OPEN", "PARTIAL_TP1_DONE", "PARTIAL_TP2_DONE"},
+    "TP3_CLOSE_SUCCESS": {
+        "EXECUTED_OPEN",
+        "PARTIAL_TP1_DONE",
+        "PARTIAL_TP2_DONE",
+        "FULLY_CLOSED",
+    },
+    "FULLY_CLOSED": {
+        "EXECUTED_OPEN",
+        "PARTIAL_TP1_DONE",
+        "PARTIAL_TP2_DONE",
+        "FULLY_CLOSED",
+    },
+    "STOP_LOSS_HIT": {"EXECUTED_OPEN", "PARTIAL_TP1_DONE", "PARTIAL_TP2_DONE"},
+    "FAILED_MANAGEMENT": {
+        "SENT_TO_EA",
+        "EXECUTED_OPEN",
+        "PARTIAL_TP1_DONE",
+        "PARTIAL_TP2_DONE",
+    },
+}
+
+
 # --- ID generation --------------------------------------------------------
 
 _PREFIXES = {
@@ -341,6 +395,64 @@ def _command_for_approval(
     )
 
 
+def _try_approve_blocked(
+    db: Session,
+    signal: models.Signal,
+    user: models.User,
+    approval: models.Approval,
+) -> dict:
+    """Re-evaluate a previously pause-BLOCKED YES after a resume.
+
+    A YES tapped while admin pause is on records a BLOCKED approval and creates
+    no command. Rather than dead-ending forever with a misleading "already
+    approved", we honour the retry: if trading has resumed and the signal is
+    still valid and unexpired, we upgrade the approval and create exactly one
+    command now. Otherwise we return a truthful blocking reason. Never creates
+    a second command (the same approval row is reused).
+    """
+    from . import ledger
+
+    if is_admin_paused(db):
+        return _decision_result(
+            "TRADING_PAUSED",
+            "Trading is still paused. No command created; tap again once an "
+            "admin resumes.",
+            approval_id=approval.id,
+        )
+    if signal.parser_status != "VALID":
+        return _decision_result(
+            "PARSER_REJECTED",
+            "Parser rejected signal. No command created.",
+            approval_id=approval.id,
+        )
+    refresh_signal_expiry(db, signal)
+    if signal.status == "EXPIRED" or _is_expired(signal.expires_at):
+        signal.status = "EXPIRED"
+        return _decision_result(
+            "SIGNAL_EXPIRED",
+            "Signal expired before trading resumed. No command created.",
+            approval_id=approval.id,
+        )
+
+    approval.decision = "YES"
+    approval.status = "APPROVED"
+    command = _create_command(db, signal, approval, user)
+    add_audit(
+        db,
+        "COMMAND_CREATED",
+        "command",
+        command.id,
+        {"signal_id": signal.id, "after_pause_resume": True},
+    )
+    ledger.on_command_created(db, signal, command)
+    return _decision_result(
+        "APPROVED",
+        "Approved. Waiting for MetaTrader EA to execute demo trade.",
+        approval_id=approval.id,
+        command_id=command.id,
+    )
+
+
 def approve_signal(
     db: Session, signal_id: str, telegram_user_id: str
 ) -> dict:
@@ -365,12 +477,26 @@ def approve_signal(
     existing = _existing_approval(db, signal.id, user.id)
     if existing is not None:
         cmd = _command_for_approval(db, existing.id)
-        if existing.decision == "YES":
+        if existing.decision == "YES" and cmd is not None:
+            # A command already exists -> genuine duplicate YES.
             return _decision_result(
                 "ALREADY_APPROVED",
                 "Already approved. No duplicate command created.",
                 approval_id=existing.id,
-                command_id=cmd.id if cmd else None,
+                command_id=cmd.id,
+                duplicate=True,
+            )
+        if existing.decision == "YES" and existing.status == "BLOCKED":
+            # Pause-blocked YES with no command: honour the retry if possible.
+            return _try_approve_blocked(db, signal, user, existing)
+        if existing.decision == "YES":
+            # YES was recorded but never actioned (blocked by expiry/parser at
+            # the time) and no command exists. Be honest, not "already approved".
+            return _decision_result(
+                "APPROVAL_NOT_ACTIONED",
+                "Your earlier approval was not actioned (the signal had "
+                "expired or was invalid). No command was created.",
+                approval_id=existing.id,
                 duplicate=True,
             )
         # First decision was NO -> first decision wins for v1.
@@ -541,14 +667,80 @@ def _create_command(
 
 # --- EA command polling ---------------------------------------------------
 
+def sweep_stale_sent_commands(
+    db: Session, user_id: Optional[str] = None, grace_seconds: int = 60
+) -> int:
+    """Fail SENT_TO_EA commands whose expiry passed with no execution report.
+
+    Without this a command is stranded forever if the EA crashed after polling
+    but before executing: the user is told "waiting for MetaTrader EA" and
+    nothing ever happens. We mark such commands FAILED (EA_TIMEOUT) rather than
+    requeue them, so they can never silently double-execute; an admin can
+    /reset a command if a genuine requeue is wanted. Returns the count swept.
+    """
+    from . import ledger
+
+    query = select(models.Command).where(models.Command.status == "SENT_TO_EA")
+    if user_id:
+        query = query.where(models.Command.user_id == user_id)
+
+    now = utcnow()
+    swept = 0
+    for command in db.scalars(query).all():
+        if command.expires_at is None:
+            continue
+        if now <= command.expires_at + dt.timedelta(seconds=grace_seconds):
+            continue
+        command.status = "FAILED"
+        command.last_error = "EA_TIMEOUT"
+        command.processed_at = now
+        add_audit(db, "COMMAND_EA_TIMEOUT", "command", command.id)
+        led = ledger._get_ledger_for_signal(db, command.signal_id)
+        if led is not None:
+            led.result_status = "FAILED"
+            led.final_notes = (
+                "EA did not report execution before expiry; marked timed out."
+            )
+            led.updated_at = now
+        swept += 1
+    if swept:
+        db.flush()
+    return swept
+
+
+def reset_command_to_pending(db: Session, command: models.Command) -> models.Command:
+    """Return a stuck SENT_TO_EA/FAILED command to PENDING for re-delivery.
+
+    The admin remedy for a command that was claimed by an EA that then died.
+    Only non-terminal-by-success commands may be reset; a FULLY_CLOSED command
+    is a completed trade and must not be re-run.
+    """
+    if command.status in {"FULLY_CLOSED", "EXECUTED_OPEN", "PARTIAL_TP1_DONE",
+                          "PARTIAL_TP2_DONE"}:
+        raise CommandStateError(
+            f"Cannot reset a command in status {command.status} (trade is live "
+            "or complete)."
+        )
+    command.status = "PENDING"
+    command.sent_to_ea_at = None
+    command.processed_at = None
+    command.last_error = None
+    add_audit(db, "COMMAND_RESET_TO_PENDING", "command", command.id)
+    db.flush()
+    return command
+
+
 def get_pending_command_for_user(
     db: Session, user_id: str
 ) -> Optional[models.Command]:
     """Return + claim the oldest pending non-expired command for a user.
 
     Marks the command SENT_TO_EA so it is never handed out twice. Expired
-    pending commands are transitioned to EXPIRED and skipped.
+    pending commands are transitioned to EXPIRED and skipped. Stale SENT_TO_EA
+    commands (EA died mid-delivery) are timed out first so they don't strand.
     """
+    sweep_stale_sent_commands(db, user_id=user_id)
+
     candidates = db.scalars(
         select(models.Command)
         .where(
@@ -596,8 +788,26 @@ def mark_command_received(db: Session, command: models.Command) -> None:
 def record_execution(
     db: Session, command: models.Command, payload
 ) -> models.Execution:
-    """Record an EA execution result and update command status + ledger."""
+    """Record an EA execution result and update command status + ledger.
+
+    SAFETY: an execution report is only valid for a command we actually handed
+    to an EA (status SENT_TO_EA). Reporting on a never-sent (PENDING) or
+    already-processed command is refused so a mis-sequenced or replayed EA
+    report cannot corrupt the ledger.
+    """
     from . import ledger
+
+    if command.status != "SENT_TO_EA":
+        add_audit(
+            db,
+            "ILLEGAL_EXECUTION_REPORT",
+            "command",
+            command.id,
+            {"current_status": command.status, "reported": payload.status},
+        )
+        raise CommandStateError(
+            f"Execution not allowed for command in status {command.status}"
+        )
 
     execution = models.Execution(
         id=_next_id(db, models.Execution),
@@ -680,11 +890,22 @@ def record_management_event(
     )
     db.add(event)
 
+    # SAFETY: the event row itself is always recorded (it is what the EA
+    # reported), but we only advance the command status / touch the ledger when
+    # the transition is legal from the current state. This blocks out-of-order,
+    # duplicated, or stray reports from reopening a closed trade or marking a
+    # never-executed command FULLY_CLOSED.
     new_status = _EVENT_TO_COMMAND_STATUS.get(payload.event_type)
-    if new_status:
-        command.status = new_status
-        if new_status in {"FULLY_CLOSED", "FAILED"}:
-            command.processed_at = utcnow()
+    if new_status is not None:
+        applied = command.status in _EVENT_ALLOWED_FROM.get(payload.event_type, set())
+        if applied:
+            command.status = new_status
+            if new_status in {"FULLY_CLOSED", "FAILED"}:
+                command.processed_at = utcnow()
+    else:
+        # Informational event (TP*_REACHED, SL_MOVE_*): only meaningful while
+        # the trade is genuinely open / being managed.
+        applied = command.status in _ACTIVE_COMMAND_STATUSES
 
     db.flush()
     add_audit(
@@ -692,9 +913,22 @@ def record_management_event(
         "MANAGEMENT_EVENT",
         "management_event",
         event.id,
-        {"event_type": payload.event_type, "command_id": command.id},
+        {
+            "event_type": payload.event_type,
+            "command_id": command.id,
+            "applied": applied,
+        },
     )
-    ledger.on_management_event(db, command, event)
+    if applied:
+        ledger.on_management_event(db, command, event)
+    else:
+        add_audit(
+            db,
+            "ILLEGAL_MANAGEMENT_TRANSITION",
+            "command",
+            command.id,
+            {"current_status": command.status, "event_type": payload.event_type},
+        )
     return event
 
 

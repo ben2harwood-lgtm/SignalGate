@@ -50,13 +50,25 @@ class EASimulator:
         api_key: str,
         delay: float = 0.5,
         verbose: bool = True,
+        license_key: Optional[str] = None,
+        scenario: str = "win",
     ) -> None:
         self.http = http
         self.user_id = user_id
+        self.license_key = license_key
+        # scenario: "win" (full TP1->TP3) or "stop_out" (open then stopped out).
+        self.scenario = scenario
         self.headers = {"X-EA-API-Key": api_key}
         self.delay = delay
         self.verbose = verbose
         self.processed: set = set()  # local idempotency, like the real EA
+
+    def _identity(self) -> Dict[str, Any]:
+        """Identity fields the backend uses to scope reports in hosted mode."""
+        ident: Dict[str, Any] = {"user_id": self.user_id}
+        if self.license_key:
+            ident["license_key"] = self.license_key
+        return ident
 
     def log(self, msg: str) -> None:
         if self.verbose:
@@ -79,7 +91,9 @@ class EASimulator:
 
     def ack_received(self, command_id: str) -> None:
         self.http.post(
-            f"/commands/{command_id}/received", json={}, headers=self.headers
+            f"/commands/{command_id}/received",
+            json=self._identity(),
+            headers=self.headers,
         )
 
     def post_execution(self, command: Dict[str, Any], child_tickets: List[str]) -> None:
@@ -104,6 +118,7 @@ class EASimulator:
             "spread_at_execution": 20,
             "slippage": 0,
         }
+        payload.update(self._identity())
         self.http.post(
             f"/commands/{command['command_id']}/execution",
             json=payload,
@@ -111,6 +126,7 @@ class EASimulator:
         )
 
     def post_event(self, command_id: str, **fields) -> None:
+        fields.update(self._identity())
         self.http.post(
             f"/commands/{command_id}/management_event",
             json=fields,
@@ -129,6 +145,10 @@ class EASimulator:
             child_tickets = [_fake_ticket(base_ticket, i) for i in range(3)]
         else:
             child_tickets = [_fake_ticket(base_ticket, 0)]
+
+        if self.scenario == "stop_out":
+            self._simulate_stop_out(command, child_tickets)
+            return
 
         self.log(f"Simulating OPEN for {cid} tickets={child_tickets}")
         self.post_execution(command, child_tickets)
@@ -184,6 +204,31 @@ class EASimulator:
 
         # Fully closed
         self.log("Simulating FULLY_CLOSED")
+        self.post_event(cid, event_type="FULLY_CLOSED", stage="FULLY_CLOSED",
+                        result="SUCCESS")
+
+    def _simulate_stop_out(
+        self, command: Dict[str, Any], child_tickets: List[str]
+    ) -> None:
+        """Simulate a LOSING trade: open, then the shared stop is hit.
+
+        Exercises the loss path (STOP_LOSS_HIT -> STOPPED_OUT, ~-1R) that the
+        win-only lifecycle never touches. NOT a real trade -- simulator only.
+        """
+        cid = command["command_id"]
+        sl = command["initial_stop_loss"]
+
+        self.log(f"Simulating OPEN then STOP-OUT for {cid} tickets={child_tickets}")
+        self.post_execution(command, child_tickets)
+        self.post_event(cid, broker_ticket=child_tickets[0], event_type="OPENED",
+                        stage="OPENED", result="SUCCESS",
+                        price=_implied_entry(command))
+        self._sleep()
+
+        self.log("Simulating STOP_LOSS_HIT")
+        self.post_event(cid, broker_ticket=child_tickets[0],
+                        event_type="STOP_LOSS_HIT", stage="FULLY_CLOSED",
+                        result="SUCCESS", price=sl, stop_loss_after=sl)
         self.post_event(cid, event_type="FULLY_CLOSED", stage="FULLY_CLOSED",
                         result="SUCCESS")
 
@@ -246,6 +291,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SignalGate EA SIMULATOR (no trading)")
     parser.add_argument("--user-id", required=True, help="e.g. USER-000001")
     parser.add_argument("--api-key", default="local-demo-ea-key")
+    parser.add_argument("--license-key", default=None,
+                        help="Customer license key (hosted mode)")
+    parser.add_argument("--scenario", choices=["win", "stop_out"], default="win",
+                        help="win = full TP1..TP3; stop_out = open then stopped out")
     parser.add_argument("--backend", default="http://127.0.0.1:8000")
     parser.add_argument("--poll-interval", type=float, default=2.0)
     parser.add_argument(
@@ -265,6 +314,8 @@ def main() -> None:
             user_id=args.user_id,
             api_key=args.api_key,
             delay=args.delay,
+            license_key=args.license_key,
+            scenario=args.scenario,
         )
         if args.once:
             if not sim.run_once():

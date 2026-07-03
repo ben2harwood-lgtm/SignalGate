@@ -100,6 +100,26 @@ def deactivate_user(
     return {"user_id": user.id, "status": user.status}
 
 
+@router.post("/commands/{command_id}/reset")
+def reset_command(
+    command_id: str,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    """Return a stuck command (SENT_TO_EA after an EA crash, or FAILED) to
+    PENDING so it can be re-delivered. Refuses to reset a live or completed
+    trade so a demo position can never be re-opened."""
+    command = crud.get_command(db, command_id)
+    if command is None:
+        raise HTTPException(status_code=404, detail="Command not found")
+    try:
+        crud.reset_command_to_pending(db, command)
+    except crud.CommandStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    db.commit()
+    return {"command_id": command.id, "status": command.status}
+
+
 @router.get("/status")
 def status(
     db: Session = Depends(get_db), _admin: str = Depends(require_admin)

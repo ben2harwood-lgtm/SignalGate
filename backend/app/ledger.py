@@ -180,12 +180,21 @@ def on_management_event(
     if event.event_type == "SL_MOVE_BREAKEVEN_SUCCESS":
         led.final_notes = "Stop moved to breakeven after TP1."
 
+    # A bare FULLY_CLOSED with no prior TP/SL event must NOT be booked as a
+    # full TP3 winner -- that silently flatters the record. Leave the last
+    # known result_status and note that the close could not be attributed.
     if event.event_type == "FULLY_CLOSED" and led.result_status not in {
         "STOPPED_OUT",
         "FAILED",
+        "TP1_HIT",
+        "TP2_HIT",
+        "TP3_HIT",
+        "BREAKEVEN",
     }:
-        if led.result_status not in {"TP1_HIT", "TP2_HIT", "TP3_HIT"}:
-            led.result_status = "TP3_HIT"
+        led.final_notes = (
+            (led.final_notes + " " if led.final_notes else "")
+            + "Closed with no TP/SL event reported; outcome unattributed."
+        )
 
     led.updated_at = utcnow()
     db.flush()
