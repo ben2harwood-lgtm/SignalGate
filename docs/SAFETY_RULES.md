@@ -23,7 +23,7 @@ listed with where it is enforced.
 | 16 | No payment system | Not present |
 | 17 | No public landing page | Not present |
 | 18 | No customer dashboard beyond admin logs | Only `/admin/*` endpoints |
-| 19 | No AI parsing | Deterministic `parser.py` only |
+| 19 | No AI decides/validates trades | Deterministic `parser.py` is the sole validity authority. A vision model may transcribe a signal *screenshot* into candidate text, which is then re-parsed by `parser.py`, and a human confirms every extraction before broadcast. No AI output ever bypasses the parser. |
 | 20 | No extra product features | Scope limited to spec |
 
 ## Defence in depth

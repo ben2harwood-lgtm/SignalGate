@@ -38,7 +38,11 @@ performance ledger.
 - ❌ Full auto-copying (every trade needs an explicit YES)
 - ❌ Trailing stops
 - ❌ Payments, public landing page, customer dashboard
-- ❌ AI / fuzzy signal parsing (deterministic only)
+- ❌ AI that decides, validates, or approves trades. A vision model is used
+  **only** to transcribe a signal *screenshot* into candidate text; that text
+  goes through the same deterministic `parser.py` (the sole authority on
+  validity), and a human provider must confirm every extraction before any card
+  is sent. No trade number ever bypasses the deterministic parser.
 
 ## Why raw Telegram text never reaches MetaTrader
 
@@ -133,8 +137,8 @@ cd backend && source .venv/bin/activate && python -m pytest -q
   correctly; keep `DemoOnlyMode = true` and only attach to demo accounts.
 - **R values are approximate** and marked provisional when entry price is
   unknown. No profitability is claimed.
-- The bot broadcasts trade cards to the issuing admin chat in v1; wider
-  per-user broadcast requires storing each tester's chat id.
+- The bot broadcasts each confirmed trade card to **every active registered
+  tester** (via `GET /signals/recipients`), not just the issuing admin.
 
 ## Next steps after v1
 
