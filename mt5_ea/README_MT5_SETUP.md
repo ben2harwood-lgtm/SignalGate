@@ -29,16 +29,33 @@ URL is whitelisted:
 
 - Click the **Algo Trading** toolbar button so it is green/enabled.
 
+> **Before you attach:** check two broker-specific things or the very first
+> trade will fail silently.
+> - **Symbol name.** Some brokers call gold `XAUUSD.a`, `XAUUSD.pro`, `GOLD`,
+>   etc. Open Market Watch and confirm the exact name; if it isn't plain
+>   `XAUUSD`, put the broker's name in the `SymbolOverride` input.
+> - **Hedging account.** Split-ticket mode opens 3 positions at once, which needs
+>   a **hedging** demo account. On a **netting** account the EA now detects this
+>   and automatically falls back to single-ticket mode (it prints a warning in
+>   the Experts log). If you want the 3-child behaviour, open a hedging demo.
+> - **Weekend / holidays.** Forex and gold are **closed** at weekends (including
+>   this July-4 weekend). A command sent into a closed market is now reported as
+>   `MARKET_CLOSED` (it is no longer mis-reported as a successful trade). To test
+>   when metals are closed, use a `BTCUSD` chart/signal and raise
+>   `MaxSpreadPoints` (crypto spreads are wide) — or just use the Python
+>   simulator, which needs no market at all.
+
 ## 4. Attach to a chart
 
-1. Open a **XAUUSD** chart on your **demo** account.
+1. Open a **XAUUSD** chart on your **demo** account (see the symbol-name note above).
 2. Drag **SignalGateEA** from Navigator → Experts onto the chart.
 3. In the inputs dialog set at minimum:
    - `BackendURL` = `http://127.0.0.1:8000`
-   - `UserID` = your SignalGate user id (e.g. `USER-000001`)
+   - `UserID` = your SignalGate user id from the bot's `/start` reply (e.g. `USER-000001`)
    - `EAApiKey` = the `EA_API_KEY` from your backend `.env`
    - `DemoOnlyMode` = `true` (leave as-is)
-   - `SplitTicketDemoPartialMode` = `true` (default for v1)
+   - `SplitTicketDemoPartialMode` = `true` (default; auto-falls-back on netting accounts)
+   - `SymbolOverride` = your broker's gold symbol if it isn't plain `XAUUSD`
 4. Click OK. A smiley face in the top-right of the chart means it is running.
 
 ## 5. Inputs reference
@@ -77,7 +94,9 @@ Management:
 - When the TP2 child closes → report `TP2_CLOSE_SUCCESS`, move TP3 child SL to
   **TP1**.
 - When the TP3 child closes → report `TP3_CLOSE_SUCCESS` then `FULLY_CLOSED`.
-- If price hits SL on remaining tickets → `STOP_LOSS_HIT`.
+- If the stop is hit, the EA reads the broker's close reason (`DEAL_REASON_SL`)
+  and reports `STOP_LOSS_HIT` — a losing trade is recorded as a loss, never as
+  a TP win.
 
 Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
 0.01 lot, full close at the final TP, no impossible partials).
@@ -91,8 +110,18 @@ Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
 - **Demo/live detection** relies on `ACCOUNT_TRADE_MODE`. Most brokers report
   this correctly, but if a broker misreports it, keep `DemoOnlyMode = true`
   and only attach to a known demo account.
-- TP-hit detection is inferred from child positions closing (broker-side TP),
-  which is robust for the demo split-ticket design.
+- **Order fills are verified by retcode.** After every order the EA requires a
+  `TRADE_RETCODE_DONE` result before reporting success — a broker rejection
+  (market closed, no money, invalid stops) is reported as a real failure, not a
+  fake fill.
+- **Close reason is read from deal history.** TP vs SL is distinguished by the
+  broker's `DEAL_REASON` on the closing deal, not by guessing from how many
+  positions remain open.
+
+> **This EA must be compiled in MetaEditor and demo-tested before use.** It could
+> not be compiled in the environment where these fixes were written. After
+> compiling, run at least one **stop-out** test (a signal whose stop is close to
+> price) and confirm the ledger shows `STOPPED_OUT`, not a TP win.
 
 ## 8. Error codes the EA reports
 
@@ -100,7 +129,8 @@ Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
 `PRICE_MOVED_TOO_FAR`, `INVALID_STOP_LOSS`, `INVALID_TAKE_PROFIT`,
 `LOT_SIZE_INVALID`, `MARGIN_INSUFFICIENT`, `TRADING_DISABLED`,
 `ORDER_SEND_FAILED`, `DUPLICATE_COMMAND`, `DEMO_ONLY_VIOLATION`,
-`WEBREQUEST_FAILED`, `JSON_PARSE_FAILED`.
+`WEBREQUEST_FAILED`, `JSON_PARSE_FAILED`, `MARKET_CLOSED`,
+`UNSUPPORTED_ENTRY_TYPE`.
 
 ## 9. Testing without MetaTrader
 

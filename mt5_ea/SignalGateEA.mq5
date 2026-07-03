@@ -55,11 +55,15 @@ double  g_active_sl           = 0.0;
 double  g_active_tp1          = 0.0;
 double  g_active_tp2          = 0.0;
 double  g_active_tp3          = 0.0;
-ulong   g_child_tickets[3];               // TP1, TP2, TP3 child tickets
+ulong   g_child_tickets[3];               // TP1, TP2, TP3 opening deal tickets
+ulong   g_child_pos_ids[3];               // TP1, TP2, TP3 POSITION ids (for close-reason lookup)
 int     g_child_count         = 0;
+datetime g_open_time          = 0;        // when the command's positions opened
 bool    g_tp1_done            = false;
 bool    g_tp2_done            = false;
 bool    g_tp3_done            = false;
+double  g_effective_sl        = 0.0;      // current stop after any BE/TP1 moves
+bool    g_split_mode          = true;     // may be forced false on netting accts
 
 //+------------------------------------------------------------------+
 //| OnInit                                                            |
@@ -84,6 +88,20 @@ int OnInit()
 
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(MaxSlippagePoints);
+
+   // Split-ticket mode opens 3 concurrent same-direction positions, which
+   // REQUIRES a hedging account. On a netting account those three orders merge
+   // into one position and the count-based management mis-fires. Fall back to
+   // single-ticket mode so the EA behaves correctly instead of corrupting the
+   // ledger with phantom TP hits. (P1-14)
+   g_split_mode = SplitTicketDemoPartialMode;
+   long margin_mode = AccountInfoInteger(ACCOUNT_MARGIN_MODE);
+   if(g_split_mode && margin_mode != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+   {
+      Print("WARNING: account is not HEDGING. Split-ticket mode needs a hedging "
+            "account; falling back to single-ticket mode for correctness.");
+      g_split_mode = false;
+   }
 
    PrintWebRequestHint();
    SendHeartbeat();
@@ -149,6 +167,7 @@ void ProcessCommand(const string command_id, const string json)
    // --- Parse structured fields -------------------------------------
    string symbol      = JsonGetString(json, "symbol");
    string direction_s = JsonGetString(json, "direction");
+   string entry_type  = JsonGetString(json, "entry_type");
    bool   demo_only   = JsonGetBool(json, "demo_only");
    double sl          = JsonGetDouble(json, "initial_stop_loss");
 
@@ -163,6 +182,15 @@ void ProcessCommand(const string command_id, const string json)
    if(!demo_only)
    {
       ReportError(command_id, "DEMO_ONLY_VIOLATION", "Command not flagged demo_only");
+      return;
+   }
+   // SAFETY: v1 only supports MARKET execution. A LIMIT command must NOT be
+   // silently executed at market (that would open at a different price than the
+   // card the user approved). Refuse it. (P1-16)
+   if(entry_type == "LIMIT")
+   {
+      ReportError(command_id, "UNSUPPORTED_ENTRY_TYPE",
+                  "LIMIT entries are not supported in v1 (market execution only)");
       return;
    }
    if(!SymbolSelect(trade_symbol, true))
@@ -217,7 +245,7 @@ void ProcessCommand(const string command_id, const string json)
 
    // --- Execute ------------------------------------------------------
    bool ok = false;
-   if(SplitTicketDemoPartialMode)
+   if(g_split_mode)
       ok = ExecuteSplitTicket(command_id, trade_symbol, direction, sl, tp1, tp2, tp3);
    else
       ok = ExecuteSingleTicket(command_id, trade_symbol, direction, sl, tp1, tp2, tp3);
@@ -230,6 +258,7 @@ void ProcessCommand(const string command_id, const string json)
    g_active_symbol     = trade_symbol;
    g_active_direction  = direction;
    g_active_sl         = sl;
+   g_effective_sl      = sl;   // updated as the stop is moved to BE / TP1
    g_active_tp1        = tp1;
    g_active_tp2        = tp2;
    g_active_tp3        = tp3;
@@ -269,18 +298,24 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
       else
          sent = trade.Sell(lots[i], symbol, 0.0, sl, tps[i], "SG:"+command_id);
 
-      if(!sent)
+      // SAFETY (P0-5): trade.Buy/Sell returns true when the request merely
+      // REACHED the server — the server can still reject it (market closed,
+      // no money, invalid stops). A true return is NOT a fill. Require a DONE
+      // retcode; otherwise report a real failure instead of a fake success.
+      if(!sent || !ExecutionFilled(trade.ResultRetcode()))
       {
-         ReportError(command_id, "ORDER_SEND_FAILED",
+         ReportError(command_id, RetcodeErrorCode(trade.ResultRetcode()),
                      "Child " + IntegerToString(i+1) + " retcode " +
                      IntegerToString(trade.ResultRetcode()));
          CloseAllChildren(symbol);
          return(false);
       }
       g_child_tickets[g_child_count] = trade.ResultDeal();
+      g_child_pos_ids[g_child_count] = PositionIdOfDeal(trade.ResultDeal());
       exec_price = trade.ResultPrice();
       g_child_count++;
    }
+   g_open_time = TimeCurrent();
 
    if(g_child_count == 0)
    {
@@ -318,15 +353,18 @@ bool ExecuteSingleTicket(const string command_id, const string symbol,
    else
       sent = trade.Sell(lot, symbol, 0.0, sl, final_tp, "SG:"+command_id);
 
-   if(!sent)
+   // SAFETY (P0-5): require a DONE retcode; a true return alone is not a fill.
+   if(!sent || !ExecutionFilled(trade.ResultRetcode()))
    {
-      ReportError(command_id, "ORDER_SEND_FAILED",
+      ReportError(command_id, RetcodeErrorCode(trade.ResultRetcode()),
                   "retcode " + IntegerToString(trade.ResultRetcode()));
       return(false);
    }
 
    g_child_tickets[0] = trade.ResultDeal();
+   g_child_pos_ids[0] = PositionIdOfDeal(trade.ResultDeal());
    g_child_count = 1;
+   g_open_time = TimeCurrent();
    g_active_entry = trade.ResultPrice();
 
    ReportExecutionSuccess(command_id, symbol, direction, g_active_entry,
@@ -345,6 +383,23 @@ void ManageActiveCommand()
 
    int open_children = CountOpenChildren(g_active_symbol, cid);
 
+   // SAFETY (P0-4): if every child has closed and any close was a STOP-OUT
+   // (broker DEAL_REASON_SL), report it HONESTLY as STOP_LOSS_HIT and skip the
+   // TP cascade. Otherwise a stop-out (or this-weekend's closed market) would
+   // be booked in the ledger as TP1/TP2/TP3 wins — the exact fake-profit the
+   // project forbids. Deal-reason is authoritative and survives price bouncing
+   // back after the stop.
+   if(open_children == 0 && CommandClosedByStop())
+   {
+      ReportManagementEvent(cid, "STOP_LOSS_HIT", "FULLY_CLOSED", "", "SUCCESS",
+                            g_effective_sl, 0,0, g_active_sl, g_effective_sl);
+      ReportManagementEvent(cid, "FULLY_CLOSED", "FULLY_CLOSED", "", "SUCCESS",
+                            0,0,0,0,0);
+      g_active_command_id = "";
+      g_child_count = 0;
+      return;
+   }
+
    // TP1 stage: when the first child has closed (TP1 hit).
    if(!g_tp1_done && open_children <= (g_child_count - 1) && g_child_count >= 2)
    {
@@ -355,6 +410,7 @@ void ManageActiveCommand()
                             "SUCCESS", g_active_tp1, 0,0,0,0);
       // Move remaining SLs to breakeven (open price).
       bool moved = MoveRemainingSL(g_active_symbol, cid, g_active_entry);
+      if(moved) g_effective_sl = g_active_entry;   // track the live stop
       ReportManagementEvent(cid,
          moved ? "SL_MOVE_BREAKEVEN_SUCCESS" : "SL_MOVE_BREAKEVEN_FAILED",
          "TP1_DONE", "MOVE_SL_BREAKEVEN", moved ? "SUCCESS" : "FAILED",
@@ -371,13 +427,14 @@ void ManageActiveCommand()
       ReportManagementEvent(cid, "TP2_CLOSE_SUCCESS", "TP2_DONE", "CLOSE_TP2",
                             "SUCCESS", g_active_tp2, 0,0,0,0);
       bool moved = MoveRemainingSL(g_active_symbol, cid, g_active_tp1);
+      if(moved) g_effective_sl = g_active_tp1;      // track the live stop
       ReportManagementEvent(cid,
          moved ? "SL_MOVE_TP1_SUCCESS" : "SL_MOVE_TP1_FAILED",
          "TP2_DONE", "MOVE_SL_TP1", moved ? "SUCCESS" : "FAILED",
          g_active_tp1, 0,0, g_active_entry, g_active_tp1);
    }
 
-   // TP3 / full close.
+   // TP3 / full close (no stop-out detected above -> genuine TP close).
    if(open_children == 0)
    {
       if(!g_tp3_done)
@@ -393,6 +450,69 @@ void ManageActiveCommand()
       g_active_command_id = "";
       g_child_count = 0;
    }
+}
+
+//+------------------------------------------------------------------+
+//| Retcode helpers (P0-5)                                           |
+//+------------------------------------------------------------------+
+bool ExecutionFilled(const uint retcode)
+{
+   return(retcode == TRADE_RETCODE_DONE || retcode == TRADE_RETCODE_DONE_PARTIAL);
+}
+
+string RetcodeErrorCode(const uint retcode)
+{
+   switch(retcode)
+   {
+      case TRADE_RETCODE_MARKET_CLOSED:  return("MARKET_CLOSED");
+      case TRADE_RETCODE_NO_MONEY:       return("MARGIN_INSUFFICIENT");
+      case TRADE_RETCODE_INVALID_STOPS:  return("INVALID_STOP_LOSS");
+      case TRADE_RETCODE_TRADE_DISABLED: return("TRADING_DISABLED");
+      default:                           return("ORDER_SEND_FAILED");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Position-id for a just-executed deal (for close-reason lookup)   |
+//+------------------------------------------------------------------+
+ulong PositionIdOfDeal(const ulong deal_ticket)
+{
+   if(deal_ticket == 0) return(0);
+   if(HistoryDealSelect(deal_ticket))
+      return((ulong)HistoryDealGetInteger(deal_ticket, DEAL_POSITION_ID));
+   return(0);
+}
+
+bool IsChildPosition(const ulong position_id)
+{
+   for(int i = 0; i < g_child_count; i++)
+      if(g_child_pos_ids[i] != 0 && g_child_pos_ids[i] == position_id)
+         return(true);
+   return(false);
+}
+
+//+------------------------------------------------------------------+
+//| Did any of this command's positions close on the STOP LOSS?      |
+//| Authoritative: reads the broker's DEAL_REASON on the OUT deals.  |
+//+------------------------------------------------------------------+
+bool CommandClosedByStop()
+{
+   datetime from = (g_open_time > 0) ? g_open_time - 5 : 0;
+   if(!HistorySelect(from, TimeCurrent() + 60))
+      return(false);
+   int total = HistoryDealsTotal();
+   for(int i = total - 1; i >= 0; i--)
+   {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0) continue;
+      if(HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber) continue;
+      if(HistoryDealGetInteger(deal, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+      ulong posid = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+      if(!IsChildPosition(posid)) continue;
+      if(HistoryDealGetInteger(deal, DEAL_REASON) == DEAL_REASON_SL)
+         return(true);
+   }
+   return(false);
 }
 
 //+------------------------------------------------------------------+
