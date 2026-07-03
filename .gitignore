@@ -36,5 +36,6 @@ htmlcov/
 SignalGate_share.zip
 *_share.zip
 
-# Local demo-site request log
+# Local demo-site request log (now written outside the served web root)
 site-mockups/demo-requests.jsonl
+site-requests/
