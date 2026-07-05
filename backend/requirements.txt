@@ -6,5 +6,9 @@ pydantic-settings==2.2.1
 python-dotenv==1.0.1
 httpx==0.27.0
 python-multipart==0.0.9
+# Screenshot -> signal extraction (vision): official Anthropic SDK + Pillow for
+# the image preprocessing (upscale + price-axis crop) that makes levels legible.
+anthropic>=0.92.0
+Pillow>=10.0.0
 pytest==8.2.0
 pytest-asyncio==1.4.0

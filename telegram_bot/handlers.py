@@ -331,7 +331,13 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    await update.message.reply_text("📷 Reading your screenshot…")
+    # Telegram recompresses "photo" uploads (~1280px), which blurs the tiny
+    # price-scale digits. We still read it, but Files keep full resolution.
+    await update.message.reply_text(
+        "📷 Reading your screenshot…\n"
+        "Tip: send charts as a File (📎 → File) — full quality reads the "
+        "price levels much more reliably."
+    )
 
     # Download the highest-resolution version of the photo.
     photo = update.message.photo[-1]

@@ -86,17 +86,27 @@ If the role says `tester`, Ben has not added your id to
 
 Send one screenshot to the bot.
 
+**Send it as a File, not a photo.** In Telegram tap the 📎 attachment icon and
+choose **File**, then pick the screenshot. A normal "photo" upload gets
+compressed by Telegram and the small price numbers on the chart's right-hand
+scale become blurry — that is the #1 cause of misread levels. A File keeps the
+full resolution. (The reader also zooms into the price scale automatically,
+but starting from a sharp image is always better.)
+
 Best screenshot format:
 
-- Symbol visible, for example `XAUUSD` or `GOLD`.
+- Symbol visible, for example `EURUSD`, `GBPJPY`, or `XAUUSD`.
 - Direction visible, for example `BUY`, `SELL`, `LONG`, or `SHORT`.
-- Stop loss visible as text, for example `SL 2343`.
-- At least TP1 visible as text, for example `TP1 2353`.
+- Stop loss visible as text, for example `SL 1.0850`.
+- At least TP1 visible as text, for example `TP1 1.0950`.
 - TP2 and TP3 visible if the signal has them.
+- The right-hand price scale unobstructed (no watermark/panel covering it).
 - Avoid blurry/cropped screenshots.
 
 Important: the reader is told not to invent numbers from chart-line positions.
 If a level does not have a written price label, it may reject or ask for an edit.
+The preview's notes now include a "Price scale read:" list showing every number
+the reader saw on the axis — glance at it to check nothing was misread.
 
 ### 3. Review the extracted preview
 
@@ -218,8 +228,11 @@ Then restart backend and bot.
 
 ### The bot cannot read the screenshot
 
-Try a cleaner screenshot. Make sure the price numbers are written on the image,
-not only implied by chart lines.
+- Resend it **as a File** (📎 → File) instead of a photo — compression is the
+  usual culprit.
+- Try a cleaner screenshot. Make sure the price numbers are written on the
+  image, not only implied by chart lines.
+- Check the right-hand price scale isn't covered by a watermark or panel.
 
 ### The preview is wrong
 
