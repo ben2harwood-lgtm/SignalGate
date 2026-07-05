@@ -44,7 +44,7 @@ off the price scale and associating it with the coloured zone boundary (or line)
 height is allowed: that price is written text, not a guess.
 
 Extract, if determinable:
-- symbol (e.g. XAUUSD, GOLD, BTCUSD)
+- symbol (e.g. EURUSD, GBPJPY, USDJPY, XAUUSD, GOLD, BTCUSD)
 - direction (BUY/LONG or SELL/SHORT)
 - entry (a price, or the word Market)
 - stop loss (SL)

@@ -310,7 +310,11 @@ def create_signal(
     expiry_minutes = get_setting_int(
         db, "default_signal_expiry_minutes", settings.default_signal_expiry_minutes
     )
-    parsed = parse_signal(raw_text, expiry_minutes=expiry_minutes)
+    parsed = parse_signal(
+        raw_text,
+        expiry_minutes=expiry_minutes,
+        allowed_symbols=settings.allowed_symbols,
+    )
 
     signal = models.Signal(
         id=_next_id(db, models.Signal),

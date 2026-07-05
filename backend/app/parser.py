@@ -12,21 +12,56 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-# --- Alias maps -----------------------------------------------------------
+# --- Symbol recognition ---------------------------------------------------
+#
+# A trading symbol is a pair of two "legs" (base + quote), e.g. EURUSD, GBPJPY,
+# XAUUSD (gold), BTCUSD. We recognise any pair built from the known legs below,
+# so forex majors/minors/crosses are all supported (not just gold). This stays
+# deterministic and bounded: a leg must be a currency/metal/crypto code we know,
+# so random 6-letter words are still rejected.
 
-SYMBOL_ALIASES = {
+FIAT_CODES = {
+    "USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF",
+    "SEK", "NOK", "DKK", "SGD", "HKD", "MXN", "ZAR", "TRY",
+    "PLN", "CZK", "HUF", "CNH",
+}
+METAL_CODES = {"XAU", "XAG", "XPT", "XPD"}       # gold, silver, platinum, palladium
+CRYPTO_CODES = {"BTC", "ETH", "LTC", "XRP", "BCH", "SOL", "ADA", "DOT", "BNB"}
+PAIR_CODES = FIAT_CODES | METAL_CODES | CRYPTO_CODES
+
+# Whole-word convenience aliases -> canonical pair (how people often write them).
+SYMBOL_WORD_ALIASES = {
     "GOLD": "XAUUSD",
     "XAU": "XAUUSD",
-    "XAUUSD": "XAUUSD",
-    # Crypto (trades 24/7, incl. weekends). Map to broker symbol names.
+    "SILVER": "XAGUSD",
+    "XAG": "XAGUSD",
     "BTC": "BTCUSD",
-    "BTCUSD": "BTCUSD",
     "ETH": "ETHUSD",
-    "ETHUSD": "ETHUSD",
 }
 
 BUY_WORDS = {"BUY", "LONG"}
 SELL_WORDS = {"SELL", "SHORT"}
+
+
+def _detect_symbol(upper: str) -> Optional[str]:
+    """Find the first recognised trading symbol in the (upper-cased) text.
+
+    Accepts concatenated pairs (EURUSD, GBPJPY, XAUUSD), separator forms
+    (EUR/USD, GBP-JPY), and the whole-word aliases (GOLD, SILVER, BTC, ETH).
+    Returns the canonical 6-letter symbol, or None if nothing recognised.
+    """
+    # Join separator forms so "EUR/USD" / "GBP-JPY" become one token. Only
+    # slash/dash between two 3-letter codes are joined (spaces are NOT, so
+    # "BUY EUR/USD" is not mangled into "BUYEUR").
+    joined = re.sub(r"\b([A-Z]{3})[/\-]([A-Z]{3})\b", r"\1\2", upper)
+    for token in re.findall(r"[A-Z]{3,6}", joined):
+        if len(token) == 6:
+            base, quote = token[:3], token[3:]
+            if base in PAIR_CODES and quote in PAIR_CODES:
+                return base + quote
+        if token in SYMBOL_WORD_ALIASES:
+            return SYMBOL_WORD_ALIASES[token]
+    return None
 
 
 @dataclass
@@ -69,11 +104,16 @@ def parse_signal(
     raw_text: str,
     expiry_minutes: int = 5,
     now: Optional[dt.datetime] = None,
+    allowed_symbols: Optional[set] = None,
 ) -> ParseResult:
     """Parse raw signal text into structured fields, validating safety rules.
 
     Supports both multi-line ("SL: 2343") and single-line
     ("... SL 2343 TP1 2353 ...") layouts.
+
+    allowed_symbols: optional set of canonical symbols the operator has enabled
+    (e.g. {"EURUSD","GBPJPY"}). When provided, a recognised-but-not-enabled
+    symbol is rejected. When None (default) every recognised pair is allowed.
     """
     now = now or dt.datetime.utcnow()
     result = ParseResult(raw_text=raw_text)
@@ -104,15 +144,18 @@ def parse_signal(
         return _reject(result, "Scientific notation is not allowed in prices")
 
     # --- Symbol -----------------------------------------------------------
-    symbol = None
-    for token in re.findall(r"[A-Z]{3,6}", upper):
-        if token in SYMBOL_ALIASES:
-            symbol = SYMBOL_ALIASES[token]
-            break
+    symbol = _detect_symbol(upper)
     if symbol is None:
         return _reject(
             result,
-            "No recognised symbol (expected XAUUSD/GOLD, BTCUSD, or ETHUSD)",
+            "No recognised symbol. Use a forex pair (e.g. EURUSD, GBPJPY), a "
+            "metal (XAUUSD/GOLD), or crypto (BTCUSD). Indices/CFDs are not "
+            "supported in v1.",
+        )
+    if allowed_symbols is not None and symbol not in allowed_symbols:
+        return _reject(
+            result,
+            f"Symbol {symbol} is not enabled for trading on this desk.",
         )
     result.symbol = symbol
 

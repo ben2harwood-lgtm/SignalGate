@@ -29,11 +29,16 @@ URL is whitelisted:
 
 - Click the **Algo Trading** toolbar button so it is green/enabled.
 
-> **Before you attach:** check two broker-specific things or the very first
-> trade will fail silently.
-> - **Symbol name.** Some brokers call gold `XAUUSD.a`, `XAUUSD.pro`, `GOLD`,
->   etc. Open Market Watch and confirm the exact name; if it isn't plain
->   `XAUUSD`, put the broker's name in the `SymbolOverride` input.
+> **Before you attach:** check these broker-specific things or the very first
+> trade can fail.
+> - **Symbols enabled.** SignalGate supports forex majors/minors/crosses
+>   (EURUSD, GBPJPY, USDJPY, AUDCAD, …), metals (XAUUSD/gold, XAGUSD/silver), and
+>   crypto (BTCUSD, ETHUSD). Make sure the pairs your provider trades are visible
+>   in **Market Watch** (right-click → Symbols → enable them). The EA now
+>   **auto-resolves broker suffixes** — if the backend sends `EURUSD` and your
+>   broker calls it `EURUSD.a`/`EURUSDm`, the EA finds it automatically. Use
+>   `SymbolOverride` only if your broker uses a completely different name.
+>   (Indices / CFDs like US30 are not supported in v1.)
 > - **Hedging account.** Split-ticket mode opens 3 positions at once, which needs
 >   a **hedging** demo account. On a **netting** account the EA now detects this
 >   and automatically falls back to single-ticket mode (it prints a warning in
@@ -47,7 +52,9 @@ URL is whitelisted:
 
 ## 4. Attach to a chart
 
-1. Open a **XAUUSD** chart on your **demo** account (see the symbol-name note above).
+1. Open a chart for one of your traded pairs (e.g. **EURUSD**) on your **demo**
+   account. The EA trades whatever symbol each command specifies, resolved to
+   your broker's name — it does not only trade the chart's symbol.
 2. Drag **SignalGateEA** from Navigator → Experts onto the chart.
 3. In the inputs dialog set at minimum:
    - `BackendURL` = `http://127.0.0.1:8000`
@@ -55,7 +62,8 @@ URL is whitelisted:
    - `EAApiKey` = the `EA_API_KEY` from your backend `.env`
    - `DemoOnlyMode` = `true` (leave as-is)
    - `SplitTicketDemoPartialMode` = `true` (default; auto-falls-back on netting accounts)
-   - `SymbolOverride` = your broker's gold symbol if it isn't plain `XAUUSD`
+   - `SymbolOverride` = leave blank (only set it if your broker uses a
+     non-standard base name that suffix auto-resolution can't match)
 4. Click OK. A smiley face in the top-right of the chart means it is running.
 
 ## 5. Inputs reference

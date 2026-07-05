@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy.orm import Session
 
 from .. import crud
+from ..config import get_settings
 from ..database import get_db
 from ..parser import parse_signal
 from ..schemas import (
@@ -39,7 +40,13 @@ def extract_signal(
     extractor = get_extractor()
     extracted = extractor.extract(image_bytes, mime=file.content_type or "image/png")
 
-    parsed = parse_signal(extracted.raw_text) if extracted.raw_text else None
+    parsed = (
+        parse_signal(
+            extracted.raw_text, allowed_symbols=get_settings().allowed_symbols
+        )
+        if extracted.raw_text
+        else None
+    )
     crud.add_audit(
         db,
         "SIGNAL_IMAGE_EXTRACTED",

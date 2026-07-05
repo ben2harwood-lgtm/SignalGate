@@ -76,6 +76,15 @@ class Settings:
 
         self.ea_api_key: str = os.getenv("EA_API_KEY", "local-demo-ea-key")
 
+        # Optional whitelist of tradeable symbols (comma-separated, e.g.
+        # "EURUSD,GBPJPY,XAUUSD"). Empty = allow every symbol the parser
+        # recognises (all forex pairs, metals, and supported crypto). Set this
+        # to restrict a desk to just the pairs a given provider trades.
+        symbols_raw: str = os.getenv("ALLOWED_SYMBOLS", "")
+        self.allowed_symbols = {
+            s.strip().upper() for s in symbols_raw.split(",") if s.strip()
+        } or None
+
         # HOSTED MULTI-CUSTOMER: when true, an EA must present a valid, ACTIVE
         # customer license_key to receive commands; the local user_id fallback
         # is disabled. Defaults False so the local demo keeps working unchanged.

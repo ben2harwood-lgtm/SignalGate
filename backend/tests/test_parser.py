@@ -94,6 +94,41 @@ def test_crypto_symbols_valid():
     assert parse_signal("ETH SELL SL 3600 TP1 3500").is_valid
 
 
+# --- Forex pair support (multi-symbol, not gold-only) --------------------
+
+def test_forex_major_pairs_valid():
+    r = parse_signal("EURUSD BUY SL 1.0800 TP1 1.0900 TP2 1.0950 TP3 1.1000")
+    assert r.is_valid and r.symbol == "EURUSD" and r.direction == "BUY"
+    r2 = parse_signal("USDJPY BUY SL 147.50 TP1 148.50 TP2 149.00")
+    assert r2.is_valid and r2.symbol == "USDJPY"
+
+
+def test_forex_cross_pair_sell_valid():
+    r = parse_signal("GBPJPY SELL SL 191.00 TP1 189.00 TP2 188.00")
+    assert r.is_valid and r.symbol == "GBPJPY" and r.direction == "SELL"
+
+
+def test_forex_separator_forms_valid():
+    assert parse_signal("EUR/USD BUY SL 1.08 TP1 1.09 TP2 1.10").symbol == "EURUSD"
+    assert parse_signal("GBP-JPY SELL SL 191 TP1 189 TP2 187").symbol == "GBPJPY"
+
+
+def test_index_symbol_rejected():
+    # Indices / CFDs are out of scope in v1 and must reject cleanly.
+    r = parse_signal("US30 BUY SL 38000 TP1 39000")
+    assert not r.is_valid
+    assert "symbol" in (r.parser_error or "").lower()
+
+
+def test_allowed_symbols_restricts_desk():
+    # With an operator allowlist, a recognised-but-not-enabled pair is rejected.
+    allowed = {"EURUSD", "GBPUSD"}
+    assert parse_signal("EURUSD BUY SL 1.08 TP1 1.09", allowed_symbols=allowed).is_valid
+    blocked = parse_signal("GBPJPY SELL SL 191 TP1 189", allowed_symbols=allowed)
+    assert not blocked.is_valid
+    assert "not enabled" in (blocked.parser_error or "").lower()
+
+
 def test_comma_grouped_number_rejected():
     # "2,343" must NOT be silently truncated to 2.0 and marked VALID.
     r = parse_signal("XAUUSD BUY SL 2,343 TP1 2353 TP2 2358 TP3 2363")

@@ -20,7 +20,10 @@ performance ledger.
 
 ## What works in v1
 
-- Deterministic signal parser (XAUUSD / GOLD / XAU; BUY/SELL; SL + TP1–TP3).
+- Deterministic signal parser: forex majors/minors/crosses (EURUSD, GBPJPY,
+  USDJPY, …), metals (XAUUSD/GOLD, XAGUSD), and crypto (BTCUSD, ETHUSD);
+  BUY/SELL; SL + TP1–TP3. Restrict a desk to specific pairs with
+  `ALLOWED_SYMBOLS`. (Indices / CFDs are out of scope in v1.)
 - FastAPI backend (SQLite) with idempotent approvals and commands.
 - Telegram bot: `/start`, `/status`, `/settings`, and admin `/testsignal`,
   `/pause`, `/resume`, `/users`, `/lastsignals`, `/lastcommands`.

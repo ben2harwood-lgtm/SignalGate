@@ -176,7 +176,11 @@ void ProcessCommand(const string command_id, const string json)
    double tp2 = JsonGetTpPrice(json, 2);
    double tp3 = JsonGetTpPrice(json, 3);
 
-   string trade_symbol = (SymbolOverride != "") ? SymbolOverride : symbol;
+   // Resolve the broker's actual symbol name. Brokers often suffix symbols
+   // (EURUSD.a, XAUUSD.pro, GBPJPYm); this finds the right one so forex pairs
+   // trade without a manual per-pair override. SymbolOverride still wins if set.
+   string requested    = (SymbolOverride != "") ? SymbolOverride : symbol;
+   string trade_symbol = ResolveBrokerSymbol(requested);
 
    // --- Validation (report and bail on failure) ---------------------
    if(!demo_only)
@@ -193,9 +197,11 @@ void ProcessCommand(const string command_id, const string json)
                   "LIMIT entries are not supported in v1 (market execution only)");
       return;
    }
-   if(!SymbolSelect(trade_symbol, true))
+   if(trade_symbol == "")
    {
-      ReportError(command_id, "SYMBOL_NOT_FOUND", "Symbol not available: " + trade_symbol);
+      ReportError(command_id, "SYMBOL_NOT_FOUND",
+                  "Symbol not available on this broker (no exact or suffix match): "
+                  + requested);
       return;
    }
    if(sl <= 0.0)
@@ -450,6 +456,34 @@ void ManageActiveCommand()
       g_active_command_id = "";
       g_child_count = 0;
    }
+}
+
+//+------------------------------------------------------------------+
+//| Resolve a backend symbol to this broker's actual symbol name.    |
+//| Handles suffixes (EURUSD.a, XAUUSD.pro, GBPJPYm) so forex pairs   |
+//| trade across brokers without a manual per-pair override. Returns  |
+//| "" if no exact or prefix match exists.                           |
+//+------------------------------------------------------------------+
+string ResolveBrokerSymbol(const string requested)
+{
+   if(requested == "")
+      return("");
+   // Exact match first.
+   if(SymbolSelect(requested, true))
+      return(requested);
+   // Otherwise look for a broker symbol that STARTS WITH the requested name
+   // (i.e. requested + a suffix). Scan all symbols, not just Market Watch.
+   int total = SymbolsTotal(false);
+   for(int i = 0; i < total; i++)
+   {
+      string name = SymbolName(i, false);
+      if(StringFind(name, requested) == 0)   // name begins with requested
+      {
+         if(SymbolSelect(name, true))
+            return(name);
+      }
+   }
+   return("");
 }
 
 //+------------------------------------------------------------------+
