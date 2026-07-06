@@ -10,5 +10,7 @@ python-multipart==0.0.9
 # the image preprocessing (upscale + price-axis crop) that makes levels legible.
 anthropic>=0.92.0
 Pillow>=10.0.0
-pytest==8.2.0
-pytest-asyncio==1.4.0
+# Test-only (not needed to run the backend). Version ranges so a stock macOS
+# Python 3.9 can install them too — pytest-asyncio 1.3+ requires Python 3.10+.
+pytest>=8.2,<9
+pytest-asyncio>=0.23,<2
