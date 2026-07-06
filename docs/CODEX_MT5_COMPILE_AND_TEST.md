@@ -1,231 +1,210 @@
 # Codex Task Prompt — Compile & Demo-Test the SignalGate MT5 EA (macOS)
 
 Paste everything in the `--- PROMPT ---` block below into Codex (or any
-computer-controlling coding agent) running on the Mac that has MetaTrader 5
-installed. It compiles `mt5_ea/SignalGateEA.mq5` and demo-tests it end-to-end,
-verifying the safety fixes that could not be compiled in the environment where
-they were written.
+computer-controlling agent) running on **Ben's Mac**. It gets the SignalGate
+Expert Advisor compiled and demo-tested end-to-end, and verifies the safety
+fixes that could not be compiled where they were written.
 
-Context for you (the human): the EA was recently changed to (a) verify order
-fills by retcode so a rejected/closed-market order is not reported as a success,
-(b) detect real stop-outs via the broker's deal reason and report `STOP_LOSS_HIT`
-instead of a fake TP win, (c) fall back to single-ticket mode on a netting
-account, and (d) refuse LIMIT commands. None of this was compilable on Linux.
-This task proves it works on a real demo account.
+**Context for the human (Ben):** the backend + Telegram bot are already running
+on this Mac and the full Telegram flow works. What's left is the *real*
+MetaTrader piece: compile the EA, put it on a **demo** MT5 account, and prove it
+executes and — critically — records a stop-out as a **loss**, not a win. That
+last part is the whole point; the EA has never been verified on a live terminal,
+and until it is, the simulator (not the EA) is the safe path for any live demo.
 
 ---------------------------------- PROMPT ----------------------------------
 
 ## Role & mission
 
-You are a build-and-test engineer with control of this Mac. Your mission is to
-**compile the SignalGate MetaTrader 5 Expert Advisor cleanly and demo-test it
-end-to-end**, then report results. Work autonomously; only stop to ask a human
-if you hit a hard blocker (no MT5 installed, no demo account possible, or a
-compile error you cannot resolve without changing trading logic).
+You are a build-and-test engineer with control of this Mac. Your mission:
+**compile the SignalGate MetaTrader 5 Expert Advisor cleanly, run it on a demo
+account, and verify it end-to-end**, then report results. Work autonomously;
+only stop to ask the human on a hard blocker (can't install MT5, no demo account
+possible, or a compile error you can't fix without changing trading logic).
 
 ## NON-NEGOTIABLE SAFETY RULES (read first)
 
-1. **DEMO ACCOUNT ONLY.** Never log into, attach to, or trade a live account.
-   If the only available account is live, STOP and report — do not proceed.
-2. Keep the EA input `DemoOnlyMode = true` at all times. The EA is designed to
-   refuse live accounts; do not attempt to bypass that.
-3. Do not change any trade-execution logic to "make a test pass." You may fix
-   only genuine compile errors (typos, a missing include). If a fix touches
-   trading behavior, stop and report it for human review instead.
-4. Total demo exposure is tiny by design (~0.04 lots). Do not increase lot
-   sizes. Do not remove the stop loss from any order.
+1. **DEMO ACCOUNT ONLY.** Never log into, attach to, or trade a live account. If
+   the only account available is live, STOP and report — do not proceed.
+2. Keep the EA input `DemoOnlyMode = true` at all times. The EA is built to
+   refuse live accounts; do not bypass that.
+3. Do not change any trade-execution logic to "make a test pass." Fix only
+   genuine **compile** errors (a typo, a build-version enum name). If a fix would
+   change what a trade *does*, STOP and report it for human review.
+4. Demo exposure is tiny by design (~0.04 lots total). Do not increase lot sizes.
+   Do not remove the stop loss from any order.
 
-## Environment (assume, then verify)
+## This Mac's actual setup (already true — verify, don't rebuild)
 
-- macOS with **MetaTrader 5 installed** (the MetaQuotes Mac app or a broker
-  build). MetaEditor is included with it.
-- The SignalGate repo is checked out locally on this Mac, on branch
-  `claude/signalgate-full-audit-bjh0tk`. If unsure of the path, find it:
-  `find ~ -name SignalGateEA.mq5 -not -path '*/.Trash/*' 2>/dev/null`.
-- The **backend runs natively on the Mac** (Python), so from inside MT5 the
-  backend is reachable at `http://127.0.0.1:8000`.
-  - If it turns out MT5 is running inside a Parallels/VMware Windows VM (not the
-    Mac Wine app), the backend is NOT at 127.0.0.1 from inside the VM — use the
-    Mac's host IP (Parallels default `http://10.211.55.2:8000`) for `BackendURL`
-    and the WebRequest whitelist. Detect this and adjust.
+- The SignalGate project is at **`~/SignalGate`** (an unzipped copy, **not** a git
+  checkout — so there's no `git pull` here; just use the files in place). The EA
+  is `~/SignalGate/mt5_ea/SignalGateEA.mq5`.
+- The backend is a Python app that runs **natively on this Mac**, so from MT5 it's
+  reachable at **`http://127.0.0.1:8000`**. It may already be running (Ben starts
+  it via `Start Backend.command`). The Mac's Python is the stock **3.9**.
+- Config values you'll need (from `~/SignalGate/.env`):
+  - **`EA_API_KEY = local-demo-ea-key`**
+  - **admin id (`X-Admin-Id`) = `1483551673`**
+- **Network note:** this Mac's home Wi-Fi blocks Telegram, so Ben runs the bot on
+  an iPhone hotspot. **The EA test does not care** — the EA ↔ backend link is pure
+  localhost (`127.0.0.1`), and you drive everything below with `curl`, no Telegram
+  involved. Run the EA test on whatever network; ignore any Telegram-send errors
+  in the backend log (harmless — the DB/ledger is the source of truth here).
+- If you fix `SignalGateEA.mq5`, you **cannot** `git push` (not a checkout).
+  Instead include the **full diff** in your report so it can be applied upstream.
 
-Let `REPO` = the repo root you found. Let `EA` = `$REPO/mt5_ea/SignalGateEA.mq5`.
+Let `REPO = ~/SignalGate` and `EA = $REPO/mt5_ea/SignalGateEA.mq5`.
 
-## Phase 0 — Prep the backend (native Mac terminal)
+## Phase 0 — Backend up + a dedicated EA test user
 
-1. `cd $REPO && git fetch origin && git checkout claude/signalgate-full-audit-bjh0tk && git pull`
-2. Start the backend. Easiest: double-click `Start Backend.command`, OR in a
-   terminal:
+1. Confirm the backend is up: `curl -s http://127.0.0.1:8000/health` →
+   `{"status":"ok","demo_only_mode":true,...}`. If it's not up, start it:
    ```
-   cd $REPO/backend
-   python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
-   cp -n ../.env.example .env   # if no .env exists yet
-   ./.venv/bin/python ../scripts/init_db.py
-   ./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+   cd $REPO/backend && source .venv/bin/activate
+   python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
    ```
-3. Confirm it's up: `curl -s http://127.0.0.1:8000/health` returns
-   `{"status":"ok","demo_only_mode":true,...}`.
-4. Read the two values you'll need from `$REPO/backend/.env` (or `.env.example`):
-   - `EA_API_KEY` (default `local-demo-ea-key`)
-   - `ADMIN_TELEGRAM_IDS` (default `123456789`) — the first id is your admin id.
-
-## Phase 1 — Compile the EA
-
-**Primary path (GUI — most reliable on the Mac app):**
-1. In MT5, click **File → Open Data Folder**. Note the path; the EA must live in
-   `<data folder>/MQL5/Experts/`. Copy it there if needed:
-   `cp "$EA" "<data folder>/MQL5/Experts/"`.
-2. Open **MetaEditor** (Tools → MetaQuotes Language Editor, or F4 from the
-   terminal). Open `Experts/SignalGateEA.mq5`.
-3. Press **F7** (Compile). Read the **Toolbox → Errors** tab.
-4. Acceptance for this phase: **0 errors** (warnings are acceptable but list
-   them). A `SignalGateEA.ex5` file must appear next to the `.mq5`.
-
-**Optional CLI path (if the app exposes metaeditor64.exe via its wine bottle):**
-`"<path>/metaeditor64.exe" /compile:"<data folder>\MQL5\Experts\SignalGateEA.mq5" /log:compile.log`
-then read `compile.log` for the `0 errors, 0 warnings` line. Only use this if you
-can locate the executable; otherwise use the GUI.
-
-**If there are compile errors:** they are almost certainly a mechanical issue
-(a typo, or an MQL5 build-version difference in an enum/function name), NOT a
-logic problem. Fix only mechanical issues in `$REPO/mt5_ea/SignalGateEA.mq5`,
-recompile, and record exactly what you changed. If an error would require
-changing what a trade does, STOP and report it verbatim.
-
-## Phase 2 — Set up the demo terminal
-
-1. **Open a demo account**: File → Open an Account → choose MetaQuotes Demo (or
-   your broker's demo) → create/log in. Verify the account is **Demo** (the
-   Journal/Account line says demo; balance is play money).
-2. Note the account's **margin mode** (Hedging vs Netting) — you'll cross-check
-   the EA's fallback behavior later. (Tools → the account info, or the Journal
-   at login.)
-3. **Whitelist WebRequest**: Tools → Options → **Expert Advisors** →
-   tick "Allow WebRequest for listed URL" and add **`http://127.0.0.1:8000`**
-   (or the Parallels host URL if applicable). Exactly, no trailing slash.
-4. **Enable algo trading**: toolbar **Algo Trading** button green (Ctrl+E), and
-   in the same Options tab tick "Allow algorithmic trading".
-5. **Open a `BTCUSD` chart** (crypto trades 24/7, so it works this weekend). Also
-   open a `XAUUSD` chart — metals are closed on weekends, which you'll use to
-   test the market-closed path.
-6. **Attach the EA** to the BTCUSD chart (drag SignalGateEA from Navigator →
-   Experts). In its inputs set:
-   - `BackendURL` = `http://127.0.0.1:8000` (or Parallels host URL)
-   - `UserID` = `USER-000001` (you register this user in Phase 3)
-   - `EAApiKey` = the `EA_API_KEY` you read from `.env`
-   - `DemoOnlyMode` = `true`
-   - `SymbolOverride` = your broker's BTC symbol if it isn't plain `BTCUSD`
-     (check Market Watch; some brokers use `BTCUSD.x`, etc.)
-   A smiley face on the chart = running. Check the **Experts** log tab for the
-   EA's startup lines (it prints a heartbeat and, on a netting account, a
-   "falling back to single-ticket mode" warning).
-
-## Phase 3 — Drive the backend (no Telegram needed)
-
-Do all of this with `curl` against `http://127.0.0.1:8000`. Substitute the admin
-id and EA key you read from `.env`. `AID` = admin id, `KEY` = EA_API_KEY.
-
-1. **Register the EA's user** (first registration → `USER-000001`):
+   (The venv already has the deps installed. If for some reason it doesn't:
+   `grep -viE pytest requirements.txt > /tmp/r.txt && pip install -r /tmp/r.txt`
+   — pytest is pinned to a version that needs Python 3.10+, skip it, it's
+   test-only.)
+2. **Register a dedicated EA test user and capture its id** (keeps this separate
+   from Ben's phone, which is already `USER-000001`):
    ```
    curl -s -X POST http://127.0.0.1:8000/register_user \
      -H 'Content-Type: application/json' \
-     -d '{"telegram_user_id":"1","first_name":"EA Tester"}'
+     -d '{"telegram_user_id":"ea-tester","first_name":"EA Tester"}'
    ```
-   Confirm the returned `"id"` is `USER-000001` (matches the EA's `UserID`).
+   Read the returned `"id"` (e.g. `USER-000002`). Call it **`EA_USER`**. You'll
+   set the EA's `UserID` input to this exact value, and approve test signals with
+   `telegram_user_id: "ea-tester"`.
 
-2. **Helper to create + approve a signal** (repeat with different text):
-   ```
-   SIG=$(curl -s -X POST http://127.0.0.1:8000/signals/create \
-     -H 'Content-Type: application/json' -H "X-Admin-Id: <AID>" \
-     -d '{"raw_text":"<SIGNAL TEXT>"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
-   curl -s -X POST http://127.0.0.1:8000/signals/$SIG/approve \
-     -H 'Content-Type: application/json' -d '{"telegram_user_id":"1"}'
-   ```
-   Approval returns a `command_id` (e.g. `CMD-000001`). The EA on the BTCUSD
-   chart polls every ~2s and will pick it up.
+## Phase 1 — Install MT5 (if needed) & compile the EA
 
-3. **Read the current BTC price** so your stop-loss levels are realistic — check
-   Market Watch, or `curl` a public price, or just read it off the chart. You
-   need signals whose SL is on the correct side of price and TP levels ordered.
+1. If MetaTrader 5 is not installed, install the official **MetaTrader 5 for Mac**
+   from metatrader5.com (it bundles its own Wine; MetaEditor comes with it). Do
+   not install random broker forks unless Ben specifies one.
+2. In MT5: **File → Open Data Folder**. The EA must live in
+   `<data folder>/MQL5/Experts/`. Copy it: `cp "$EA" "<data folder>/MQL5/Experts/"`.
+3. Open **MetaEditor** (Tools → MetaQuotes Language Editor / F4). Open
+   `Experts/SignalGateEA.mq5`. Press **F7** (Compile). Read **Toolbox → Errors**.
+4. PASS = **0 errors** (list any warnings); a `SignalGateEA.ex5` appears next to
+   the `.mq5`. Compile errors are almost certainly mechanical (a typo, an MQL5
+   build-version enum/function name). Fix only those in `$EA`, recompile, and
+   record exactly what you changed as a diff. If a fix would change trade
+   behavior, STOP and report.
 
-## Phase 4 — Verification matrix (this is the point of the task)
+## Phase 2 — Demo terminal setup
 
-Run these and record the outcome of each. After each, inspect state with:
-- `curl -s http://127.0.0.1:8000/admin/status -H "X-Admin-Id: <AID>"`
-  (watch `counts.executions` / `counts.management_events`), and
-- the ledger, read directly from the DB:
-  ```
-  cd $REPO/backend && ./.venv/bin/python -c "from app.database import SessionLocal; from app import models; db=SessionLocal(); [print(l.signal_id, l.command_id, l.result_status, 'R=',l.r_result, '|', l.final_notes) for l in db.query(models.PerformanceLedger).all()]"
-  ```
-- and the command status:
+1. **Log into a demo account**: File → Open an Account → MetaQuotes Demo (or a
+   broker demo) → create/log in. Confirm it is **Demo** (play-money balance;
+   Journal says demo). Note the **margin mode** (Hedging vs Netting) from the
+   login Journal line — you'll cross-check the EA's fallback in Test 3.
+2. **Whitelist WebRequest**: Tools → Options → **Expert Advisors** → tick "Allow
+   WebRequest for listed URL" and add exactly **`http://127.0.0.1:8000`** (no
+   trailing slash). Also tick "Allow algorithmic trading".
+3. **Enable algo trading**: the toolbar **Algo Trading** button is green (Ctrl+E).
+4. Open a **`BTCUSD`** chart (crypto trades 24/7, so tests work any day). Open a
+   **`XAUUSD`** chart too (metals close on weekends — used for the market-closed
+   test).
+5. **Attach the EA** to the BTCUSD chart (drag from Navigator → Expert Advisors).
+   Set inputs:
+   - `BackendURL` = `http://127.0.0.1:8000`
+   - `UserID` = **`EA_USER`** (the id you captured in Phase 0)
+   - `EAApiKey` = `local-demo-ea-key`
+   - `DemoOnlyMode` = `true`
+   - `EnableTrading` = `true`
+   - `SymbolOverride` = your broker's BTC symbol if it isn't plain `BTCUSD`
+     (check Market Watch — some use `BTCUSD.x` etc.)
+   A smiley on the chart = running. Check **Toolbox → Experts** for the EA's
+   startup lines (heartbeat; on a netting account, a "falling back to
+   single-ticket mode" warning).
+
+## Phase 3 — Drive the backend with curl (no Telegram)
+
+`AID = 1483551673`. Repeat the helper with different signal text per test.
+
+**Create + approve a signal for the EA's user:**
+```
+SIG=$(curl -s -X POST http://127.0.0.1:8000/signals/create \
+  -H 'Content-Type: application/json' -H "X-Admin-Id: 1483551673" \
+  -d '{"raw_text":"<SIGNAL TEXT>"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+curl -s -X POST http://127.0.0.1:8000/signals/$SIG/approve \
+  -H 'Content-Type: application/json' -d '{"telegram_user_id":"ea-tester"}'
+```
+The approval returns a `command_id`. The EA on the BTCUSD chart polls every ~2s
+and picks it up. Read the live BTC price off the chart so your SL/TP levels are
+realistic and correctly ordered.
+
+## Phase 4 — Verification matrix (the point of the task)
+
+After each test, inspect state three ways:
+- Counts: `curl -s http://127.0.0.1:8000/admin/status -H "X-Admin-Id: 1483551673"`
+- **Ledger (the honest record):**
+  `curl -s "http://127.0.0.1:8000/admin/ledger" -H "X-Admin-Id: 1483551673" | python3 -m json.tool`
+- Command status:
   ```
   cd $REPO/backend && ./.venv/bin/python -c "from app.database import SessionLocal; from app import models; db=SessionLocal(); [print(c.id, c.status, c.last_error) for c in db.query(models.Command).all()]"
   ```
 
-**Test 1 — Clean compile.** Already done in Phase 1. PASS = 0 errors + `.ex5`.
+**Test 1 — Clean compile.** Done in Phase 1. PASS = 0 errors + `.ex5`.
 
-**Test 2 — Market-closed is reported honestly (verifies P0-5).**
-While XAUUSD is closed (weekend), create+approve an **XAUUSD** signal, e.g.
-`XAUUSD BUY SL 2320 TP1 2360 TP2 2370 TP3 2380` (adjust to be near a plausible
-gold price and correctly ordered). Attach a second EA instance to the XAUUSD
-chart with the same inputs, or temporarily point the running EA at XAUUSD.
-- PASS = the command ends `FAILED` with `last_error` like `MARKET_CLOSED`, and
-  the ledger row is `FAILED` — **NOT** `EXECUTED_OPEN` and **NOT** any TP hit.
-- FAIL = the ledger shows a TP win / `EXECUTED_OPEN` for a market that never
-  opened (that would be the old fake-success bug).
+**Test 2 — Market-closed is reported honestly.**
+When XAUUSD is closed (weekend), create+approve an **XAUUSD** signal near a
+plausible gold price, correctly ordered, e.g.
+`XAUUSD BUY SL 2320 TP1 2360 TP2 2370 TP3 2380`. Point an EA instance at the
+XAUUSD chart (same inputs).
+- PASS = command ends `FAILED` with `last_error` ~ `MARKET_CLOSED`, ledger row
+  `FAILED` — **NOT** `EXECUTED_OPEN`, **NOT** any TP hit.
+- FAIL = a TP win / `EXECUTED_OPEN` for a market that never opened (old bug).
 
-**Test 3 — Normal BTCUSD trade opens with a stop (sanity).**
-Create+approve a BTCUSD signal with SL below and TPs above current price, e.g.
-(if BTC ≈ 60000) `BTCUSD BUY SL 59000 TP1 60800 TP2 61500 TP3 62500`.
-- PASS = command → `EXECUTED_OPEN`; in MT5 you see the child position(s) each
-  **with a stop loss set**; ledger row → `EXECUTED_OPEN`. On a hedging account
-  you should see 3 positions; on a netting account 1 position and a
-  single-ticket fallback note in the Experts log (verifies **P1-14**).
-Let it run or close it via a stop-out in Test 4; don't manually close it.
+**Test 3 — Normal BTCUSD trade opens WITH a stop (sanity).**
+Approve a BTCUSD signal, SL below and TPs above current price, e.g. (BTC ≈ 60000)
+`BTCUSD BUY SL 59000 TP1 60800 TP2 61500 TP3 62500`.
+- PASS = command → `EXECUTED_OPEN`; in MT5 each child position **has a stop loss
+  set**; ledger → `EXECUTED_OPEN`. Hedging account → 3 positions; netting account
+  → 1 position + a single-ticket-fallback note in the Experts log.
+Don't manually close it.
 
-**Test 4 — Stop-out is recorded as a LOSS, not a win (verifies P0-4). ★ key test**
-Create+approve a BTCUSD signal with a **tight** stop just below current price so
-a normal dip triggers it, e.g. (if BTC ≈ 60000) `BTCUSD BUY SL 59960 TP1 60600
-TP2 61000 TP3 61500`. Wait for price to touch the stop (BTC moves; be patient —
-minutes, not seconds). When the position(s) close on the stop:
-- PASS = a `STOP_LOSS_HIT` management event is recorded, the command ends
-  `FULLY_CLOSED`, and the **ledger `result_status` is `STOPPED_OUT` with a
-  negative R** — never `TP1_HIT/TP2_HIT/TP3_HIT`.
-- If the market is too flat to hit the stop in a reasonable time, document that,
-  and separately confirm the backend/ledger stop-out path with the simulator
-  (this exercises the ledger, though not the EA's deal-reason read):
+**Test 4 — Stop-out is recorded as a LOSS, not a win. ★ THE KEY TEST**
+Approve a BTCUSD signal with a **tight** stop just below price so a normal dip
+triggers it, e.g. (BTC ≈ 60000) `BTCUSD BUY SL 59960 TP1 60600 TP2 61000 TP3
+61500`. Wait for price to touch the stop (minutes, be patient). When it closes:
+- PASS = a `STOP_LOSS_HIT` event is recorded, command ends `FULLY_CLOSED`, and the
+  **ledger `result_status` is `STOPPED_OUT` with negative R** — never a TP hit.
+- If the market is too flat to hit the stop in reasonable time, document that, and
+  separately confirm the backend's stop-out path with the simulator (exercises
+  the ledger, not the EA's deal read):
   ```
   cd $REPO && ./backend/.venv/bin/python simulator/ea_simulator.py \
-    --user-id USER-000002 --api-key <KEY> --scenario stop_out --once
+    --user-id <a fresh USER-id> --api-key local-demo-ea-key --scenario stop_out --once
   ```
-  (register a `USER-000002` and approve a fresh signal for it first). Ledger
-  must show `STOPPED_OUT`, R = -1.0.
+  (register that user and approve a fresh signal for it first). Ledger must show
+  `STOPPED_OUT`, R = -1.0.
 
-**Test 5 — LIMIT orders are refused (verifies P1-16).**
-Create+approve a signal with an explicit entry price (LIMIT), e.g.
+**Test 5 — LIMIT orders are refused.**
+Approve a signal with an explicit entry price, e.g.
 `BTCUSD BUY Entry: 60000 SL 59000 TP1 61000 TP2 62000`.
-- PASS = the command ends `FAILED` with `last_error` ~ `UNSUPPORTED_ENTRY_TYPE`;
-  **no** market order was placed.
+- PASS = command ends `FAILED` with `last_error` ~ `UNSUPPORTED_ENTRY_TYPE`; **no**
+  order placed.
 
 ## Acceptance criteria (report PASS/FAIL for each)
 
-- [ ] EA compiles with **0 errors** (list any warnings) and produces `.ex5`.
-- [ ] Test 2: closed-market XAUUSD command → `FAILED / MARKET_CLOSED`, not a win.
-- [ ] Test 3: BTCUSD command opens position(s), **each with a stop loss**;
-      correct hedging(3)/netting(1-with-fallback) behavior for the account.
+- [ ] EA compiles with **0 errors** (list warnings) and produces `.ex5`.
+- [ ] Test 2: closed-market XAUUSD → `FAILED / MARKET_CLOSED`, not a win.
+- [ ] Test 3: BTCUSD opens position(s), **each with a stop loss**; correct
+      hedging(3)/netting(1+fallback) behavior for the account.
 - [ ] Test 4: a real stop-out → `STOP_LOSS_HIT` + ledger `STOPPED_OUT` (negative
-      R), **never** a TP win. (Or simulator-confirmed with a documented reason
-      the live stop couldn't be triggered.)
-- [ ] Test 5: LIMIT signal → `FAILED / UNSUPPORTED_ENTRY_TYPE`, no order placed.
+      R), **never** a TP win. (Or simulator-confirmed, with the live reason noted.)
+- [ ] Test 5: LIMIT → `FAILED / UNSUPPORTED_ENTRY_TYPE`, no order placed.
 - [ ] At no point did the EA touch a live account.
 
 ## Report back
 
-Produce a short report with: the exact repo path and commit SHA
-(`git rev-parse HEAD`), MT5 build number, account type (demo, hedging/netting),
-the compile log (errors/warnings), any code fixes you made (as a diff), and the
-PASS/FAIL table above with the ledger/command output you observed for each test.
-If you changed `SignalGateEA.mq5`, commit it on the same branch with a clear
-message and note it in the report — do not push to any other branch.
+Give Ben a short report: MT5 build number, account type (demo, hedging/netting),
+the compile result (errors/warnings), any code fixes as a **diff** (since this
+isn't a git checkout, paste the diff — don't push), and the PASS/FAIL table with
+the ledger/command output you observed for each test. Flag clearly whether the
+EA is now trustworthy enough to show in a live demo, or whether the simulator
+should remain the demo path.
 
 -------------------------------- END PROMPT --------------------------------
