@@ -109,6 +109,22 @@ On Ben's laptop, in order:
 
 You are now ready. Keep all windows open.
 
+### 2b. Dry-run the engine before Nick arrives (30 seconds, do this)
+
+With the backend running, prove the whole pipeline + honest ledger in one command —
+no Telegram, no MT5. It drives a **winning** trade and a **losing** (stopped-out) trade
+through the simulator and prints the ledger:
+
+```bash
+python simulator/quick_demo.py --admin-id 123456789 --api-key local-demo-ea-key
+```
+(`--admin-id` must be one of your `ADMIN_TELEGRAM_IDS`.) You should see a WIN row
+(`TP3_HIT`, positive R) and a LOSS row (`STOPPED_OUT`, negative R). If that prints,
+the backend, execution path, and ledger are all healthy. This is a confidence check,
+**not** the Nick demo — it bypasses Telegram on purpose. Reset afterwards if you want a
+clean slate (`python scripts/reset_local_db.py && python scripts/init_db.py`), then
+re-register the tester.
+
 ---
 
 ## 3. The live demo script (the part Nick drives)
@@ -124,7 +140,12 @@ trail filling in live is the whole spectacle.
 | 4 | **Tester** | Receives the trade card with **YES / NO** buttons; taps **YES: Place Demo Trade** | Bot: *"Approved. Waiting for MetaTrader EA to execute demo trade."* Exactly **one** command is created |
 | 5 | **Ben** | In the third window, start the simulator for that tester (command below) | Simulator prints *"SIMULATOR ONLY — not trading"*, picks up the command, posts execution |
 | 6 | **Everyone** | Watch the lifecycle | Simulator posts OPEN → TP1 close + SL→breakeven → TP2 close + SL→TP1 → TP3 close → **FULLY_CLOSED**; command status walks EXECUTED_OPEN → … → FULLY_CLOSED |
-| 7 | **Ben** | Show the record: `/lastsignals`, `/lastcommands`, and the admin log/ledger | The signal, the one command, the execution, ~10 management events, and one ledger row (result e.g. TP3_HIT, R=3.0) — the honest, timestamped record that is the product |
+| 7 | **Ben** | Show the record — pull up the ledger live in a browser: `http://127.0.0.1:8000/admin/ledger` (send header `X-Admin-Id: <your admin id>`; or `/lastsignals` / `/lastcommands` in Telegram) | The signal, the one command, the execution, ~10 management events, and a ledger row with its `result_status` and R — the honest, timestamped record that is the product |
+
+> **Showing the ledger in a browser:** `/admin/ledger` needs the admin header, so the
+> simplest live view is a terminal one-liner you can run on the projector:
+> `curl -s -H "X-Admin-Id: 123456789" http://127.0.0.1:8000/admin/ledger | python3 -m json.tool`
+> (swap in your real admin id). It lists every trade's outcome — wins **and** losses.
 
 **The simulator command for step 5** (replace the USER id with the tester's):
 ```bash

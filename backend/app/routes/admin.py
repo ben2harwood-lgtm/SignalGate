@@ -120,6 +120,44 @@ def reset_command(
     return {"command_id": command.id, "status": command.status}
 
 
+@router.get("/ledger")
+def ledger(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    """Read the performance ledger — the honest record of every signal's outcome,
+    wins and losses alike. This is the surface you show in a demo: pull it up in a
+    browser and it lists each trade's result_status (TP1/2/3_HIT, STOPPED_OUT,
+    BREAKEVEN, FAILED, EXPIRED...) and approximate R. No outcome is hidden."""
+    rows = crud.recent_ledger(db, limit=max(1, min(limit, 200)))
+    return {
+        "count": len(rows),
+        "ledger": [
+            {
+                "id": r.id,
+                "signal_id": r.signal_id,
+                "command_id": r.command_id,
+                "symbol": r.symbol,
+                "direction": r.direction,
+                "entry_price": r.entry_price,
+                "initial_stop_loss": r.initial_stop_loss,
+                "tp1": r.tp1,
+                "tp2": r.tp2,
+                "tp3": r.tp3,
+                "result_status": r.result_status,
+                "r_result": r.r_result,
+                "slippage": r.slippage,
+                "spread_at_execution": r.spread_at_execution,
+                "final_notes": r.final_notes,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/status")
 def status(
     db: Session = Depends(get_db), _admin: str = Depends(require_admin)
