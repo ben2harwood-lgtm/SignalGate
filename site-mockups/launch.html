@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SignalGate — The Forward Test</title>
+<title>SignalGate — Launching Soon</title>
 <style>
   :root{
     --bg:#101418; --panel:#161c22; --line:#2a333d;
@@ -52,29 +52,29 @@
 </head>
 <body>
 <main>
-  <div class="chip">Demo-only v1 &middot; You approve every trade &middot; No live money anywhere in the system</div>
+  <div class="chip">You approve every trade &middot; Hard stop on every position &middot; Every step logged</div>
 
-  <h1>The forward test is coming.<br><em>Losses included.</em></h1>
+  <h1>SignalGate is coming.<br><em>And it's bringing receipts.</em></h1>
   <p class="sub">
     SignalGate turns a signal into a trade card on your phone. Tap <strong>Approve</strong>
-    and it executes on a MetaTrader&nbsp;5 <strong>demo</strong> account by a fixed rulebook —
-    hard stop in, staged take-profits, every fill and stop-move written to an audit ledger.
-    We're about to run that ledger in public, week after week, and publish the record —
-    the losing trades printed with the same size font as the winners.
+    and it executes on MetaTrader&nbsp;5 by a fixed rulebook — hard stop in, staged
+    take-profits, every fill and stop-move written to a ledger you can audit.
+    Before we open the doors, the record goes public: week after week, every trade
+    published — the losing ones printed in the same size font as the winners.
   </p>
 
   <section class="panel">
-    <h2 id="cd-title">Cohort 1 forward test begins in</h2>
+    <h2 id="cd-title">The public record starts in</h2>
     <div id="countdown" hidden>
       <div class="unit"><b id="cd-d">–</b><span>days</span></div>
       <div class="unit"><b id="cd-h">–</b><span>hours</span></div>
       <div class="unit"><b id="cd-m">–</b><span>minutes</span></div>
       <div class="unit"><b id="cd-s">–</b><span>seconds</span></div>
     </div>
-    <p id="cd-tbc" hidden>Start date is being finalised. Join the list below and you'll
-      be told the date before anyone else.</p>
-    <p id="cd-live" hidden>The forward test is <strong>live</strong>. The weekly record
-      drops are underway — join the list to get them.</p>
+    <p id="cd-tbc" hidden>The start date is being finalised. Join the list below and
+      you'll be told the date before anyone else.</p>
+    <p id="cd-live" hidden>The public record is <strong>live</strong>. The weekly drops
+      are underway — join the list to get them.</p>
     <p id="cd-note">This timer counts to a real, committed start date — we don't do fake
       countdowns. If the date ever moves, the reason gets published here.</p>
   </section>
@@ -98,11 +98,12 @@
   <section class="panel">
     <h2>What joining gets you</h2>
     <ul class="honest">
-      <li>First call on a <strong>Cohort&nbsp;1 seat</strong> — seats are genuinely capped
-          by how many people one operator can onboard properly, so the list is the queue.</li>
-      <li>The <strong>weekly record drop</strong>: every card, every fill, every stop —
-          wins and losses alike.</li>
-      <li>The <strong>Verification Pack</strong> the day it publishes: the full demo record
+      <li><strong>Founding access</strong> — when SignalGate opens, the earliest seats go
+          to this list, in order. Seats are genuinely capped by how many people one
+          operator can onboard properly, so the list is the queue.</li>
+      <li>The <strong>weekly record drop</strong> from day one: every card, every fill,
+          every stop — wins and losses alike.</li>
+      <li>The <strong>Verification Pack</strong> the day it publishes: the full record
           with the drawdown left in.</li>
     </ul>
   </section>
@@ -110,18 +111,21 @@
   <section class="panel">
     <h2>What we won't do</h2>
     <ul class="honest">
-      <li>No performance or profit claims — none exist yet, so we publish none.</li>
+      <li>No performance or profit claims — none exist yet, so we publish none. The
+          public record is being built precisely so you never have to take our word.</li>
       <li>No fake counters, urgency, or testimonials. The waitlist number shown here
           (when there is one) is the real number.</li>
-      <li>No live trading in v1. Demo accounts only, and we say so everywhere.</li>
+      <li>No blurred lines: while the public record is being built, execution runs on
+          demo accounts — and everything we publish is labelled for exactly what it is.</li>
     </ul>
   </section>
 </main>
 
 <footer>
-  Trading carries risk of loss, and most retail traders lose money. SignalGate v1 runs on
-  demo accounts only and is execution tooling, not financial advice — you approve every
-  trade yourself. No performance figures are published because none exist yet.
+  Trading carries risk of loss, and most retail traders lose money. SignalGate is
+  execution tooling, not financial advice — you approve every trade yourself. While the
+  pre-launch public record is being built, execution runs on demo accounts; no
+  performance figures are published until the record exists.
 </footer>
 
 <script>
@@ -137,7 +141,7 @@ const LAUNCH_DATE_UTC = "";
   const live = document.getElementById("cd-live");
   const grid = document.getElementById("countdown");
   const title = document.getElementById("cd-title");
-  if(!LAUNCH_DATE_UTC){ tbc.hidden = false; title.textContent = "Cohort 1 forward test"; return; }
+  if(!LAUNCH_DATE_UTC){ tbc.hidden = false; title.textContent = "The public record"; return; }
   const target = Date.parse(LAUNCH_DATE_UTC);
   if(Number.isNaN(target)){ tbc.hidden = false; return; }
   grid.hidden = false;
@@ -146,7 +150,7 @@ const LAUNCH_DATE_UTC = "";
   function tick(){
     const diff = target - Date.now();
     if(diff <= 0){ grid.hidden = true; live.hidden = false;
-                   title.textContent = "Cohort 1 forward test"; return; }
+                   title.textContent = "The public record"; return; }
     d.textContent = Math.floor(diff/86400000);
     h.textContent = String(Math.floor(diff/3600000)%24).padStart(2,"0");
     m.textContent = String(Math.floor(diff/60000)%60).padStart(2,"0");

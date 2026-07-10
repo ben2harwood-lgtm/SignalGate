@@ -32,6 +32,13 @@ input bool   SplitTicketDemoPartialMode = true;
 input double TP1Lot                     = 0.02;
 input double TP2Lot                     = 0.01;
 input double TP3Lot                     = 0.01;
+// Risk-based position sizing: size the trade so that a stop-loss hit costs
+// RiskPercentPerTrade of the account balance, regardless of stop distance.
+// A tight stop gets a bigger lot, a wide stop a smaller one — same money at
+// risk either way. When disabled, the fixed TP*Lot inputs above are used.
+input bool   UseRiskBasedSizing         = true;
+input double RiskPercentPerTrade        = 0.5;   // % of balance lost if the stop is hit
+input double MaxTotalLots               = 0.10;  // hard ceiling on total computed lots
 input long   MagicNumber                = 440044;
 input bool   DemoOnlyMode               = true;
 input int    MaxSpreadPoints            = 500;
@@ -282,6 +289,37 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
    lots[0] = TP1Lot; lots[1] = TP2Lot; lots[2] = TP3Lot;
    tps[0]  = tp1;    tps[1]  = tp2;    tps[2]  = tp3;
 
+   if(UseRiskBasedSizing)
+   {
+      double total = ComputeRiskLots(symbol, direction, sl);
+      if(total <= 0.0)
+      {
+         ReportError(command_id, "LOT_SIZE_INVALID",
+                     "Risk sizing failed (bad balance/stop/tick data); refusing to trade unknown risk");
+         return(false);
+      }
+      // 50/25/25 across the children, each floored to the lot step. If a live
+      // TP's child floors below the broker minimum, split mode can't honour
+      // the risk budget — fall back to a single risk-sized ticket instead.
+      // (With fewer than 3 TPs the unused portion is simply not traded:
+      // under-risking is acceptable, over-risking never is.)
+      double parts[3]; parts[0] = 0.50; parts[1] = 0.25; parts[2] = 0.25;
+      for(int i = 0; i < 3; i++)
+      {
+         if(tps[i] <= 0.0)
+            continue;
+         double child = total * parts[i];
+         if(!FloorToLotStep(symbol, child))
+         {
+            PrintFormat("Risk-based child %d floors below broker minimum; using single-ticket mode.", i + 1);
+            return ExecuteSingleTicket(command_id, symbol, direction, sl, tp1, tp2, tp3);
+         }
+         lots[i] = child;
+      }
+      PrintFormat("Risk sizing: %.2f%% of balance -> total %.4f lots (split 50/25/25)",
+                  RiskPercentPerTrade, total);
+   }
+
    g_child_count = 0;
    double exec_price = 0.0;
 
@@ -344,7 +382,28 @@ bool ExecuteSingleTicket(const string command_id, const string symbol,
                          const double tp1, const double tp2, const double tp3)
 {
    double lot = SingleTicketFixedLot;
-   if(!NormalizeLot(symbol, lot))
+   if(UseRiskBasedSizing)
+   {
+      lot = ComputeRiskLots(symbol, direction, sl);
+      if(lot <= 0.0)
+      {
+         ReportError(command_id, "LOT_SIZE_INVALID",
+                     "Risk sizing failed (bad balance/stop/tick data); refusing to trade unknown risk");
+         return(false);
+      }
+      if(!FloorToLotStep(symbol, lot))
+      {
+         // The broker minimum lot would risk MORE than RiskPercentPerTrade on
+         // this stop distance. Refuse rather than silently over-risk; the
+         // operator can widen the stop or deliberately raise the risk input.
+         ReportError(command_id, "LOT_SIZE_INVALID",
+                     "Computed risk lot is below the broker minimum; trading the minimum would exceed RiskPercentPerTrade");
+         return(false);
+      }
+      PrintFormat("Risk sizing: %.2f%% of balance -> %.4f lots (single ticket)",
+                  RiskPercentPerTrade, lot);
+   }
+   else if(!NormalizeLot(symbol, lot))
    {
       ReportError(command_id, "LOT_SIZE_INVALID", "Single-ticket lot invalid");
       return(false);
@@ -623,6 +682,54 @@ bool NormalizeLot(const string symbol, double &lot)
    // Round to nearest step.
    lot = MathRound(lot / step) * step;
    return(lot >= minlot && lot <= maxlot);
+}
+
+//+------------------------------------------------------------------+
+//| Risk-based position sizing                                        |
+//+------------------------------------------------------------------+
+// Total lots such that (entry -> stop) costs RiskPercentPerTrade of balance.
+// Returns 0.0 when the account/symbol data is unusable — callers must REFUSE
+// to trade on 0, never substitute a default (that would trade unknown risk).
+double ComputeRiskLots(const string symbol, const int direction, const double stop_price)
+{
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double entry   = (direction == +1) ? SymbolInfoDouble(symbol, SYMBOL_ASK)
+                                      : SymbolInfoDouble(symbol, SYMBOL_BID);
+   double tick_size  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tick_value = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+   double stop_dist  = MathAbs(entry - stop_price);
+   if(balance <= 0.0 || tick_size <= 0.0 || tick_value <= 0.0 || stop_dist <= 0.0)
+      return(0.0);
+
+   // Account-currency loss for a 1.0-lot position if the stop is hit.
+   double loss_per_lot = stop_dist / tick_size * tick_value;
+   if(loss_per_lot <= 0.0)
+      return(0.0);
+
+   double lots = balance * RiskPercentPerTrade / 100.0 / loss_per_lot;
+
+   // SAFETY: the ceiling only ever SHRINKS exposure. Sizing may risk less than
+   // the target percent, never more.
+   if(lots > MaxTotalLots)
+   {
+      PrintFormat("Risk sizing capped: computed %.4f lots, ceiling %.2f", lots, MaxTotalLots);
+      lots = MaxTotalLots;
+   }
+   return(lots);
+}
+
+// Round a computed lot DOWN to the broker's step. Rounding up would silently
+// exceed the configured risk percent, so a lot that floors below the broker
+// minimum returns false and the caller must refuse (not bump to minimum).
+bool FloorToLotStep(const string symbol, double &lot)
+{
+   double minlot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maxlot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double step   = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0) step = 0.01;
+   lot = MathFloor(lot / step + 1e-9) * step;
+   if(lot > maxlot) lot = maxlot;
+   return(lot >= minlot);
 }
 
 //+------------------------------------------------------------------+
