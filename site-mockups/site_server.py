@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 HOST = "127.0.0.1"
 PORT = 8088
@@ -36,7 +38,8 @@ ALLOWED_PAGES = {
 REQUEST_LOG = SITE_DIR.parent / "site-requests" / "demo-requests.jsonl"
 WAITLIST_LOG = SITE_DIR.parent / "site-requests" / "waitlist.jsonl"
 
-WAITLIST_ALLOWED_FIELDS = {"email", "name", "telegram"}
+WAITLIST_ALLOWED_FIELDS = {"email", "name", "telegram", "ref"}
+FOUNDING_CAP = 100  # first N are "founding members" — a real, capped cohort
 
 MAX_BODY_BYTES = 32_000
 MAX_FIELD_LEN = 500
@@ -55,7 +58,17 @@ class SiteHandler(SimpleHTTPRequestHandler):
         # Real waitlist size for the launch page. Only ever the true count —
         # the page hides it below a threshold rather than inflating it.
         if name == "api/waitlist/count":
-            self._send_json({"count": _waitlist_count()})
+            self._send_json({"count": _waitlist_count(), "foundingCap": FOUNDING_CAP})
+            return
+        # A member's live status (position in line, referral count) by ref code.
+        if name == "api/waitlist/status":
+            qs = parse_qs(urlparse(self.path).query)
+            code = (qs.get("code", [""])[0] or "").strip()
+            status = _member_status(code)
+            if status is None:
+                self.send_error(404, "Not found")
+                return
+            self._send_json(status)
             return
         if name in ("", "index.html"):
             name = DEFAULT_PAGE
@@ -164,16 +177,34 @@ class SiteHandler(SimpleHTTPRequestHandler):
             return
         clean["email"] = email
 
-        if _waitlist_has_email(email):
-            self._send_json({"ok": True, "alreadyJoined": True})
+        rows = _iter_waitlist_rows()
+
+        # Idempotent by email: a repeat signup returns the SAME status (so a
+        # resubmit can't inflate the count or mint a second referral code).
+        existing = next((r for r in rows if r.get("email", "").lower() == email), None)
+        if existing:
+            self._send_json({"ok": True, "alreadyJoined": True,
+                             **_member_status(existing["refCode"])})
             return
 
-        clean["receivedAt"] = datetime.now(timezone.utc).isoformat()
+        # A referral only counts if the ref code resolves to a real member.
+        ref = (clean.pop("ref", "") or "").strip()
+        referred_by = ref if any(r.get("refCode") == ref for r in rows) else ""
+        clean["referredBy"] = referred_by
+
+        # Unique short referral code for the new member.
+        existing_codes = {r.get("refCode") for r in rows}
+        code = secrets.token_hex(4)
+        while code in existing_codes:
+            code = secrets.token_hex(4)
+        clean["refCode"] = code
+        clean["joinedAt"] = datetime.now(timezone.utc).isoformat()
+
         WAITLIST_LOG.parent.mkdir(parents=True, exist_ok=True)
         with WAITLIST_LOG.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(clean, ensure_ascii=True) + "\n")
 
-        self._send_json({"ok": True, "alreadyJoined": False})
+        self._send_json({"ok": True, "alreadyJoined": False, **_member_status(code)})
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
@@ -211,6 +242,41 @@ def _waitlist_count() -> int:
 
 def _waitlist_has_email(email: str) -> bool:
     return any(r.get("email", "").lower() == email for r in _iter_waitlist_rows())
+
+
+def _referral_count(rows: list[dict[str, Any]], code: str) -> int:
+    return sum(1 for r in rows if r.get("referredBy") == code)
+
+
+def _member_status(code: str) -> dict[str, Any] | None:
+    """A member's live standing, keyed by their referral code.
+
+    Position is the member's RANK when everyone is ordered by referral count
+    (desc) then join time (asc) — so referring a friend genuinely moves you up
+    the queue, past people who joined earlier but referred no-one. This is the
+    honest Robinhood-style loop: real numbers, no invented positions.
+    """
+    if not code:
+        return None
+    rows = _iter_waitlist_rows()
+    me = next((r for r in rows if r.get("refCode") == code), None)
+    if me is None:
+        return None
+    counts = {r["refCode"]: _referral_count(rows, r["refCode"]) for r in rows if r.get("refCode")}
+    ordered = sorted(
+        rows,
+        key=lambda r: (-counts.get(r.get("refCode", ""), 0), r.get("joinedAt", "")),
+    )
+    position = next(i for i, r in enumerate(ordered, start=1) if r.get("refCode") == code)
+    referrals = counts.get(code, 0)
+    return {
+        "refCode": code,
+        "position": position,
+        "total": len(rows),
+        "referrals": referrals,
+        "founding": position <= FOUNDING_CAP,
+        "foundingCap": FOUNDING_CAP,
+    }
 
 
 if __name__ == "__main__":

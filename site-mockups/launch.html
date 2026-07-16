@@ -3,216 +3,330 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SignalGate — Launching Soon</title>
+<title>SignalGate — Founding access</title>
+<meta name="description" content="Trading signals, executed by a fixed rulebook and logged to a record you can audit — losses included. Demo forward-test. Join founding access.">
 <style>
   :root{
-    --bg:#101418; --panel:#161c22; --line:#2a333d;
-    --ink:#e8edf2; --muted:#9aa7b2; --accent:#4fd1a5; --warn:#e0b25a;
+    --bg:#0e1216; --panel:#161d24; --panel2:#111820; --line:#26313c;
+    --ink:#e9eef3; --muted:#93a1ad; --accent:#4fd1a5; --accent-ink:#08150f;
+    --warn:#e0b25a; --loss:#e0736a;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   [hidden]{display:none !important}
   body{background:var(--bg);color:var(--ink);
        font:16px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-       min-height:100vh;display:flex;flex-direction:column}
-  main{max-width:680px;margin:0 auto;padding:48px 20px 32px;flex:1}
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:720px;margin:0 auto;padding:44px 20px 8px}
   .chip{display:inline-block;border:1px solid var(--line);border-radius:999px;
-        padding:6px 14px;font-size:13px;color:var(--muted);margin-bottom:28px}
-  h1{font-family:Georgia,"Times New Roman",serif;font-size:clamp(30px,6vw,44px);
-     line-height:1.15;margin-bottom:16px}
+        padding:6px 14px;font-size:12.5px;color:var(--muted);margin-bottom:26px}
+  h1{font-family:Georgia,"Times New Roman",serif;font-size:clamp(30px,6.2vw,46px);
+     line-height:1.12;margin-bottom:16px;letter-spacing:-0.01em}
   h1 em{color:var(--accent);font-style:normal}
-  .sub{color:var(--muted);max-width:56ch;margin-bottom:36px}
-  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;
-         padding:24px;margin-bottom:24px}
-  .panel h2{font-size:15px;text-transform:uppercase;letter-spacing:.08em;
-            color:var(--muted);margin-bottom:14px}
+  .sub{color:#c6d0d9;max-width:60ch;margin-bottom:14px;font-size:17px}
+  .riskline{color:var(--muted);font-size:14px;max-width:60ch;margin-bottom:34px}
+  .riskline b{color:var(--warn);font-weight:600}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+         padding:24px;margin-bottom:20px}
+  .panel h2{font-size:13px;text-transform:uppercase;letter-spacing:.09em;
+            color:var(--muted);margin-bottom:16px;font-weight:600}
   /* countdown */
-  #countdown{display:flex;gap:14px;flex-wrap:wrap}
-  .unit{flex:1;min-width:90px;text-align:center;background:var(--bg);
+  #cd-wrap{display:flex;gap:12px;flex-wrap:wrap}
+  .unit{flex:1;min-width:74px;text-align:center;background:var(--panel2);
         border:1px solid var(--line);border-radius:10px;padding:14px 6px}
-  .unit b{display:block;font-size:clamp(26px,5vw,38px);font-variant-numeric:tabular-nums}
-  .unit span{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
-  #cd-note{margin-top:12px;font-size:13px;color:var(--muted)}
-  /* form */
-  label{display:block;font-size:13px;color:var(--muted);margin:14px 0 4px}
-  input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;
-        padding:11px 12px;color:var(--ink);font-size:15px}
+  .unit b{display:block;font-size:clamp(24px,5vw,34px);font-variant-numeric:tabular-nums;
+          font-family:Georgia,serif}
+  .unit span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .cd-note{margin-top:13px;font-size:12.5px;color:var(--muted)}
+  /* form + status */
+  label{display:block;font-size:12.5px;color:var(--muted);margin:14px 0 5px}
+  input{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:9px;
+        padding:12px;color:var(--ink);font-size:15px}
   input:focus{outline:none;border-color:var(--accent)}
-  button{margin-top:18px;width:100%;background:var(--accent);color:#0c1a15;border:0;
-         border-radius:8px;padding:13px;font-size:16px;font-weight:600;cursor:pointer}
-  button:disabled{opacity:.55;cursor:wait}
+  button{margin-top:18px;width:100%;background:var(--accent);color:var(--accent-ink);border:0;
+         border-radius:9px;padding:14px;font-size:16px;font-weight:700;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid var(--line);
+               font-weight:600;margin-top:10px}
   #form-msg{margin-top:12px;font-size:14px;min-height:20px}
   #form-msg.ok{color:var(--accent)} #form-msg.err{color:var(--warn)}
-  #wl-count{font-size:13px;color:var(--muted);margin-top:10px}
+  #wl-count{font-size:13px;color:var(--muted);margin-top:12px}
+  /* status panel */
+  .stat-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px}
+  .stat{flex:1;min-width:120px;background:var(--panel2);border:1px solid var(--line);
+        border-radius:10px;padding:14px}
+  .stat .n{font-size:28px;font-family:Georgia,serif;line-height:1}
+  .stat .l{font-size:12px;color:var(--muted);margin-top:5px}
+  .founding-badge{display:inline-block;background:rgba(79,209,165,.12);color:var(--accent);
+        border:1px solid rgba(79,209,165,.4);border-radius:999px;padding:4px 12px;
+        font-size:12.5px;font-weight:600;margin-bottom:12px}
+  .reflink{display:flex;gap:8px;margin-top:8px}
+  .reflink input{font-size:13px}
+  .reflink button{margin-top:0;width:auto;padding:12px 16px;white-space:nowrap;font-size:14px}
+  .progress{height:8px;background:var(--panel2);border:1px solid var(--line);border-radius:99px;
+            overflow:hidden;margin-top:12px}
+  .progress > i{display:block;height:100%;background:var(--accent)}
+  /* lists */
+  ol.rules{list-style:none;counter-reset:r}
+  ol.rules li{counter-increment:r;padding:11px 0 11px 44px;position:relative;
+              border-top:1px solid var(--line);color:#c6d0d9}
+  ol.rules li:first-child{border-top:0}
+  ol.rules li::before{content:counter(r);position:absolute;left:0;top:10px;width:28px;height:28px;
+      border:1px solid var(--line);border-radius:8px;display:grid;place-items:center;
+      font-family:Georgia,serif;color:var(--accent);font-size:14px}
+  ol.rules b{color:var(--ink)}
+  .triad{display:flex;gap:14px;flex-wrap:wrap}
+  .triad > div{flex:1;min-width:150px;background:var(--panel2);border:1px solid var(--line);
+               border-radius:10px;padding:16px}
+  .triad h3{font-size:14px;margin-bottom:6px}
+  .triad p{font-size:13px;color:var(--muted)}
   ul.honest{list-style:none}
-  ul.honest li{padding-left:22px;position:relative;margin-bottom:10px;color:var(--muted)}
+  ul.honest li{padding-left:22px;position:relative;margin-bottom:11px;color:var(--muted);font-size:14.5px}
   ul.honest li::before{content:"—";position:absolute;left:0;color:var(--accent)}
-  footer{border-top:1px solid var(--line);padding:18px 20px;font-size:12.5px;
-         color:var(--muted);text-align:center;max-width:680px;margin:0 auto}
+  .proof-illus{background:var(--panel2);border:1px dashed var(--line);border-radius:10px;
+               padding:16px;font-size:13.5px;color:var(--muted);margin-top:6px}
+  .proof-illus .win{color:var(--accent)} .proof-illus .loss{color:var(--loss)}
+  footer{border-top:1px solid var(--line);margin-top:8px}
+  .foot-in{max-width:720px;margin:0 auto;padding:22px 20px 40px;font-size:12px;
+           color:var(--muted);line-height:1.7}
+  a{color:var(--accent)}
 </style>
 </head>
 <body>
-<main>
-  <div class="chip">You approve every trade &middot; Hard stop on every position &middot; Every step logged</div>
+<div class="wrap">
+  <div class="chip">Demo forward-test &middot; You approve every trade &middot; No live money in the system</div>
 
-  <h1>SignalGate is coming.<br><em>And it's bringing receipts.</em></h1>
+  <h1>The signals you follow,<br><em>executed by a rulebook — and every trade on the record.</em></h1>
   <p class="sub">
-    SignalGate turns a signal into a trade card on your phone. Tap <strong>Approve</strong>
-    and it executes on MetaTrader&nbsp;5 by a fixed rulebook — hard stop in, staged
-    take-profits, every fill and stop-move written to a ledger you can audit.
-    Before we open the doors, the record goes public: week after week, every trade
-    published — the losing ones printed in the same size font as the winners.
+    SignalGate turns a signal into a trade card on your phone. Tap <strong>Approve</strong> and
+    it executes on MetaTrader&nbsp;5 by a fixed rulebook — a hard stop on every trade, staged
+    take-profits, and every fill, stop-move and close written to a ledger you can audit. Then we
+    publish that record in public: the losing trades in the same size font as the winners.
+  </p>
+  <p class="riskline">
+    <b>Trading carries real risk of loss, and most retail traders lose money.</b> SignalGate is
+    execution tooling, not advice — you approve every trade. The forward-test runs on demo
+    accounts; results are simulated and not indicative of future performance.
   </p>
 
+  <!-- COUNTDOWN -->
   <section class="panel">
-    <h2 id="cd-title">The public record starts in</h2>
-    <div id="countdown" hidden>
+    <h2 id="cd-title">Founding access opens Sunday</h2>
+    <div id="cd-wrap" hidden>
       <div class="unit"><b id="cd-d">–</b><span>days</span></div>
-      <div class="unit"><b id="cd-h">–</b><span>hours</span></div>
-      <div class="unit"><b id="cd-m">–</b><span>minutes</span></div>
-      <div class="unit"><b id="cd-s">–</b><span>seconds</span></div>
+      <div class="unit"><b id="cd-h">–</b><span>hrs</span></div>
+      <div class="unit"><b id="cd-m">–</b><span>min</span></div>
+      <div class="unit"><b id="cd-s">–</b><span>sec</span></div>
     </div>
-    <p id="cd-tbc" hidden>The start date is being finalised. Join the list below and
-      you'll be told the date before anyone else.</p>
-    <p id="cd-live" hidden>The public record is <strong>live</strong>. The weekly drops
-      are underway — join the list to get them.</p>
-    <p id="cd-note">This timer counts to a real, committed start date — we don't do fake
-      countdowns. If the date ever moves, the reason gets published here.</p>
+    <p id="cd-open" hidden><strong>Founding access is open.</strong> Reserve your place below —
+      the first <span id="cap-a">100</span> on the list are founding members.</p>
+    <p class="cd-note">This counts to a real, committed date. We don't run fake countdowns; if it
+      ever moves, the reason is published here.</p>
   </section>
 
-  <section class="panel">
-    <h2>Join the waitlist</h2>
+  <!-- WAITLIST / STATUS -->
+  <section class="panel" id="join-panel">
+    <h2>Reserve your founding place</h2>
     <form id="wl-form" novalidate>
       <label for="wl-email">Email (required)</label>
-      <input id="wl-email" name="email" type="email" autocomplete="email" required
-             placeholder="you@example.com">
+      <input id="wl-email" name="email" type="email" autocomplete="email" required placeholder="you@example.com">
       <label for="wl-name">First name (optional)</label>
       <input id="wl-name" name="name" type="text" autocomplete="given-name" placeholder="Ben">
       <label for="wl-tg">Telegram handle (optional — cards arrive on Telegram)</label>
       <input id="wl-tg" name="telegram" type="text" placeholder="@yourhandle">
-      <button id="wl-btn" type="submit">Join the waitlist</button>
+      <button id="wl-btn" type="submit">Reserve my place</button>
       <p id="form-msg" role="status"></p>
       <p id="wl-count" hidden></p>
     </form>
   </section>
 
-  <section class="panel">
-    <h2>What joining gets you</h2>
-    <ul class="honest">
-      <li><strong>Founding access</strong> — when SignalGate opens, the earliest seats go
-          to this list, in order. Seats are genuinely capped by how many people one
-          operator can onboard properly, so the list is the queue.</li>
-      <li>The <strong>weekly record drop</strong> from day one: every card, every fill,
-          every stop — wins and losses alike.</li>
-      <li>The <strong>Verification Pack</strong> the day it publishes: the full record
-          with the drawdown left in.</li>
-    </ul>
+  <section class="panel" id="status-panel" hidden>
+    <div id="founding-badge" class="founding-badge" hidden>★ Founding member</div>
+    <h2>You're in. Here's your place in line.</h2>
+    <div class="stat-row">
+      <div class="stat"><div class="n" id="st-pos">#–</div><div class="l">your position</div></div>
+      <div class="stat"><div class="n" id="st-ref">0</div><div class="l">friends joined</div></div>
+      <div class="stat"><div class="n" id="st-total">–</div><div class="l">on the list</div></div>
+    </div>
+    <div class="progress" title="progress to a founding seat"><i id="st-bar" style="width:0%"></i></div>
+    <p style="font-size:13.5px;color:var(--muted);margin-top:14px">
+      <strong style="color:var(--ink)">Move up the line.</strong> Every friend who joins with your
+      link moves you ahead of people who joined earlier but referred no-one. No cash, no points —
+      just earlier access and the founding badge.
+    </p>
+    <label for="st-link">Your personal invite link</label>
+    <div class="reflink">
+      <input id="st-link" type="text" readonly>
+      <button id="st-copy" class="ghost" type="button" style="border-color:var(--accent)">Copy</button>
+    </div>
   </section>
 
+  <!-- THE RULEBOOK -->
+  <section class="panel">
+    <h2>The rulebook — fixed, not discretionary</h2>
+    <ol class="rules">
+      <li><b>A hard stop on every trade.</b> Nothing is ever left un-stopped. Your loss on any one trade is bounded before it opens.</li>
+      <li><b>You approve every trade.</b> One tap creates exactly one command. The same approval can never fire twice.</li>
+      <li><b>Take-profits are staged.</b> Partial exits at TP1 / TP2 / TP3, and the stop moves to protect the trade as targets are hit.</li>
+      <li><b>Miss a card and it expires.</b> Cards live 5 minutes, then it's simply no trade. On purpose.</li>
+      <li><b>Every action is logged.</b> Entry, fill, each stop move, each close — written to an audit ledger, wins and losses alike.</li>
+    </ol>
+  </section>
+
+  <!-- TRUST TRIAD -->
+  <section class="panel">
+    <h2>How you're protected</h2>
+    <div class="triad">
+      <div><h3>Demo accounts</h3><p>The forward-test runs on demo accounts. No live money anywhere in v1.</p></div>
+      <div><h3>Hard stop, always</h3><p>Every position opens with its stop attached. No un-stopped exposure, ever.</p></div>
+      <div><h3>We never touch your money</h3><p>No custody, no broker login, no withdrawals. The tool executes; the account stays yours.</p></div>
+    </div>
+  </section>
+
+  <!-- PROOF -->
+  <section class="panel">
+    <h2>Proof, not screenshots</h2>
+    <p style="color:#c6d0d9;font-size:15px">
+      The category runs on cherry-picked wins and Photoshopped equity curves. We're doing the
+      opposite: a live record where <strong>the drawdown and the losing trades are shown as
+      prominently as any winner</strong>. <strong>There's no track record yet — that's the point.</strong>
+      Watch it build, in public, from day one.
+    </p>
+    <div class="proof-illus">
+      Illustration of the weekly record — not real data yet:<br>
+      <span class="win">TP3_HIT&nbsp;&nbsp;+3.0R</span> &nbsp;·&nbsp;
+      <span class="loss">STOPPED_OUT&nbsp;&nbsp;−1.0R</span> &nbsp;·&nbsp;
+      <span class="win">TP1_HIT&nbsp;&nbsp;+0.5R</span> &nbsp;·&nbsp;
+      <span class="loss">STOPPED_OUT&nbsp;&nbsp;−1.0R</span><br>
+      <span style="font-size:12px">When the forward-test starts, this becomes a live, read-only account anyone can audit.</span>
+    </div>
+  </section>
+
+  <!-- WHAT WE WON'T DO -->
   <section class="panel">
     <h2>What we won't do</h2>
     <ul class="honest">
-      <li>No performance or profit claims — none exist yet, so we publish none. The
-          public record is being built precisely so you never have to take our word.</li>
-      <li>No fake counters, urgency, or testimonials. The waitlist number shown here
-          (when there is one) is the real number.</li>
-      <li>No blurred lines: while the public record is being built, execution runs on
-          demo accounts — and everything we publish is labelled for exactly what it is.</li>
+      <li>No performance or profit claims — none exist yet, so we publish none.</li>
+      <li>No fake counters, urgency, or testimonials. Every number on this page is the real one.</li>
+      <li>Referrals earn earlier access and a founding badge — never cash or bonuses.</li>
+      <li>No live trading in v1. Demo forward-test only, labelled for exactly what it is.</li>
     </ul>
   </section>
-</main>
+</div>
 
 <footer>
-  Trading carries risk of loss, and most retail traders lose money. SignalGate is
-  execution tooling, not financial advice — you approve every trade yourself. While the
-  pre-launch public record is being built, execution runs on demo accounts; no
-  performance figures are published until the record exists.
+  <div class="foot-in">
+    Trading carries a high risk of loss, and most retail traders lose money. SignalGate is an
+    execution tool — not financial advice, not a recommendation, and not a signal service. v1 runs
+    on demo accounts; any results shown are simulated forward-testing, are labelled as such, and are
+    not indicative of future performance. No performance figures are published because none exist yet.
+    Nothing on this page is an offer or inducement to trade.
+  </div>
 </footer>
 
 <script>
 /* ============================================================
-   SET THE REAL DATE HERE (UTC, ISO format), e.g. "2026-08-03T09:00:00Z".
-   Leave as "" until the start date is truly committed — the page then shows
-   an honest "date being finalised" state instead of a fake countdown.
+   Founding access opens: Sunday 19 July 2026, 10:00 UTC.
+   Edit only if the committed date genuinely changes.
    ============================================================ */
-const LAUNCH_DATE_UTC = "";
+const OPENS_UTC = "2026-07-19T10:00:00Z";
+const API = ""; // same origin
 
-(function countdown(){
-  const tbc = document.getElementById("cd-tbc");
-  const live = document.getElementById("cd-live");
-  const grid = document.getElementById("countdown");
-  const title = document.getElementById("cd-title");
-  if(!LAUNCH_DATE_UTC){ tbc.hidden = false; title.textContent = "The public record"; return; }
-  const target = Date.parse(LAUNCH_DATE_UTC);
-  if(Number.isNaN(target)){ tbc.hidden = false; return; }
-  grid.hidden = false;
+/* ---- referral code from the URL (?ref=CODE) ---- */
+const params = new URLSearchParams(location.search);
+const incomingRef = (params.get("ref") || "").trim();
+
+/* ---- countdown ---- */
+(function(){
+  const wrap=document.getElementById("cd-wrap"), open=document.getElementById("cd-open"),
+        title=document.getElementById("cd-title");
+  const t=Date.parse(OPENS_UTC);
   const d=document.getElementById("cd-d"),h=document.getElementById("cd-h"),
         m=document.getElementById("cd-m"),s=document.getElementById("cd-s");
   function tick(){
-    const diff = target - Date.now();
-    if(diff <= 0){ grid.hidden = true; live.hidden = false;
-                   title.textContent = "The public record"; return; }
-    d.textContent = Math.floor(diff/86400000);
-    h.textContent = String(Math.floor(diff/3600000)%24).padStart(2,"0");
-    m.textContent = String(Math.floor(diff/60000)%60).padStart(2,"0");
-    s.textContent = String(Math.floor(diff/1000)%60).padStart(2,"0");
-    setTimeout(tick, 1000);
+    const diff=t-Date.now();
+    if(diff<=0){ wrap.hidden=true; open.hidden=false; title.textContent="Founding access is open"; return; }
+    wrap.hidden=false;
+    d.textContent=Math.floor(diff/86400000);
+    h.textContent=String(Math.floor(diff/3600000)%24).padStart(2,"0");
+    m.textContent=String(Math.floor(diff/60000)%60).padStart(2,"0");
+    s.textContent=String(Math.floor(diff/1000)%60).padStart(2,"0");
+    setTimeout(tick,1000);
   }
   tick();
 })();
 
-(function waitlist(){
-  const form = document.getElementById("wl-form");
-  const btn = document.getElementById("wl-btn");
-  const msg = document.getElementById("form-msg");
-  const countEl = document.getElementById("wl-count");
-  const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+/* ---- status panel rendering ---- */
+function renderStatus(st){
+  document.getElementById("join-panel").hidden = true;
+  const panel = document.getElementById("status-panel");
+  panel.hidden = false;
+  document.getElementById("st-pos").textContent = "#" + st.position;
+  document.getElementById("st-ref").textContent = st.referrals;
+  document.getElementById("st-total").textContent = st.total;
+  const link = location.origin + location.pathname + "?ref=" + st.refCode;
+  document.getElementById("st-link").value = link;
+  const badge = document.getElementById("founding-badge");
+  badge.hidden = !st.founding;
+  // progress toward a founding seat (position within the cap)
+  const pct = Math.max(2, Math.min(100, Math.round((1 - (st.position-1)/st.foundingCap)*100)));
+  document.getElementById("st-bar").style.width = st.founding ? pct + "%" : "0%";
+}
 
-  // Show the real count only once it's meaningful. Never a fake number.
-  fetch("/api/waitlist/count").then(r => r.ok ? r.json() : null).then(data => {
-    if(data && data.count >= 10){
-      countEl.textContent = data.count + " people are already on the list.";
-      countEl.hidden = false;
-    }
-  }).catch(() => {});
+async function refreshStatus(code){
+  try{
+    const r = await fetch(API + "/api/waitlist/status?code=" + encodeURIComponent(code));
+    if(r.ok) renderStatus(await r.json());
+  }catch(_e){}
+}
 
-  form.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    msg.className = ""; msg.textContent = "";
-    const email = document.getElementById("wl-email").value.trim();
-    if(!emailRe.test(email)){
-      msg.className = "err"; msg.textContent = "That email doesn't look right — check it and try again.";
+/* returning visitor: show their live status */
+const savedCode = localStorage.getItem("sg_ref_code");
+if(savedCode){ refreshStatus(savedCode); }
+
+/* real, non-inflated total (only shown once meaningful) */
+fetch(API + "/api/waitlist/count").then(r=>r.ok?r.json():null).then(d=>{
+  if(d){ document.getElementById("cap-a").textContent = d.foundingCap;
+    if(d.count>=25){ const c=document.getElementById("wl-count");
+      c.textContent = d.count + " people have reserved a place."; c.hidden=false; } }
+}).catch(()=>{});
+
+/* ---- submit ---- */
+const form=document.getElementById("wl-form"), btn=document.getElementById("wl-btn"),
+      msg=document.getElementById("form-msg");
+const emailRe=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+form.addEventListener("submit", async (ev)=>{
+  ev.preventDefault(); msg.className=""; msg.textContent="";
+  const email=document.getElementById("wl-email").value.trim();
+  if(!emailRe.test(email)){ msg.className="err"; msg.textContent="That email doesn't look right — check it and try again."; return; }
+  btn.disabled=true; btn.textContent="Reserving…";
+  try{
+    const res=await fetch(API+"/api/waitlist",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({email,
+        name:document.getElementById("wl-name").value.trim(),
+        telegram:document.getElementById("wl-tg").value.trim(),
+        ref:incomingRef})});
+    const data=await res.json().catch(()=>({}));
+    if(res.ok && data.ok && data.refCode){
+      localStorage.setItem("sg_ref_code", data.refCode);
+      renderStatus(data);
       return;
     }
-    btn.disabled = true; btn.textContent = "Joining…";
-    try{
-      const res = await fetch("/api/waitlist", {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({
-          email,
-          name: document.getElementById("wl-name").value.trim(),
-          telegram: document.getElementById("wl-tg").value.trim(),
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if(res.ok && data.ok){
-        msg.className = "ok";
-        msg.textContent = data.alreadyJoined
-          ? "You're already on the list — nothing more to do."
-          : "You're on the list. You'll hear from a real person, not a drip campaign.";
-        form.querySelectorAll("input").forEach(i => i.disabled = true);
-        btn.textContent = "Joined";
-        return;
-      }
-      throw new Error("bad response");
-    }catch(_e){
-      // HONEST error state: never show success styling on a failed submit.
-      msg.className = "err";
-      msg.textContent = "That didn't save — our fault, not yours. Try again in a minute, "
-        + "or message the operator on Telegram and you'll be added by hand.";
-      btn.disabled = false; btn.textContent = "Join the waitlist";
-    }
-  });
-})();
+    throw new Error("bad response");
+  }catch(_e){
+    msg.className="err";
+    msg.textContent="That didn't save — our fault, not yours. Try again in a minute, or message the operator on Telegram and you'll be added by hand.";
+    btn.disabled=false; btn.textContent="Reserve my place";
+  }
+});
+
+/* copy button */
+document.getElementById("st-copy").addEventListener("click", ()=>{
+  const inp=document.getElementById("st-link"); inp.select();
+  navigator.clipboard.writeText(inp.value).then(()=>{
+    const b=document.getElementById("st-copy"); b.textContent="Copied ✓";
+    setTimeout(()=>b.textContent="Copy",1800);
+  }).catch(()=>{ document.execCommand("copy"); });
+});
 </script>
 </body>
 </html>
