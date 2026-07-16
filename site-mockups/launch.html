@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SignalGate — Founding access</title>
-<meta name="description" content="Trading signals, executed by a fixed rulebook and logged to a record you can audit — losses included. Demo forward-test. Join founding access.">
+<title>SignalGate — Every signal seller shows the wins. We show everything.</title>
+<meta name="description" content="Signal groups sell screenshots you can't check. SignalGate executes signals by a fixed rulebook and logs every trade to the Truth Room — a live record you can audit, losses included. Founding access.">
 <style>
   :root{
     --bg:#0e1216; --panel:#161d24; --panel2:#111820; --line:#26313c;
@@ -85,6 +85,23 @@
   .proof-illus{background:var(--panel2);border:1px dashed var(--line);border-radius:10px;
                padding:16px;font-size:13.5px;color:var(--muted);margin-top:6px}
   .proof-illus .win{color:var(--accent)} .proof-illus .loss{color:var(--loss)}
+  /* USP strip */
+  .usps{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 20px}
+  @media(max-width:560px){.usps{grid-template-columns:1fr}}
+  .usp{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 16px 15px}
+  .usp .k{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  .usp h3{font-size:15.5px;margin:7px 0 4px;line-height:1.25}
+  .usp p{font-size:13px;color:var(--muted);line-height:1.5}
+  /* Truth Room */
+  .truth{background:linear-gradient(180deg,rgba(79,209,165,.06),rgba(79,209,165,0));
+         border:1px solid rgba(79,209,165,.35)}
+  .truth .eyebrow{color:var(--accent);font-weight:700;letter-spacing:.09em;text-transform:uppercase;font-size:11.5px}
+  .truth h2{color:var(--ink);font-size:22px;text-transform:none;letter-spacing:-.01em;margin:6px 0 12px}
+  .winrate{display:flex;align-items:center;gap:16px;background:var(--panel2);border:1px solid var(--line);
+           border-radius:10px;padding:16px;margin:14px 0 4px;flex-wrap:wrap}
+  .winrate .big{font-family:Georgia,serif;font-size:40px;color:var(--accent);line-height:1}
+  .winrate .lbl{font-size:13px;color:var(--muted)}
+  .winrate .lbl b{color:var(--ink)}
   footer{border-top:1px solid var(--line);margin-top:8px}
   .foot-in{max-width:720px;margin:0 auto;padding:22px 20px 40px;font-size:12px;
            color:var(--muted);line-height:1.7}
@@ -95,18 +112,42 @@
 <div class="wrap">
   <div class="chip">Demo forward-test &middot; You approve every trade &middot; No live money in the system</div>
 
-  <h1>The signals you follow,<br><em>executed by a rulebook — and every trade on the record.</em></h1>
+  <h1>Every signal seller shows you the wins.<br><em>SignalGate shows you everything.</em></h1>
   <p class="sub">
-    SignalGate turns a signal into a trade card on your phone. Tap <strong>Approve</strong> and
-    it executes on MetaTrader&nbsp;5 by a fixed rulebook — a hard stop on every trade, staged
-    take-profits, and every fill, stop-move and close written to a ledger you can audit. Then we
-    publish that record in public: the losing trades in the same size font as the winners.
+    Signal groups sell you screenshots. You can't check a single one. SignalGate turns a signal
+    into a one-tap trade card, executes it by a fixed rulebook — hard stop on, staged exits — and
+    writes every result to <strong>the Truth Room</strong>: a live, read-only record anyone can
+    audit. Wins, losses, drawdown, the win rate itself — all of it, or none of it.
   </p>
   <p class="riskline">
     <b>Trading carries real risk of loss, and most retail traders lose money.</b> SignalGate is
     execution tooling, not advice — you approve every trade. The forward-test runs on demo
     accounts; results are simulated and not indicative of future performance.
   </p>
+
+  <!-- USP STRIP -->
+  <div class="usps">
+    <div class="usp">
+      <div class="k">The Truth Room</div>
+      <h3>A record you check, not a screenshot you trust</h3>
+      <p>Every fill, every stop, every close — on a live, read-only account. Losses shown as loud as wins. Nobody else in the category will open the books.</p>
+    </div>
+    <div class="usp">
+      <div class="k">Discipline, enforced by code</div>
+      <h3>One tap. Hard stop. Every time.</h3>
+      <p>You approve every trade and it opens with a stop attached. The same tap can never fire twice; a missed card just expires. The rules don't have a bad day.</p>
+    </div>
+    <div class="usp">
+      <div class="k">Your signals, done right</div>
+      <h3>Close the gap where followers lose</h3>
+      <p>It's rarely the signal that loses money — it's the late entry, the missing stop, the revenge trade. SignalGate executes the call the same disciplined way, every time.</p>
+    </div>
+    <div class="usp">
+      <div class="k">Yours, and only yours</div>
+      <h3>We never touch your money</h3>
+      <p>No custody, no broker login, no withdrawals. Demo accounts in v1. The tool executes; the account — and the record it builds — stay yours.</p>
+    </div>
+  </div>
 
   <!-- COUNTDOWN -->
   <section class="panel">
@@ -182,17 +223,18 @@
     </div>
   </section>
 
-  <!-- PROOF -->
-  <section class="panel">
-    <h2>Proof, not screenshots</h2>
+  <!-- THE TRUTH ROOM -->
+  <section class="panel truth">
+    <div class="eyebrow">The Truth Room</div>
+    <h2>The only trading record you don't have to believe.</h2>
     <p style="color:#c6d0d9;font-size:15px">
-      The category runs on cherry-picked wins and Photoshopped equity curves. We're doing the
-      opposite: a live record where <strong>the drawdown and the losing trades are shown as
-      prominently as any winner</strong>. <strong>There's no track record yet — that's the point.</strong>
-      Watch it build, in public, from day one.
+      The whole category runs on cherry-picked wins and Photoshopped equity curves. The Truth Room
+      is the opposite: a live, read-only account where <strong>every trade lands automatically —
+      the losers as loud as the winners</strong>, drawdown and all. You don't take our word. You
+      open the room and check.
     </p>
     <div class="proof-illus">
-      Illustration of the weekly record — not real data yet:<br>
+      Illustration of a weekly record — not real data yet:<br>
       <span class="win">TP3_HIT&nbsp;&nbsp;+3.0R</span> &nbsp;·&nbsp;
       <span class="loss">STOPPED_OUT&nbsp;&nbsp;−1.0R</span> &nbsp;·&nbsp;
       <span class="win">TP1_HIT&nbsp;&nbsp;+0.5R</span> &nbsp;·&nbsp;
@@ -201,11 +243,31 @@
     </div>
   </section>
 
+  <!-- WIN RATE -->
+  <section class="panel">
+    <h2>About that win rate</h2>
+    <p style="color:#c6d0d9;font-size:15px">
+      Every signal seller flashes one. Not one of them will let you check it. So here's ours,
+      honestly:
+    </p>
+    <div class="winrate">
+      <div class="big" id="wr-big">—</div>
+      <div class="lbl"><b>The number doesn't exist yet — on purpose.</b><br>
+        The forward-test just started. A win rate you can't audit is the exact lie we're here to end.</div>
+    </div>
+    <p style="color:var(--muted);font-size:14px;margin-top:12px">
+      The day it exists, it publishes in the Truth Room in full — win rate, average R, max
+      drawdown, and <strong>every losing trade</strong> — on a read-only account, with the dates
+      and the identifier, so you can verify it without trusting us. Founding members watch that
+      number get built from trade one. That's the whole product.
+    </p>
+  </section>
+
   <!-- WHAT WE WON'T DO -->
   <section class="panel">
     <h2>What we won't do</h2>
     <ul class="honest">
-      <li>No performance or profit claims — none exist yet, so we publish none.</li>
+      <li>No performance, profit, or win-rate claims — none exist yet, so we publish none. When they exist, they go in the Truth Room, in full.</li>
       <li>No fake counters, urgency, or testimonials. Every number on this page is the real one.</li>
       <li>Referrals earn earlier access and a founding badge — never cash or bonuses.</li>
       <li>No live trading in v1. Demo forward-test only, labelled for exactly what it is.</li>
