@@ -76,6 +76,23 @@ class Settings:
 
         self.ea_api_key: str = os.getenv("EA_API_KEY", "local-demo-ea-key")
 
+        # HARDENING (hosted): real secrets, distinct from the spoofable
+        # Telegram-id headers. When set, they become the required credential
+        # (see security.py); when unset, local demo/test behaviour is unchanged.
+        #  - admin_api_token gates every /admin/* route (X-Admin-Token header).
+        #  - bot_backend_secret authenticates the Telegram bot to the backend
+        #    on the endpoints it proxies (approve/reject/register/user-lookup)
+        #    via the X-Bot-Secret header, so a public server can't be driven by
+        #    anyone who simply knows a Telegram id.
+        self.admin_api_token: str = os.getenv("ADMIN_API_TOKEN", "")
+        self.bot_backend_secret: str = os.getenv("BOT_BACKEND_SECRET", "")
+
+        # Hide interactive API docs (/docs, /redoc, OpenAPI) on a public server.
+        self.expose_docs: bool = _get_bool("EXPOSE_DOCS", True)
+
+        # Per-IP request cap for public/expensive endpoints (0 disables).
+        self.rate_limit_per_minute: int = _get_int("RATE_LIMIT_PER_MINUTE", 60)
+
         # Optional whitelist of tradeable symbols (comma-separated, e.g.
         # "EURUSD,GBPJPY,XAUUSD"). Empty = allow every symbol the parser
         # recognises (all forex pairs, metals, and supported crypto). Set this
@@ -116,6 +133,27 @@ class Settings:
             user_id in self.admin_telegram_ids
             or user_id in self.signal_provider_telegram_ids
         )
+
+    def hosted_config_errors(self) -> list[str]:
+        """Fail-closed checks for a public deployment.
+
+        Hosted posture is signalled by REQUIRE_LICENSE=true. In that mode the
+        server must NOT boot with the local-demo defaults or missing secrets,
+        or a public box would ship with spoofable admin auth, an open bot
+        surface, and the shipped EA key. Returns a list of problems (empty = ok).
+        """
+        if not self.require_license:
+            return []
+        errors: list[str] = []
+        if not self.admin_api_token or len(self.admin_api_token) < 24:
+            errors.append("ADMIN_API_TOKEN must be set to a strong value (>=24 chars)")
+        if not self.bot_backend_secret or len(self.bot_backend_secret) < 24:
+            errors.append("BOT_BACKEND_SECRET must be set to a strong value (>=24 chars)")
+        if not self.ea_api_key or self.ea_api_key == "local-demo-ea-key":
+            errors.append("EA_API_KEY must be changed from the local-demo default")
+        if self.expose_docs:
+            errors.append("EXPOSE_DOCS should be false on a public server")
+        return errors
 
 
 @lru_cache

@@ -91,10 +91,51 @@ _PREFIXES = {
 
 
 def _next_id(db: Session, model) -> str:
-    """Generate the next sequential prefixed ID for a model."""
+    """Generate the next sequential prefixed ID for a model.
+
+    Uses MAX(existing numeric suffix)+1 rather than COUNT(*)+1. COUNT reuses an
+    id after any row is deleted (→ PK collision); MAX does not. A residual race
+    remains under concurrent inserts on PostgreSQL, so create paths that can run
+    concurrently wrap the insert in `insert_with_id_retry`, which regenerates on
+    a unique-violation and retries.
+    """
     prefix = _PREFIXES[model]
-    count = db.scalar(select(func.count()).select_from(model)) or 0
-    return f"{prefix}-{count + 1:06d}"
+    pk_col = model.id
+    # Highest existing suffix for this prefix (ids look like "CMD-000042").
+    last = db.scalar(
+        select(func.max(pk_col)).where(pk_col.like(f"{prefix}-%"))
+    )
+    n = 0
+    if last:
+        try:
+            n = int(str(last).rsplit("-", 1)[1])
+        except (ValueError, IndexError):
+            n = 0
+    return f"{prefix}-{n + 1:06d}"
+
+
+def insert_with_id_retry(db: Session, model, build, attempts: int = 5):
+    """Create a row whose id comes from _next_id, retrying on a PK collision.
+
+    `build(new_id)` must return an unsaved model instance. On a concurrent
+    insert grabbing the same id (unique violation), the savepoint is rolled
+    back and a fresh id is tried. Makes id allocation safe under concurrency
+    without a schema change.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    last_err = None
+    for _ in range(attempts):
+        obj = build(_next_id(db, model))
+        db.add(obj)
+        try:
+            with db.begin_nested():
+                db.flush()
+            return obj
+        except IntegrityError as exc:  # pragma: no cover - concurrency path
+            db.expunge(obj)
+            last_err = exc
+    raise last_err  # pragma: no cover
 
 
 # --- Audit logging --------------------------------------------------------
@@ -745,6 +786,10 @@ def get_pending_command_for_user(
     """
     sweep_stale_sent_commands(db, user_id=user_id)
 
+    # SAFETY (concurrency): lock the candidate rows FOR UPDATE and SKIP LOCKED
+    # so two simultaneous polls (or a retrying EA) can never both claim the same
+    # PENDING command and open the trade twice. On PostgreSQL this is real
+    # row-level locking; SQLite (single-writer) ignores the clause harmlessly.
     candidates = db.scalars(
         select(models.Command)
         .where(
@@ -752,6 +797,7 @@ def get_pending_command_for_user(
             models.Command.status == "PENDING",
         )
         .order_by(models.Command.created_at.asc())
+        .with_for_update(skip_locked=True)
     ).all()
 
     for command in candidates:

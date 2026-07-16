@@ -89,9 +89,25 @@ ADMIN_TELEGRAM_IDS=your_numeric_telegram_id
 # --- shared EA gate key (still required IN ADDITION to per-customer licenses) ---
 EA_API_KEY=generate_a_long_random_value
 
+# --- HOSTING HARDENING (REQUIRED in hosted mode; the backend refuses to boot
+#     without them). Generate each: python3 -c "import secrets;print(secrets.token_urlsafe(32))"
+ADMIN_API_TOKEN=generate_a_long_random_value    # real admin credential (X-Admin-Token)
+BOT_BACKEND_SECRET=generate_a_long_random_value  # authenticates the bot to the backend
+EXPOSE_DOCS=false                                # hide /docs on the public server
+RATE_LIMIT_PER_MINUTE=60
+
 DEFAULT_SIGNAL_EXPIRY_MINUTES=5
 SPLIT_TICKET_DEMO_PARTIAL_MODE=true
 ```
+
+> **Why these exist.** On a public server the old auth was spoofable: admin was
+> gated only by a Telegram id (public), and the endpoints the bot proxies
+> (approve/reject/register/user-lookup, which returns a customer license key)
+> were open. Hardened: `ADMIN_API_TOKEN` is now the only admin credential,
+> `BOT_BACKEND_SECRET` gates the bot surface, both compared in constant time,
+> and with `REQUIRE_LICENSE=true` the server **refuses to boot** if they (or a
+> non-default `EA_API_KEY`) are missing — so you can't accidentally ship an open
+> box. `/docs` is hidden, and public endpoints are per-IP rate-limited.
 
 Initialise the database tables:
 

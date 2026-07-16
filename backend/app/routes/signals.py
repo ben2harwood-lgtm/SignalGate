@@ -17,7 +17,7 @@ from ..schemas import (
     ExtractionResponse,
     SignalOut,
 )
-from ..security import require_admin, require_signal_provider
+from ..security import require_admin, require_bot, require_signal_provider
 from ..vision_extractor import get_extractor
 
 router = APIRouter(tags=["signals"])
@@ -28,6 +28,7 @@ def extract_signal(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     _provider: str = Depends(require_signal_provider),
+    _bot: str = Depends(require_bot),
 ) -> ExtractionResponse:
     """Read a signal screenshot into structured fields for human confirmation.
 
@@ -96,6 +97,7 @@ def create_signal(
     payload: CreateSignalRequest,
     db: Session = Depends(get_db),
     _provider: str = Depends(require_signal_provider),
+    _bot: str = Depends(require_bot),
 ) -> SignalOut:
     signal = crud.create_signal(
         db,
@@ -111,6 +113,7 @@ def create_signal(
 def signal_recipients(
     db: Session = Depends(get_db),
     _provider: str = Depends(require_signal_provider),
+    _bot: str = Depends(require_bot),
 ) -> dict:
     """Return active Telegram recipients for trade-card broadcast.
 
@@ -144,6 +147,7 @@ def approve(
     signal_id: str,
     payload: DecisionRequest,
     db: Session = Depends(get_db),
+    _bot: str = Depends(require_bot),
 ) -> DecisionResponse:
     result = crud.approve_signal(db, signal_id, payload.telegram_user_id)
     db.commit()
@@ -155,6 +159,7 @@ def reject(
     signal_id: str,
     payload: DecisionRequest,
     db: Session = Depends(get_db),
+    _bot: str = Depends(require_bot),
 ) -> DecisionResponse:
     result = crud.reject_signal(db, signal_id, payload.telegram_user_id)
     db.commit()

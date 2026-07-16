@@ -33,8 +33,18 @@ DECISION_MESSAGES = {
 
 # --- backend helpers ------------------------------------------------------
 
+def _base_headers() -> Dict[str, str]:
+    """Authenticate the bot to the backend. On a hosted backend BOT_BACKEND_SECRET
+    is required on every proxied call; locally it's empty and the backend runs
+    open. Sent on ALL bot->backend calls."""
+    if config.bot_backend_secret:
+        return {"X-Bot-Secret": config.bot_backend_secret}
+    return {}
+
+
 async def _backend_get(path: str, **kwargs) -> Optional[Any]:
     url = f"{config.backend_base_url}{path}"
+    kwargs["headers"] = {**_base_headers(), **kwargs.get("headers", {})}
     try:
         async with httpx.AsyncClient(timeout=10.0) as http:
             resp = await http.get(url, **kwargs)
@@ -46,6 +56,7 @@ async def _backend_get(path: str, **kwargs) -> Optional[Any]:
 
 async def _backend_post(path: str, **kwargs) -> Optional[Any]:
     url = f"{config.backend_base_url}{path}"
+    kwargs["headers"] = {**_base_headers(), **kwargs.get("headers", {})}
     try:
         async with httpx.AsyncClient(timeout=10.0) as http:
             resp = await http.post(url, **kwargs)
@@ -56,7 +67,12 @@ async def _backend_post(path: str, **kwargs) -> Optional[Any]:
 
 
 def _admin_headers(user_id: int) -> Dict[str, str]:
-    return {"X-Admin-Id": str(user_id)}
+    # Hosted: the real admin credential is ADMIN_API_TOKEN. The Telegram id is
+    # kept for local-demo fallback but is ignored by a hardened backend.
+    headers = {"X-Admin-Id": str(user_id)}
+    if config.admin_api_token:
+        headers["X-Admin-Token"] = config.admin_api_token
+    return headers
 
 
 def _signal_provider_headers(user_id: int) -> Dict[str, str]:

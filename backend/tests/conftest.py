@@ -16,6 +16,7 @@ os.environ["EA_API_KEY"] = "test-ea-key"
 os.environ["TELEGRAM_BOT_TOKEN"] = ""  # disable outbound telegram
 os.environ["DEFAULT_SIGNAL_EXPIRY_MINUTES"] = "5"
 os.environ["SIGNAL_EXTRACTOR"] = "fake"  # keep screenshot tests offline/deterministic
+os.environ["RATE_LIMIT_PER_MINUTE"] = "0"  # off by default; a dedicated test turns it on
 
 from fastapi.testclient import TestClient  # noqa: E402
 

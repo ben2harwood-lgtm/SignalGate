@@ -26,6 +26,11 @@ class BotConfig:
         ]
         self.provider_invite_code: str = os.getenv("SIGNAL_PROVIDER_INVITE_CODE", "")
         self.provider_store_path: Path = Path(__file__).with_name("provider_ids.json")
+        # HOSTED: shared secrets the backend requires (see backend security.py).
+        # Sent on every backend call so a hardened public backend accepts the
+        # bot. Empty locally (backend then runs in open local-demo mode).
+        self.bot_backend_secret: str = os.getenv("BOT_BACKEND_SECRET", "")
+        self.admin_api_token: str = os.getenv("ADMIN_API_TOKEN", "")
 
     def is_admin(self, telegram_user_id: int | str) -> bool:
         return str(telegram_user_id) in self.admin_ids
