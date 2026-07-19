@@ -3,36 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SignalGate — orbiting ring hero</title>
+<title>SignalGate — diagonal arc hero</title>
 <style>
-  :root{
-    --bg:#0e1216; --panel:#161d24; --panel2:#141d26; --line:#26313c;
-    --ink:#e9eef3; --muted:#93a1ad; --accent:#4fd1a5; --accent-ink:#08150f;
-    --warn:#e0b25a; --loss:#e0736a;
-  }
+  :root{--bg:#0e1216;--panel:#161d24;--panel2:#141d26;--line:#26313c;--ink:#e9eef3;--muted:#93a1ad;--accent:#4fd1a5;--accent-ink:#08150f;--loss:#e0736a;--warn:#e0b25a}
   *{box-sizing:border-box;margin:0;padding:0}
-  html,body{background:var(--bg);color:var(--ink);overflow-x:hidden;
-       font:16px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
-
-  .scene{position:relative;height:calc(100vh + 2200px)}          /* scroll runway */
-  .pin{position:sticky;top:0;height:100vh;overflow:hidden;perspective:1200px;cursor:grab;touch-action:pan-y}
-  .pin:active{cursor:grabbing}
-
-  /* the wheel spins on a horizontal axis; cards ride up the front and show their back over the top */
-  .wheel{position:absolute;left:0;top:0;width:100%;height:100%;transform-style:preserve-3d;
-         transform-origin:50% 50%;will-change:transform}
-  .rc{position:absolute;left:50%;top:50%;width:300px;height:186px;margin:-93px 0 0 -150px;
-      transform-style:preserve-3d;will-change:transform}
-  .rc-face{position:absolute;inset:0;backface-visibility:hidden;border-radius:14px;overflow:hidden;
-           border:1px solid var(--line);box-shadow:0 40px 80px -34px rgba(0,0,0,.95);
-           background:var(--panel2);display:flex;flex-direction:column}
-  .rc-face.back{transform:rotateX(180deg);align-items:center;justify-content:center;gap:11px;
-                background:radial-gradient(120% 120% at 50% 38%, #182531, #0f171e)}
-  .rc-face.back .g{width:44px;height:44px;opacity:.95}
-  .rc-face.back .w{font-size:15px;font-weight:700;letter-spacing:.01em;color:var(--ink)}
-  .rc-face.back .w b{color:var(--accent)}
-  .rc-face.back .tag{font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--muted)}
-
+  html,body{background:var(--bg);color:var(--ink);overflow-x:hidden;font:16px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  .stage{position:relative;height:100vh;min-height:640px;overflow:hidden;perspective:1300px}
+  .ring{position:absolute;inset:0;transform-style:preserve-3d;transform-origin:50% 50%}
+  .rc{position:absolute;left:0;top:0;width:300px;height:186px;margin:-93px 0 0 -150px;transform-style:preserve-3d;will-change:transform,opacity}
+  .rf{position:absolute;inset:0;backface-visibility:hidden;border-radius:14px;overflow:hidden;border:1px solid var(--line);box-shadow:0 40px 80px -34px rgba(0,0,0,.95);background:var(--panel2);display:flex;flex-direction:column}
+  .rf.back{transform:rotateY(180deg);align-items:center;justify-content:center;gap:11px;background:radial-gradient(120% 120% at 50% 38%,#182531,#0f171e)}
+  .rf.back .g{width:44px;height:44px}
+  .rf.back .w{font-size:15px;font-weight:700;color:var(--ink)} .rf.back .w b{color:var(--accent)}
+  .rf.back .tag{font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--muted)}
   .rc-bar{display:flex;align-items:center;gap:6px;padding:7px 10px;border-bottom:1px solid var(--line);background:var(--panel)}
   .rc-bar i{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
   .rc-bar .t{margin-left:7px;font-size:9px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -41,8 +24,7 @@
   .rc-tg .av{width:30px;height:30px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;background:linear-gradient(135deg,#4fd1a5,#2b8f74);color:#06231a;font-weight:800;font-size:11px}
   .rc-tg .bub{flex:1;background:#0e1621;border:1px solid var(--line);border-radius:9px;padding:8px 10px}
   .rc-tg .nm{color:#5bc98f;font-size:10.5px;font-weight:600;margin-bottom:3px}
-  .rc-tg .tx{color:#e8eef2;font-size:10.5px;line-height:1.5}
-  .rc-tg .tx b{color:#8fe3c4}
+  .rc-tg .tx{color:#e8eef2;font-size:10.5px;line-height:1.5} .rc-tg .tx b{color:#8fe3c4}
   .rc-tg .kb{display:flex;gap:5px;margin-top:8px}
   .rc-tg .kb span{flex:1;text-align:center;border:1px solid var(--line);border-radius:5px;padding:5px;font-size:9.5px}
   .rc-tg .kb .y{color:var(--accent)} .rc-tg .kb .n{color:var(--muted)}
@@ -50,8 +32,7 @@
   .rc-led .row{display:flex;justify-content:space-between;gap:9px;padding:6.5px 2px;border-bottom:1px solid var(--line)}
   .rc-led .row:last-child{border-bottom:0}
   .rc-led .sym{color:#c6d0d9;flex:1} .rc-led .st{color:var(--muted)} .rc-led .win{color:var(--accent)} .rc-led .lose{color:var(--loss)}
-  .rc-curve{height:100%;display:flex;align-items:center}
-  .rc-curve svg{width:100%;height:132px}
+  .rc-curve{height:100%;display:flex;align-items:center} .rc-curve svg{width:100%;height:132px}
   .rc-state{display:flex;flex-direction:column;justify-content:center;height:100%}
   .rc-state .big{font-family:Georgia,serif;font-size:20px;line-height:1.16;color:var(--ink)}
   .rc-state .sub{color:var(--muted);font-size:11px;margin-top:8px}
@@ -60,130 +41,82 @@
   .rc-stats .n{font-family:Georgia,serif;font-size:17px;color:var(--ink);line-height:1}
   .rc-stats .n .lose{color:var(--loss)} .rc-stats .n .win{color:var(--accent)}
   .rc-stats .l{font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-top:3px}
-
-  .scrim{position:absolute;inset:0;z-index:35;pointer-events:none;
-         background:linear-gradient(90deg,var(--bg) 10%,rgba(14,18,22,.72) 34%,rgba(14,18,22,0) 62%)}
+  .scrim{position:absolute;inset:0;z-index:35;pointer-events:none;background:linear-gradient(90deg,var(--bg) 12%,rgba(14,18,22,.72) 36%,rgba(14,18,22,0) 64%)}
   .copy{position:absolute;z-index:40;left:6%;top:50%;transform:translateY(-50%);max-width:32rem;pointer-events:none}
-  .chip{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:12.5px;color:var(--muted);margin-bottom:22px}
   .brand{display:flex;align-items:center;gap:11px;margin-bottom:18px}
-  .brand svg{width:32px;height:32px}
-  .brand .wm{font-size:18px;font-weight:700;letter-spacing:-.01em}
-  .brand .wm b{color:var(--accent)}
-  .copy h1{font-family:Georgia,"Times New Roman",serif;font-size:clamp(30px,5vw,47px);line-height:1.1;letter-spacing:-.01em;margin-bottom:16px}
-  .copy h1 em{color:var(--accent);font-style:normal}
-  .copy p{color:#c6d0d9;font-size:16.5px;max-width:36ch}
-  .hint{position:absolute;z-index:40;left:6%;bottom:30px;color:var(--muted);font-size:12.5px;display:flex;align-items:center;gap:9px;pointer-events:none}
+  .brand svg{width:32px;height:32px} .brand .wm{font-size:18px;font-weight:700} .brand .wm b{color:var(--accent)}
+  .chip{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:12.5px;color:var(--muted);margin-bottom:20px}
+  h1{font-family:Georgia,"Times New Roman",serif;font-size:clamp(30px,5vw,47px);line-height:1.1;letter-spacing:-.01em;margin-bottom:16px}
+  h1 em{color:var(--accent);font-style:normal}
+  .sub{color:#c6d0d9;font-size:16.5px;max-width:36ch}
+  .hint{position:absolute;z-index:40;left:6%;bottom:28px;color:var(--muted);font-size:12.5px;pointer-events:none}
   .hint .key{border:1px solid var(--line);border-radius:6px;padding:2px 8px;color:var(--ink);font-size:11.5px}
-  .hint .dn{animation:bob 1.8s ease-in-out infinite}
-  @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(4px)}}
-
-  .after{position:relative;z-index:1;background:var(--bg);border-top:1px solid var(--line);padding:60px 6% 100px;max-width:760px;margin:0 auto}
-  .after h2{font-family:Georgia,serif;font-weight:400;font-size:24px;margin-bottom:10px}
-  .after p{color:var(--muted);font-size:15px;max-width:60ch}
-
-  @media(prefers-reduced-motion:reduce){.hint .dn{animation:none}}
 </style>
 </head>
 <body>
-  <div class="scene">
-    <div class="pin" id="pin">
-      <div class="wheel" id="wheel"></div>
-      <div class="scrim"></div>
-      <div class="copy">
-        <div class="brand">
-          <svg viewBox="0 0 64 64" aria-label="SignalGate">
-            <rect x="2" y="2" width="60" height="60" rx="16" fill="#12202b" stroke="#4fd1a5" stroke-opacity=".22"/>
-            <path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          <span class="wm">Signal<b>Gate</b></span>
-        </div>
-        <div class="chip">Demo forward-test · You approve every trade · No live money in the system</div>
-        <h1>Every signal seller shows you the wins.<br><em>SignalGate shows you everything.</em></h1>
-        <p>Executed by the rulebook, written to the Truth Room — a live record you can audit, losses included.</p>
-      </div>
-      <div class="hint"><span class="dn">↕</span> Scroll to spin the ring &nbsp;·&nbsp; <span class="key">drag</span> to nudge it</div>
+  <div class="stage">
+    <div class="ring" id="ring"></div>
+    <div class="scrim"></div>
+    <div class="copy">
+      <div class="brand"><svg viewBox="0 0 64 64"><rect x="2" y="2" width="60" height="60" rx="16" fill="#12202b" stroke="#4fd1a5" stroke-opacity=".22"/><path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="wm">Signal<b>Gate</b></span></div>
+      <div class="chip">Demo forward-test · You approve every trade · No live money in the system</div>
+      <h1>Every signal seller shows you the wins.<br><em>SignalGate shows you everything.</em></h1>
+      <p class="sub">Executed by the rulebook, written to the Truth Room — a live record you can audit, losses included.</p>
     </div>
-  </div>
-
-  <div class="after">
-    <h2>That's the hero.</h2>
-    <p>The SignalGate screens ride a wheel spinning on a horizontal axis — up the front, edge-on over
-      the top where you see the printed back, then down and round again. Packed close, off the top and
-      bottom, behind the headline. Scroll spins and reverses it; drag nudges it. CSS 3D, no libraries.</p>
+    <div class="hint">Scroll to spin · <span class="key">drag</span> to nudge</div>
   </div>
 
 <script>
 (function(){
   var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var pin = document.getElementById("pin");
-  var wheel = document.getElementById("wheel");
-  var scene = document.querySelector(".scene");
-
+  var ring = document.getElementById("ring");
+  var stage = document.querySelector(".stage");
   var gate = '<svg viewBox="0 0 64 64" style="width:100%;height:100%"><rect x="2" y="2" width="60" height="60" rx="16" fill="none" stroke="#4fd1a5" stroke-opacity=".2"/><path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  var gateplain = '<svg viewBox="0 0 64 64" style="width:100%;height:100%"><path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var gp = '<svg viewBox="0 0 64 64" style="width:100%;height:100%"><path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   var dots = '<i style="background:#e0736a"></i><i style="background:#e0b25a"></i><i style="background:#4fd1a5"></i>';
-  var FRONTS = [
-    '<div class="rc-bar">'+dots+'<span class="t">SignalGate · Telegram</span></div><div class="rc-body rc-tg">'+
-      '<div class="av">SG</div><div class="bub"><div class="nm">SignalGate</div>'+
-      '<div class="tx"><b>XAUUSD BUY</b> · Entry Market<br>SL 2343 · TP1 2353 · TP2 2358</div>'+
-      '<div class="kb"><span class="y">✅ YES: Place Demo Trade</span><span class="n">❌ NO</span></div></div>',
-    '<div class="rc-bar">'+dots+'<span class="t">The Truth Room · live record</span></div><div class="rc-body rc-led">'+
-      '<div class="row"><span class="sym">XAUUSD BUY</span><span class="st">TP3_HIT</span><span class="win">+3.0R</span></div>'+
-      '<div class="row"><span class="sym">EURUSD SELL</span><span class="st">STOPPED_OUT</span><span class="lose">−1.0R</span></div>'+
-      '<div class="row"><span class="sym">GBPJPY BUY</span><span class="st">TP1_HIT</span><span class="win">+0.5R</span></div>'+
-      '<div class="row"><span class="sym">USDJPY SELL</span><span class="st">STOPPED_OUT</span><span class="lose">−1.0R</span></div></div>',
-    '<div class="rc-bar">'+dots+'<span class="t">Cumulative R · drawdown and all</span></div><div class="rc-body"><div class="rc-curve">'+
-      '<svg viewBox="0 0 300 132" preserveAspectRatio="none"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">'+
-      '<stop offset="0" stop-color="rgba(79,209,165,.28)"/><stop offset="1" stop-color="rgba(79,209,165,0)"/></linearGradient></defs>'+
-      '<polygon fill="url(#g)" points="8,98 46,78 82,90 120,112 158,78 196,98 232,58 270,38 292,20 292,126 8,126"/>'+
-      '<polyline fill="none" stroke="#4fd1a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="8,98 46,78 82,90 120,112 158,78 196,98 232,58 270,38 292,20"/>'+
-      '<polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" points="82,90 120,112"/>'+
-      '<polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" points="158,78 196,98"/>'+
-      '<circle cx="292" cy="20" r="4" fill="#4fd1a5"/></svg></div></div>',
-    '<div class="rc-bar">'+dots+'<span class="t">The rulebook</span></div><div class="rc-body rc-state">'+
-      '<div style="width:28px;height:28px;margin-bottom:9px">'+gateplain+'</div>'+
-      '<div class="big">A hard stop on every trade</div><div class="sub">Your loss is bounded before it ever opens.</div></div>',
-    '<div class="rc-bar">'+dots+'<span class="t">Admin · today</span></div><div class="rc-body rc-stats">'+
-      '<div class="s"><div class="n">12</div><div class="l">Signals</div></div>'+
-      '<div class="s"><div class="n">9</div><div class="l">Approved</div></div>'+
-      '<div class="s"><div class="n">9</div><div class="l">Executed</div></div>'+
-      '<div class="s"><div class="n"><span class="win">5</span> · <span class="lose">4</span></div><div class="l">Win · Loss</div></div></div>',
-    '<div class="rc-bar">'+dots+'<span class="t">Managed for you</span></div><div class="rc-body rc-state">'+
-      '<div style="width:28px;height:28px;margin-bottom:9px">'+gateplain+'</div>'+
-      '<div class="big">SL → breakeven at TP1</div><div class="sub">Then TP3’s stop moves to TP1. Automatically.</div></div>'
+  var FR = [
+    '<div class="rc-bar">'+dots+'<span class="t">SignalGate · Telegram</span></div><div class="rc-body rc-tg"><div class="av">SG</div><div class="bub"><div class="nm">SignalGate</div><div class="tx"><b>XAUUSD BUY</b> · Entry Market<br>SL 2343 · TP1 2353 · TP2 2358</div><div class="kb"><span class="y">✅ YES</span><span class="n">❌ NO</span></div></div>',
+    '<div class="rc-bar">'+dots+'<span class="t">The Truth Room · live record</span></div><div class="rc-body rc-led"><div class="row"><span class="sym">XAUUSD BUY</span><span class="st">TP3_HIT</span><span class="win">+3.0R</span></div><div class="row"><span class="sym">EURUSD SELL</span><span class="st">STOPPED_OUT</span><span class="lose">−1.0R</span></div><div class="row"><span class="sym">GBPJPY BUY</span><span class="st">TP1_HIT</span><span class="win">+0.5R</span></div><div class="row"><span class="sym">USDJPY SELL</span><span class="st">STOPPED_OUT</span><span class="lose">−1.0R</span></div></div>',
+    '<div class="rc-bar">'+dots+'<span class="t">Cumulative R · drawdown and all</span></div><div class="rc-body"><div class="rc-curve"><svg viewBox="0 0 300 132" preserveAspectRatio="none"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="rgba(79,209,165,.28)"/><stop offset="1" stop-color="rgba(79,209,165,0)"/></linearGradient></defs><polygon fill="url(#g)" points="8,98 46,78 82,90 120,112 158,78 196,98 232,58 270,38 292,20 292,126 8,126"/><polyline fill="none" stroke="#4fd1a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="8,98 46,78 82,90 120,112 158,78 196,98 232,58 270,38 292,20"/><polyline fill="none" stroke="#e0736a" stroke-width="3" points="82,90 120,112"/><polyline fill="none" stroke="#e0736a" stroke-width="3" points="158,78 196,98"/><circle cx="292" cy="20" r="4" fill="#4fd1a5"/></svg></div></div>',
+    '<div class="rc-bar">'+dots+'<span class="t">The rulebook</span></div><div class="rc-body rc-state"><div style="width:28px;height:28px;margin-bottom:9px">'+gp+'</div><div class="big">A hard stop on every trade</div><div class="sub">Your loss is bounded before it ever opens.</div></div>',
+    '<div class="rc-bar">'+dots+'<span class="t">Admin · today</span></div><div class="rc-body rc-stats"><div class="s"><div class="n">12</div><div class="l">Signals</div></div><div class="s"><div class="n">9</div><div class="l">Approved</div></div><div class="s"><div class="n">9</div><div class="l">Executed</div></div><div class="s"><div class="n"><span class="win">5</span> · <span class="lose">4</span></div><div class="l">Win · Loss</div></div></div>',
+    '<div class="rc-bar">'+dots+'<span class="t">Managed for you</span></div><div class="rc-body rc-state"><div style="width:28px;height:28px;margin-bottom:9px">'+gp+'</div><div class="big">SL → breakeven at TP1</div><div class="sub">Then TP3’s stop moves to TP1. Automatically.</div></div>'
   ];
-  var back = '<div class="rc-face back"><div class="g">'+gate+'</div><div class="w">Signal<b>Gate</b></div><div class="tag">Demo forward-test</div></div>';
+  var back = '<div class="rf back"><div class="g">'+gate+'</div><div class="w">Signal<b>Gate</b></div><div class="tag">Demo forward-test</div></div>';
 
-  /* build a densely-packed wheel: N cards evenly around a horizontal axle */
-  var N = 12, R = 430, step = 360/N;
+  var N = 11, cards = [];
   for(var i=0;i<N;i++){
     var el = document.createElement("div"); el.className = "rc";
-    el.innerHTML = '<div class="rc-face front">'+FRONTS[i % FRONTS.length]+'</div>'+back;
-    el.style.transform = "rotateX("+(i*step)+"deg) translateZ("+R+"px)";
-    wheel.appendChild(el);
+    el.innerHTML = '<div class="rf front">'+FR[i % FR.length]+'</div>'+back;
+    ring.appendChild(el);
+    cards.push({el:el, base:i*(2*Math.PI/N)});
   }
-
-  function set(spin){ wheel.style.transform = "translateX(20%) rotateY(-16deg) rotateX("+spin.toFixed(2)+"deg)"; }
-
-  var dbg = parseFloat((location.hash.match(/a=([-\d.]+)/)||[])[1]);
-  if(reduce || !isNaN(dbg)){ set(isNaN(dbg)?18:dbg); return; }
-
-  var auto = 0, s = 0, drag = 0;
-  function frame(){
-    var range = scene.offsetHeight - window.innerHeight;
-    var prog = range > 0 ? Math.min(1, Math.max(0, -scene.getBoundingClientRect().top / range)) : 0;
-    s += (prog*360*1.6 - s) * 0.09;         // scroll spins ~1.6 turns, with inertia
-    auto += 0.16;                            // gentle idle spin (~37s / revolution)
-    set(auto + s + drag);
-    requestAnimationFrame(frame);
+  var D=Math.PI/180;
+  function smooth(a,b,t){ if(t<=a)return 0; if(t>=b)return 1; var x=(t-a)/(b-a); return x*x*(3-2*x); }
+  function paint(spin){
+    var W=stage.clientWidth, H=stage.clientHeight;
+    var Cx=W*0.42, Cy=H*0.52, R=H*0.54;              // centre lower-left → visible arc sweeps mid-top → mid-right
+    for(var i=0;i<cards.length;i++){
+      var c=cards[i], f=c.base+spin;
+      var d=Math.atan2(Math.sin(f),Math.cos(f))/D;    // orbital angle in degrees, -180..180
+      var x=Cx+R*Math.cos(f), y=Cy+R*Math.sin(f);
+      var s=0.60+0.34*Math.cos(f);                    // biggest at mid-right (f≈0)
+      var op=smooth(-152,-126,d)*(1-smooth(34,60,d)); // visible arc only; fades top-left & lower-right
+      var lean=-13+Math.sin(f)*8;
+      c.el.style.transform="translate("+x.toFixed(1)+"px,"+y.toFixed(1)+"px) rotateZ("+lean.toFixed(2)+"deg) rotateY("+d.toFixed(2)+"deg) scale("+s.toFixed(3)+")";
+      c.el.style.opacity=op.toFixed(3);
+      c.el.style.zIndex=String(1000+Math.round(Math.cos(f)*400));
+    }
   }
+  var dbg=parseFloat((location.hash.match(/a=([-\d.]+)/)||[])[1]);
+  if(reduce||!isNaN(dbg)){ paint(isNaN(dbg)?0:dbg); return; }
+  var auto=0, drag=0;
+  function frame(){ auto+=0.006; var sc=window.scrollY||0; paint(auto+sc*0.002+drag); requestAnimationFrame(frame); }
   requestAnimationFrame(frame);
-
-  var dragging = false, lastY = 0;
-  pin.addEventListener("pointerdown", function(e){ dragging = true; lastY = e.clientY; try{ pin.setPointerCapture(e.pointerId);}catch(_e){} });
-  window.addEventListener("pointermove", function(e){ if(!dragging) return; drag += (e.clientY - lastY)*0.25; lastY = e.clientY; });
-  window.addEventListener("pointerup", function(){ dragging = false; });
+  var dragging=false,lastY=0;
+  stage.addEventListener("pointerdown",function(e){dragging=true;lastY=e.clientY;try{stage.setPointerCapture(e.pointerId);}catch(_e){}});
+  window.addEventListener("pointermove",function(e){if(!dragging)return;drag+=(e.clientY-lastY)*0.006;lastY=e.clientY;});
+  window.addEventListener("pointerup",function(){dragging=false;});
 })();
 </script>
 </body>
