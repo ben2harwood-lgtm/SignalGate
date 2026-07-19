@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SignalGate — fly-through hero</title>
+<title>SignalGate — orbiting hero</title>
 <style>
   :root{
     --bg:#0e1216; --panel:#161d24; --panel2:#141d26; --line:#26313c;
@@ -14,67 +14,68 @@
   html,body{background:var(--bg);color:var(--ink);overflow-x:hidden;
        font:16px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 
-  /* tall runway: the sticky stage stays pinned while you scroll through these px */
-  .scene{position:relative;height:calc(100vh + 2000px)}
-  .pin{position:sticky;top:0;height:100vh;overflow:hidden;
-       perspective:1000px;perspective-origin:58% 48%;
-       cursor:grab;touch-action:pan-y}
+  .scene{position:relative;height:calc(100vh + 2200px)}      /* scroll runway */
+  .pin{position:sticky;top:0;height:100vh;overflow:hidden;perspective:1500px;cursor:grab;touch-action:pan-y}
   .pin:active{cursor:grabbing}
 
-  /* 3D field of cards */
-  .field{position:absolute;inset:0;transform-style:preserve-3d;transform-origin:50% 50%}
-  .fcard{position:absolute;left:50%;top:50%;width:154px;height:184px;margin:-92px 0 0 -77px;
-         background:linear-gradient(180deg,var(--panel),var(--panel2));
-         border:1px solid var(--line);border-radius:14px;padding:13px;
-         box-shadow:0 30px 60px -30px rgba(0,0,0,.95);overflow:hidden;
-         backface-visibility:hidden;will-change:transform,opacity;
-         display:flex;flex-direction:column}
-  .oc-cap{font-size:9px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);margin-bottom:9px}
-  .oc-tg{flex:1;font-size:11px;line-height:1.5}
-  .oc-tg .nm{color:#5bc98f;font-weight:600;margin-bottom:5px}
-  .oc-tg .tx{color:#dbe6ec;white-space:pre-line}
-  .oc-tg .tx b{color:#8fe3c4}
-  .oc-btns{display:flex;gap:5px;margin-top:9px}
-  .oc-btns span{flex:1;text-align:center;border:1px solid var(--line);border-radius:5px;padding:5px;font-size:10px}
-  .oc-btns .y{color:var(--accent)} .oc-btns .n{color:var(--muted)}
-  .oc-led{flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px}
-  .oc-led .row{display:flex;justify-content:space-between;gap:6px;padding:6.5px 1px;border-bottom:1px solid var(--line)}
-  .oc-led .row:last-child{border-bottom:0}
-  .oc-led .sym{color:#c6d0d9} .oc-led .win{color:var(--accent)} .oc-led .lose{color:var(--loss)}
-  .oc-curve{flex:1;display:flex;align-items:center}
-  .oc-curve svg{width:100%;height:120px}
-  .oc-big{font-family:Georgia,serif;font-size:15.5px;color:var(--ink);line-height:1.22;margin-top:2px}
-  .oc-sub{font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.45}
-  .oc-mark{margin-top:auto;width:28px;height:28px}
+  .ring{position:absolute;inset:0;transform-style:preserve-3d}
 
-  /* left scrim so the headline stays readable over the stream */
+  /* landscape "screenshot" cards that ride the circle */
+  .rc{position:absolute;left:0;top:0;width:340px;height:212px;margin:-106px 0 0 -170px;
+      background:var(--panel2);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+      box-shadow:0 40px 80px -34px rgba(0,0,0,.95);backface-visibility:hidden;
+      will-change:transform,opacity;display:flex;flex-direction:column;transform-origin:center center}
+  .rc-bar{display:flex;align-items:center;gap:6px;padding:8px 11px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .rc-bar i{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+  .rc-bar .t{margin-left:8px;font-size:9.5px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rc-body{flex:1;padding:12px;overflow:hidden}
+  .rc-tg{display:flex;gap:10px}
+  .rc-tg .av{width:34px;height:34px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;background:linear-gradient(135deg,#4fd1a5,#2b8f74);color:#06231a;font-weight:800;font-size:12px}
+  .rc-tg .bub{flex:1;background:#0e1621;border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+  .rc-tg .nm{color:#5bc98f;font-size:11px;font-weight:600;margin-bottom:3px}
+  .rc-tg .tx{color:#e8eef2;font-size:11px;line-height:1.5}
+  .rc-tg .tx b{color:#8fe3c4}
+  .rc-tg .kb{display:flex;gap:6px;margin-top:9px}
+  .rc-tg .kb span{flex:1;text-align:center;border:1px solid var(--line);border-radius:6px;padding:6px;font-size:10px}
+  .rc-tg .kb .y{color:var(--accent)} .rc-tg .kb .n{color:var(--muted)}
+  .rc-led{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px}
+  .rc-led .row{display:flex;justify-content:space-between;gap:10px;padding:7.5px 2px;border-bottom:1px solid var(--line)}
+  .rc-led .row:last-child{border-bottom:0}
+  .rc-led .sym{color:#c6d0d9;flex:1} .rc-led .st{color:var(--muted)} .rc-led .win{color:var(--accent)} .rc-led .lose{color:var(--loss)}
+  .rc-curve{height:100%;display:flex;align-items:center}
+  .rc-curve svg{width:100%;height:150px}
+  .rc-state{display:flex;flex-direction:column;justify-content:center;height:100%}
+  .rc-state .big{font-family:Georgia,serif;font-size:22px;line-height:1.16;color:var(--ink)}
+  .rc-state .sub{color:var(--muted);font-size:12px;margin-top:9px}
+  .rc-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .rc-stats .s{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:7px 10px}
+  .rc-stats .n{font-family:Georgia,serif;font-size:19px;color:var(--ink);line-height:1}
+  .rc-stats .n .lose{color:var(--loss)} .rc-stats .n .win{color:var(--accent)}
+  .rc-stats .l{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-top:4px}
+
+  /* copy over the top; scrim keeps it readable and hides the ring's left arc */
   .scrim{position:absolute;inset:0;z-index:35;pointer-events:none;
-         background:linear-gradient(90deg,var(--bg) 6%,rgba(14,18,22,.72) 30%,rgba(14,18,22,0) 62%)}
-  .copy{position:absolute;z-index:40;left:6%;top:50%;transform:translateY(-50%);
-        max-width:30rem;pointer-events:none}
+         background:linear-gradient(90deg,var(--bg) 8%,rgba(14,18,22,.7) 32%,rgba(14,18,22,0) 60%)}
+  .copy{position:absolute;z-index:40;left:6%;top:50%;transform:translateY(-50%);max-width:31rem;pointer-events:none}
   .brand{display:flex;align-items:center;gap:11px;margin-bottom:22px}
   .brand svg{width:34px;height:34px}
   .brand .wm{font-size:19px;font-weight:700;letter-spacing:-.01em}
   .brand .wm b{color:var(--accent)}
-  .copy h1{font-family:Georgia,"Times New Roman",serif;font-size:clamp(30px,5vw,46px);
-           line-height:1.1;letter-spacing:-.01em;margin-bottom:16px}
+  .copy h1{font-family:Georgia,"Times New Roman",serif;font-size:clamp(30px,5vw,47px);line-height:1.1;letter-spacing:-.01em;margin-bottom:16px}
   .copy h1 em{color:var(--accent);font-style:normal}
   .copy p{color:#c6d0d9;font-size:16.5px;max-width:34ch}
-  .hint{position:absolute;z-index:40;left:6%;bottom:30px;color:var(--muted);font-size:12.5px;
-        letter-spacing:.02em;display:flex;align-items:center;gap:9px;pointer-events:none}
+  .hint{position:absolute;z-index:40;left:6%;bottom:30px;color:var(--muted);font-size:12.5px;display:flex;align-items:center;gap:9px;pointer-events:none}
   .hint .key{border:1px solid var(--line);border-radius:6px;padding:2px 8px;color:var(--ink);font-size:11.5px}
   .hint .dn{animation:bob 1.8s ease-in-out infinite}
   @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(4px)}}
 
-  /* a little content below, so it's obvious the hero is a scroll section */
-  .after{position:relative;z-index:1;background:var(--bg);border-top:1px solid var(--line);
-         padding:60px 6% 100px;max-width:760px;margin:0 auto}
+  .after{position:relative;z-index:1;background:var(--bg);border-top:1px solid var(--line);padding:60px 6% 100px;max-width:760px;margin:0 auto}
   .after h2{font-family:Georgia,serif;font-weight:400;font-size:24px;margin-bottom:10px}
   .after p{color:var(--muted);font-size:15px;max-width:60ch}
 
-  @media(max-width:720px){
-    .copy{top:auto;bottom:16%;transform:none;left:6%;right:6%}
-    .scrim{background:linear-gradient(0deg,var(--bg) 10%,rgba(14,18,22,.6) 34%,rgba(14,18,22,0) 70%)}
+  @media(max-width:760px){
+    .copy{top:auto;bottom:15%;transform:none;right:6%}
+    .scrim{background:linear-gradient(0deg,var(--bg) 12%,rgba(14,18,22,.6) 36%,rgba(14,18,22,0) 72%)}
   }
   @media(prefers-reduced-motion:reduce){.hint .dn{animation:none}}
 </style>
@@ -82,7 +83,7 @@
 <body>
   <div class="scene">
     <div class="pin" id="pin">
-      <div class="field" id="field"></div>
+      <div class="ring" id="ring"></div>
       <div class="scrim"></div>
       <div class="copy">
         <div class="brand">
@@ -96,116 +97,101 @@
         <h1>Every signal seller shows the wins.<br><em>We show everything.</em></h1>
         <p>Every trade, executed by the rulebook and written to the Truth Room — a record you can audit, losses included.</p>
       </div>
-      <div class="hint"><span class="dn">↕</span> Scroll to fly through &nbsp;·&nbsp; <span class="key">drag</span> to look around</div>
+      <div class="hint"><span class="dn">↕</span> Scroll to spin the ring &nbsp;·&nbsp; <span class="key">drag</span> to nudge it</div>
     </div>
   </div>
 
   <div class="after">
     <h2>That's the hero.</h2>
-    <p>Scroll up and down to fly the camera through the cards — they rush toward you and peel off the
-      edges, then pull back when you scroll up. This is a self-contained CSS-3D reproduction of the
-      reference motion (no Three.js), running on the real SignalGate cards.</p>
+    <p>The SignalGate screens ride a big vertical ring — in at the top, down the right, out at the bottom,
+      round again behind the headline. Scroll spins it and reverses it; drag nudges it. Self-contained
+      CSS 3D, no libraries, on our real product screens.</p>
   </div>
 
 <script>
 (function(){
   var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var field = document.getElementById("field");
+  var pin = document.getElementById("pin");
+  var ring = document.getElementById("ring");
   var scene = document.querySelector(".scene");
-  var pin   = document.getElementById("pin");
 
-  var Z_FAR = -2200, Z_NEAR = 780, LAPS = 3.0;
-
-  /* card faces (real SignalGate views) */
-  var curve =
-    '<div class="oc-cap">The curve · drawdown and all</div><div class="oc-curve">'+
-    '<svg viewBox="0 0 300 120" preserveAspectRatio="none"><defs><linearGradient id="f" x1="0" y1="0" x2="0" y2="1">'+
-    '<stop offset="0" stop-color="rgba(79,209,165,.28)"/><stop offset="1" stop-color="rgba(79,209,165,0)"/></linearGradient></defs>'+
-    '<polygon fill="url(#f)" points="6,88 40,70 74,82 108,100 142,70 176,88 210,54 244,36 294,18 294,114 6,114"/>'+
-    '<polyline fill="none" stroke="#4fd1a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="6,88 40,70 74,82 108,100 142,70 176,88 210,54 244,36 294,18"/>'+
-    '<polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" points="74,82 108,100"/>'+
-    '<polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" points="142,70 176,88"/>'+
-    '<circle cx="294" cy="18" r="3.5" fill="#4fd1a5"/></svg></div>';
-  var gate =
-    '<svg class="oc-mark" viewBox="0 0 64 64" aria-hidden="true">'+
-    '<path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>'+
-    '<path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var gate = '<svg viewBox="0 0 64 64" style="width:100%;height:100%"><path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var dots = '<i style="background:#e0736a"></i><i style="background:#e0b25a"></i><i style="background:#4fd1a5"></i>';
   var T = [
-    '<div class="oc-cap">Trade card · Telegram</div><div class="oc-tg"><div class="nm">SignalGate</div>'+
-      '<div class="tx"><b>XAUUSD BUY</b>\nSL 2343 · TP1 2353\nTP2 2358 · TP3 2363</div>'+
-      '<div class="oc-btns"><span class="y">✅ YES</span><span class="n">NO</span></div></div>',
-    '<div class="oc-cap">The record · Truth Room</div><div class="oc-led">'+
-      '<div class="row"><span class="sym">XAUUSD</span><span class="win">+3.0R</span></div>'+
-      '<div class="row"><span class="sym">EURUSD</span><span class="lose">−1.0R</span></div>'+
-      '<div class="row"><span class="sym">GBPJPY</span><span class="win">+0.5R</span></div>'+
-      '<div class="row"><span class="sym">USDJPY</span><span class="lose">−1.0R</span></div></div>',
-    curve,
-    '<div class="oc-cap">The rulebook</div><div class="oc-big">A hard stop on every trade</div>'+
-      '<div class="oc-sub">Your loss is bounded before it ever opens.</div>'+gate,
-    '<div class="oc-cap">One tap</div><div class="oc-big">One approval = one command</div>'+
-      '<div class="oc-sub">Never two. The same tap can’t fire twice.</div>'+gate,
-    '<div class="oc-cap">Yours, only yours</div><div class="oc-big">We never touch your money</div>'+
-      '<div class="oc-sub">No custody, no broker login. Demo in v1.</div>'+gate,
-    '<div class="oc-cap">Trade card · Telegram</div><div class="oc-tg"><div class="nm">SignalGate</div>'+
-      '<div class="tx"><b>EURUSD SELL</b>\nSL 1.0925 · TP1 1.0890\nTP2 1.0870</div>'+
-      '<div class="oc-btns"><span class="y">✅ YES</span><span class="n">NO</span></div></div>',
-    '<div class="oc-cap">Managed for you</div><div class="oc-big">SL → breakeven at TP1</div>'+
-      '<div class="oc-sub">Then TP3’s stop moves to TP1. Automatically.</div>'+gate
+    '<div class="rc-bar">'+dots+'<span class="t">SignalGate · Telegram</span></div><div class="rc-body rc-tg">'+
+      '<div class="av">SG</div><div class="bub"><div class="nm">SignalGate</div>'+
+      '<div class="tx"><b>XAUUSD BUY</b> · Entry Market<br>SL 2343 · TP1 2353 · TP2 2358 · TP3 2363</div>'+
+      '<div class="kb"><span class="y">✅ YES: Place Demo Trade</span><span class="n">❌ NO</span></div></div></div>',
+    '<div class="rc-bar">'+dots+'<span class="t">The Truth Room · live record</span></div><div class="rc-body rc-led">'+
+      '<div class="row"><span class="sym">XAUUSD BUY</span><span class="st">TP3_HIT</span><span class="win">+3.0R</span></div>'+
+      '<div class="row"><span class="sym">EURUSD SELL</span><span class="st">STOPPED_OUT</span><span class="lose">−1.0R</span></div>'+
+      '<div class="row"><span class="sym">GBPJPY BUY</span><span class="st">TP1_HIT</span><span class="win">+0.5R</span></div>'+
+      '<div class="row"><span class="sym">USDJPY SELL</span><span class="st">STOPPED_OUT</span><span class="lose">−1.0R</span></div></div>',
+    '<div class="rc-bar">'+dots+'<span class="t">Cumulative R · drawdown and all</span></div><div class="rc-body"><div class="rc-curve">'+
+      '<svg viewBox="0 0 320 150" preserveAspectRatio="none"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">'+
+      '<stop offset="0" stop-color="rgba(79,209,165,.28)"/><stop offset="1" stop-color="rgba(79,209,165,0)"/></linearGradient></defs>'+
+      '<polygon fill="url(#g)" points="8,110 46,88 82,100 120,126 158,88 196,110 232,66 270,44 312,22 312,144 8,144"/>'+
+      '<polyline fill="none" stroke="#4fd1a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="8,110 46,88 82,100 120,126 158,88 196,110 232,66 270,44 312,22"/>'+
+      '<polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" points="82,100 120,126"/>'+
+      '<polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" points="158,88 196,110"/>'+
+      '<circle cx="312" cy="22" r="4" fill="#4fd1a5"/></svg></div></div>',
+    '<div class="rc-bar">'+dots+'<span class="t">The rulebook</span></div><div class="rc-body rc-state">'+
+      '<div style="width:30px;height:30px;margin-bottom:10px">'+gate+'</div>'+
+      '<div class="big">A hard stop on every trade</div><div class="sub">Your loss is bounded before it ever opens.</div></div>',
+    '<div class="rc-bar">'+dots+'<span class="t">Admin · today</span></div><div class="rc-body rc-stats">'+
+      '<div class="s"><div class="n">12</div><div class="l">Signals</div></div>'+
+      '<div class="s"><div class="n">9</div><div class="l">Approved</div></div>'+
+      '<div class="s"><div class="n">9</div><div class="l">Executed</div></div>'+
+      '<div class="s"><div class="n"><span class="win">5</span> · <span class="lose">4</span></div><div class="l">Win · Loss</div></div></div>'
   ];
 
-  /* build cards, each on a lane biased to the left/right edges */
-  var N = 12, cards = [];
+  var N = 7, step = 2*Math.PI/N, cards = [];
   for(var i=0;i<N;i++){
-    var el = document.createElement("div");
-    el.className = "fcard";
-    el.innerHTML = T[i % T.length];
-    field.appendChild(el);
-    var side = (i % 2) ? 1 : -1;                       // alternate right / left  → two edges
-    var jit  = (((i*29) % 100)/100 - 0.5) * 1.0;       // ±0.5 rad vertical jitter
-    var ang  = (side > 0 ? 0 : Math.PI) + jit;
-    var rad  = 0.5 + ((i*7) % 11)/20;                  // 0.5 .. 1.0
-    cards.push({ el:el, base:i/N,
-      x: Math.cos(ang) * 560 * rad + 60,               // +60: nudge the field right, under the stream
-      y: Math.sin(ang) * 330 * rad });
+    var el = document.createElement("div"); el.className = "rc";
+    el.innerHTML = T[i % T.length]; ring.appendChild(el);
+    cards.push(el);
   }
 
   function smoothstep(a,b,t){ if(t<=a) return 0; if(t>=b) return 1; var x=(t-a)/(b-a); return x*x*(3-2*x); }
-  function paint(s, rx, ry){
-    field.style.transform = "rotateX("+rx.toFixed(2)+"deg) rotateY("+ry.toFixed(2)+"deg)";
+  function paint(a){
+    var W = pin.clientWidth, H = pin.clientHeight;
+    var Cx = W*0.40, Cy = H*0.5, R = H*0.58;      // circle bigger than the screen → off top & bottom
     for(var i=0;i<cards.length;i++){
-      var c = cards[i];
-      var u = ((c.base + s) % 1 + 1) % 1;              // 0 = far plane, 1 = passing the camera
-      var z = Z_FAR + u*(Z_NEAR - Z_FAR);
-      var op = smoothstep(0,0.14,u) * (1 - smoothstep(0.82,1,u));
-      c.el.style.transform = "translate3d("+c.x.toFixed(1)+"px,"+c.y.toFixed(1)+"px,"+z.toFixed(1)+"px)";
-      c.el.style.opacity = op.toFixed(3);
-      c.el.style.zIndex = String(Math.round(u*1000));
+      var th = a + i*step;
+      var ct = Math.cos(th), st2 = Math.sin(th);
+      var x = Cx + R*ct, y = Cy + R*st2;
+      var depth = (ct+1)/2;                          // 0 = far left (behind copy) … 1 = 3 o'clock (front)
+      var scale = 0.60 + 0.45*depth;
+      var op = smoothstep(-0.30, 0.12, ct);          // fade out on the left, behind the headline
+      var rz = st2 * 9;                              // gentle lean that flips top↔bottom
+      var el = cards[i];
+      el.style.transform = "translate(-50%,-50%) translate("+x.toFixed(1)+"px,"+y.toFixed(1)+"px) "+
+                           "rotateX(7deg) rotateY(-13deg) rotateZ("+rz.toFixed(2)+"deg) scale("+scale.toFixed(3)+")";
+      el.style.opacity = op.toFixed(3);
+      el.style.zIndex = String(Math.round(depth*1000));
     }
   }
 
-  if(reduce){ paint(0.0, 0, 0); return; }              // static field, no scroll binding
+  /* optional debug: #a=1.2 freezes the ring at a fixed angle for inspection */
+  var dbg = parseFloat((location.hash.match(/a=([-\d.]+)/)||[])[1]);
+  if(reduce || !isNaN(dbg)){ paint(isNaN(dbg)?(-Math.PI/2):dbg); return; }
 
-  var s = 0, rotX = 0, rotY = 0, tRotX = 0, tRotY = 0;
-  var dragging = false, lastX = 0, lastY = 0;
+  var auto = -Math.PI/2, s = 0, drag = 0;
   function frame(){
     var range = scene.offsetHeight - window.innerHeight;
-    var prog  = range > 0 ? Math.min(1, Math.max(0, -scene.getBoundingClientRect().top / range)) : 0;
-    s += (prog*LAPS - s) * 0.12;                        // inertia on the dolly
-    tRotX += (rotX - tRotX) * 0.10;
-    tRotY += (rotY - tRotY) * 0.10;
-    paint(s, tRotX, tRotY);
+    var prog = range > 0 ? Math.min(1, Math.max(0, -scene.getBoundingClientRect().top / range)) : 0;
+    s += (prog*Math.PI*2*1.5 - s) * 0.09;            // scroll drives ~1.5 turns, with inertia
+    auto += 0.0016;                                  // gentle idle spin (~65s / revolution)
+    paint(auto + s + drag);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
-  /* drag to look around; springs back to centre on release */
-  pin.addEventListener("pointerdown", function(e){ dragging = true; lastX = e.clientX; lastY = e.clientY;
-    try{ pin.setPointerCapture(e.pointerId); }catch(_e){} });
-  window.addEventListener("pointermove", function(e){ if(!dragging) return;
-    rotY = Math.max(-26, Math.min(26, rotY + (e.clientX - lastX)*0.06));
-    rotX = Math.max(-16, Math.min(16, rotX - (e.clientY - lastY)*0.05));
-    lastX = e.clientX; lastY = e.clientY; });
-  window.addEventListener("pointerup", function(){ dragging = false; rotX = 0; rotY = 0; });
+  /* drag up/down to nudge the spin */
+  var dragging = false, lastY = 0;
+  pin.addEventListener("pointerdown", function(e){ dragging = true; lastY = e.clientY; try{ pin.setPointerCapture(e.pointerId);}catch(_e){} });
+  window.addEventListener("pointermove", function(e){ if(!dragging) return; drag += (e.clientY - lastY)*0.006; lastY = e.clientY; });
+  window.addEventListener("pointerup", function(){ dragging = false; });
 })();
 </script>
 </body>
