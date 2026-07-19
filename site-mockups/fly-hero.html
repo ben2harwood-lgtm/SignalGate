@@ -84,7 +84,7 @@
   ];
   var back = '<div class="rf back"><div class="g">'+gate+'</div><div class="w">Signal<b>Gate</b></div><div class="tag">Demo forward-test</div></div>';
 
-  var N = 11, cards = [];
+  var N = 6, cards = [];
   for(var i=0;i<N;i++){
     var el = document.createElement("div"); el.className = "rc";
     el.innerHTML = '<div class="rf front">'+FR[i % FR.length]+'</div>'+back;
@@ -95,7 +95,7 @@
   function smooth(a,b,t){ if(t<=a)return 0; if(t>=b)return 1; var x=(t-a)/(b-a); return x*x*(3-2*x); }
   function paint(spin){
     var W=stage.clientWidth, H=stage.clientHeight;
-    var Cx=W*0.42, Cy=H*0.52, R=H*0.58;              // centre lower-left → visible arc sweeps mid-top → mid-right
+    var Cx=W*0.40, Cy=H*0.50, R=H*0.66;              // centre lower-left → visible arc sweeps mid-top → mid-right
     for(var i=0;i<cards.length;i++){
       var c=cards[i], f=c.base+spin;
       var d=Math.atan2(Math.sin(f),Math.cos(f))/D;    // orbital angle in degrees, -180..180
