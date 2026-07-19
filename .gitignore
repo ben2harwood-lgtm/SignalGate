@@ -39,3 +39,6 @@ SignalGate_share.zip
 # Local demo-site request log (now written outside the served web root)
 site-mockups/demo-requests.jsonl
 site-requests/
+
+# Generated artifact preview (stripped copy of launch.html — not source)
+site-mockups/launch-preview.html
