@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SignalGate — circular motion studies</title>
+<style>
+  :root{
+    --bg:#0e1216; --panel:#161d24; --panel2:#111820; --line:#26313c;
+    --ink:#e9eef3; --muted:#93a1ad; --accent:#4fd1a5; --accent-ink:#08150f;
+    --warn:#e0b25a; --loss:#e0736a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);
+       font:16px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:760px;margin:0 auto;padding:40px 20px 60px}
+  .top{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+  .top svg{width:34px;height:34px;flex:0 0 auto}
+  .top .wm{font-size:19px;font-weight:700;letter-spacing:-.01em}
+  .top .wm b{color:var(--accent)}
+  .lede{color:var(--muted);font-size:14.5px;max-width:64ch;margin-bottom:30px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+         padding:24px;margin-bottom:22px}
+  .eyebrow{font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700;margin-bottom:9px}
+  .panel h2{font-family:Georgia,"Times New Roman",serif;font-weight:400;font-size:23px;letter-spacing:-.01em;margin-bottom:6px}
+  .panel .say{color:var(--muted);font-size:13.5px;max-width:60ch;margin-bottom:6px}
+  .place{font-size:12px;color:var(--muted);border-left:2px solid var(--accent);padding-left:11px;margin-top:16px}
+  .place b{color:var(--ink);font-weight:600}
+  .stagewrap{display:grid;place-items:center;padding:14px 0 4px}
+
+  /* ---------- 1. lifecycle loop (canvas) ---------- */
+  .loop-stage{width:100%;max-width:400px;aspect-ratio:1/1;position:relative}
+  .loop-stage canvas{width:100%;height:100%;display:block}
+  .loop-core{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;text-align:center}
+  .loop-core .k{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+  .loop-core .v{font-family:Georgia,serif;font-size:16px;color:var(--ink);margin-top:2px;max-width:120px;line-height:1.25}
+
+  /* ---------- 2. 3D carousel ---------- */
+  .cz-scene{width:100%;max-width:300px;height:320px;perspective:1100px;position:relative}
+  .cz-cyl{position:absolute;inset:0;transform-style:preserve-3d;transition:transform .95s cubic-bezier(.68,0,.24,1)}
+  .cz-face{position:absolute;top:0;left:50%;width:240px;height:300px;margin-left:-120px;
+           background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:16px;
+           display:flex;flex-direction:column;backface-visibility:hidden;
+           transition:opacity .6s,filter .6s;box-shadow:0 24px 50px -30px rgba(0,0,0,.8)}
+  .cz-face.dim{opacity:.34;filter:saturate(.6) brightness(.8)}
+  .cz-cap{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);margin-bottom:11px}
+  .cz-tg{flex:1;background:#0e1621;border:1px solid var(--line);border-radius:9px;padding:12px}
+  .cz-tg .nm{color:#5bc98f;font-size:12px;font-weight:600;margin-bottom:5px}
+  .cz-tg .tx{color:#e8eef2;font-size:11.5px;line-height:1.5;white-space:pre-wrap}
+  .cz-tg .g{color:#8fe3c4;font-weight:600}
+  .cz-btns{display:flex;gap:6px;margin-top:10px}
+  .cz-btns span{flex:1;text-align:center;border:1px solid var(--line);border-radius:6px;padding:7px;font-size:11px}
+  .cz-btns .y{color:var(--accent)} .cz-btns .n{color:var(--muted)}
+  .cz-led{flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px}
+  .cz-led .row{display:flex;justify-content:space-between;gap:8px;padding:9px 2px;border-bottom:1px solid var(--line)}
+  .cz-led .row:last-child{border-bottom:0}
+  .cz-led .sym{color:#c6d0d9} .cz-led .win{color:var(--accent)} .cz-led .lose{color:var(--loss)}
+  .cz-curve{flex:1;display:flex;align-items:center}
+  .cz-curve svg{width:100%;height:190px}
+  .cz-dots{display:flex;gap:8px;justify-content:center;margin-top:20px}
+  .cz-dots button{width:9px;height:9px;padding:0;border-radius:50%;border:1px solid var(--line);
+                  background:transparent;cursor:pointer}
+  .cz-dots button.on{background:var(--accent);border-color:var(--accent)}
+
+  /* ---------- 3. wheel of results ---------- */
+  .wheel-stage{width:100%;max-width:400px;aspect-ratio:1/1;position:relative}
+  .wheel-hub{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+             width:96px;height:96px;border-radius:50%;background:var(--panel2);
+             border:1px solid var(--line);display:grid;place-items:center;text-align:center;z-index:2}
+  .wheel-hub svg{width:40px;height:40px}
+  .wheel-hub .t{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-top:4px}
+  .chip{position:absolute;transform:translate(-50%,-50%);white-space:nowrap;
+        font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;font-weight:600;
+        padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:var(--panel2)}
+  .chip.win{color:var(--accent);border-color:rgba(79,209,165,.4)}
+  .chip.lose{color:var(--loss);border-color:rgba(224,115,106,.4)}
+
+  @media(prefers-reduced-motion:reduce){.cz-cyl{transition:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <svg viewBox="0 0 64 64" aria-label="SignalGate">
+      <rect x="2" y="2" width="60" height="60" rx="16" fill="#12202b" stroke="#4fd1a5" stroke-opacity=".22"/>
+      <path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span class="wm">Signal<b>Gate</b> · circular motion studies</span>
+  </div>
+  <p class="lede">Three ways to make something “go round in a circle,” built and running so you can see the
+    real motion — not a flip. Tell me which goes where and I'll wire them into the live page.</p>
+
+  <!-- 1 -->
+  <section class="panel">
+    <div class="eyebrow">Study 1 · the process is a loop</div>
+    <h2>Trade lifecycle ring</h2>
+    <p class="say">A pulse travels round the circle, lighting each stage as it passes — signal to logged, then again.
+      It’s literally circular and it doubles as “how it works.”</p>
+    <div class="stagewrap">
+      <div class="loop-stage">
+        <canvas id="loopCv"></canvas>
+        <div class="loop-core"><div><div class="k">One trade</div><div class="v">start to finish</div></div></div>
+      </div>
+    </div>
+    <p class="place"><b>Best as the hero</b>, top of the page — where the old hero was.</p>
+  </section>
+
+  <!-- 2 -->
+  <section class="panel">
+    <div class="eyebrow">Study 2 · cards on a carousel</div>
+    <h2>Revolving card carousel</h2>
+    <p class="say">The three shots ride a rotating cylinder, turning past the front one at a time — the literal
+      “cards going round in a circle.”</p>
+    <div class="stagewrap">
+      <div class="cz-scene">
+        <div class="cz-cyl" id="czCyl">
+          <div class="cz-face" data-i="0">
+            <div class="cz-cap">The trade card · your Telegram</div>
+            <div class="cz-tg">
+              <div class="nm">SignalGate</div>
+<div class="tx">New Demo Signal
+
+<span class="g">XAUUSD BUY</span>
+Entry: Market · SL 2343.00
+TP1 2353 · TP2 2358 · TP3 2363
+Expires in 5 minutes</div>
+              <div class="cz-btns"><span class="y">✅ YES</span><span class="n">❌ NO</span></div>
+            </div>
+          </div>
+          <div class="cz-face" data-i="1">
+            <div class="cz-cap">The record · Truth Room</div>
+            <div class="cz-led">
+              <div class="row"><span class="sym">XAUUSD BUY</span><span class="win">TP3&nbsp;&nbsp;+3.0R</span></div>
+              <div class="row"><span class="sym">EURUSD SELL</span><span class="lose">STOP&nbsp;&nbsp;−1.0R</span></div>
+              <div class="row"><span class="sym">GBPJPY BUY</span><span class="win">TP1&nbsp;&nbsp;+0.5R</span></div>
+              <div class="row"><span class="sym">USDJPY SELL</span><span class="lose">STOP&nbsp;&nbsp;−1.0R</span></div>
+              <div class="row"><span class="sym">XAUUSD BUY</span><span class="win">TP2&nbsp;&nbsp;+1.6R</span></div>
+            </div>
+          </div>
+          <div class="cz-face" data-i="2">
+            <div class="cz-cap">The curve · drawdown and all</div>
+            <div class="cz-curve">
+              <svg viewBox="0 0 320 190" preserveAspectRatio="none" aria-label="illustrative record curve">
+                <defs><linearGradient id="czFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="rgba(79,209,165,.28)"/><stop offset="1" stop-color="rgba(79,209,165,0)"/></linearGradient></defs>
+                <polygon fill="url(#czFill)" points="8,140 46,112 82,128 120,158 158,112 196,140 232,90 270,60 312,32 312,180 8,180"/>
+                <polyline fill="none" stroke="#4fd1a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="8,140 46,112 82,128 120,158 158,112 196,140 232,90 270,60 312,32"/>
+                <polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="82,128 120,158"/>
+                <polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="158,112 196,140"/>
+                <circle cx="312" cy="32" r="4" fill="#4fd1a5"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cz-dots" id="czDots">
+      <button class="on" data-i="0" aria-label="Trade card"></button>
+      <button data-i="1" aria-label="The record"></button>
+      <button data-i="2" aria-label="The curve"></button>
+    </div>
+    <p class="place">Good <b>mid-page</b>, replacing the flip-card showcase after the win-rate.</p>
+  </section>
+
+  <!-- 3 -->
+  <section class="panel">
+    <div class="eyebrow">Study 3 · we show everything</div>
+    <h2>Wheel of results</h2>
+    <p class="say">Recent outcomes orbit the gate — wins green, losses red — so the losses go round in plain sight.
+      That’s the whole promise, moving.</p>
+    <div class="stagewrap">
+      <div class="wheel-stage" id="wheel">
+        <div class="wheel-hub">
+          <svg viewBox="0 0 64 64" aria-label="gate">
+            <path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div class="t">The record</div>
+        </div>
+      </div>
+    </div>
+    <p class="place">Nice beside the <b>Truth Room</b> section — motion that proves the point.</p>
+  </section>
+</div>
+
+<script>
+(function(){
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+  /* =========== 1. lifecycle loop =========== */
+  (function(){
+    var cv = document.getElementById("loopCv");
+    if(!cv) return;
+    var stages = ["Signal","Card","You tap","Command","Execute","Manage","Logged"];
+    var N = stages.length, ctx = cv.getContext("2d");
+    var S=0, c=0, R=0;
+    function fit(){
+      var r = cv.getBoundingClientRect(); S = r.width;
+      cv.width = S*DPR; cv.height = S*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+      c = S/2; R = S*0.29;                         // ring kept narrow so side labels never clip
+    }
+    fit();
+    var A0 = -Math.PI/2;                          // start at top
+    function ang(i){ return A0 + i*(2*Math.PI/N); }
+    var p = reduce ? 1 : 0;                        // lap progress 0..1 (reduced-motion: fully lit)
+    var LAP = 7000;                               // ms per lap
+    var last = null;
+    function node(i, lit){
+      var a = ang(i), x = c + R*Math.cos(a), y = c + R*Math.sin(a);
+      // connector dot
+      ctx.beginPath(); ctx.arc(x,y, lit?7:5, 0, 7);
+      if(lit){ ctx.fillStyle="#4fd1a5"; ctx.shadowColor="rgba(79,209,165,.9)"; ctx.shadowBlur=16; }
+      else { ctx.fillStyle="#2c3a45"; ctx.shadowBlur=0; }
+      ctx.fill(); ctx.shadowBlur=0;
+      // label — single radius for x and y; nudged out further only near the horizontal axis
+      var absC = Math.abs(Math.cos(a));
+      var Loff = R + (absC>0.55 ? 22 : 16);
+      var lx = c + Loff*Math.cos(a);
+      var ly = c + Loff*Math.sin(a);
+      ctx.font = "600 12px -apple-system,Segoe UI,Roboto,Arial,sans-serif";
+      ctx.textBaseline = "middle";
+      ctx.textAlign = Math.cos(a) > 0.25 ? "left" : (Math.cos(a) < -0.25 ? "right" : "center");
+      ctx.fillStyle = lit ? "#e9eef3" : "#6b7a86";
+      ctx.fillText(stages[i], lx, ly);
+    }
+    function frame(t){
+      if(last==null) last=t;
+      if(!reduce){ p += (t-last)/LAP; if(p>=1) p-=1; }
+      last=t;
+      ctx.clearRect(0,0,S,S);
+      // track
+      ctx.beginPath(); ctx.arc(c,c,R,0,7); ctx.strokeStyle="rgba(79,209,165,.14)"; ctx.lineWidth=2; ctx.stroke();
+      // filled arc behind the pulse
+      ctx.beginPath(); ctx.arc(c,c,R, A0, A0 + p*2*Math.PI);
+      ctx.strokeStyle="rgba(79,209,165,.5)"; ctx.lineWidth=3; ctx.lineCap="round"; ctx.stroke();
+      // nodes (lit if the pulse has passed them this lap)
+      for(var i=0;i<N;i++){ node(i, p >= i/N - 0.001); }
+      // comet tail + pulse head
+      var pa = A0 + p*2*Math.PI;
+      for(var k=6;k>=1;k--){
+        var aa = pa - k*0.05, x=c+R*Math.cos(aa), y=c+R*Math.sin(aa);
+        ctx.beginPath(); ctx.arc(x,y, 3.2, 0, 7);
+        ctx.fillStyle="rgba(143,227,196,"+(0.06*k)+")"; ctx.fill();
+      }
+      var hx=c+R*Math.cos(pa), hy=c+R*Math.sin(pa);
+      ctx.beginPath(); ctx.arc(hx,hy, 6, 0, 7);
+      ctx.fillStyle="#d8fff0"; ctx.shadowColor="rgba(79,209,165,1)"; ctx.shadowBlur=22; ctx.fill(); ctx.shadowBlur=0;
+      if(!reduce) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+    var rz; window.addEventListener("resize", function(){ clearTimeout(rz); rz=setTimeout(function(){ fit(); if(reduce){ last=null; requestAnimationFrame(frame);} },150); });
+  })();
+
+  /* =========== 2. 3D carousel =========== */
+  (function(){
+    var cyl = document.getElementById("czCyl");
+    if(!cyl) return;
+    var faces = [].slice.call(cyl.querySelectorAll(".cz-face"));
+    var dots = [].slice.call(document.querySelectorAll("#czDots button"));
+    var RAD = 300, k = 0, timer;
+    faces.forEach(function(f,i){ f.style.transform = "rotateY("+(i*120)+"deg) translateZ("+RAD+"px)"; });
+    function paint(){
+      cyl.style.transform = "translateZ(-"+RAD+"px) rotateY("+(-k*120)+"deg)";
+      var active = ((k%3)+3)%3;
+      faces.forEach(function(f){ f.classList.toggle("dim", +f.getAttribute("data-i")!==active); });
+      dots.forEach(function(d){ d.classList.toggle("on", +d.getAttribute("data-i")===active); });
+    }
+    function schedule(){ clearTimeout(timer); if(!reduce) timer=setTimeout(function(){ k++; paint(); schedule(); }, 3000); }
+    dots.forEach(function(d){ d.addEventListener("click", function(){
+      var want=+d.getAttribute("data-i"), cur=((k%3)+3)%3, diff=(want-cur+3)%3;
+      k += (diff===2?-1:diff); paint(); schedule();
+    }); });
+    paint(); schedule();
+  })();
+
+  /* =========== 3. wheel of results =========== */
+  (function(){
+    var stage = document.getElementById("wheel");
+    if(!stage) return;
+    var data = [
+      {t:"XAUUSD +3.0R", w:1},{t:"EURUSD −1.0R", w:0},{t:"GBPJPY +0.5R", w:1},
+      {t:"USDJPY −1.0R", w:0},{t:"AUDUSD +1.6R", w:1},{t:"XAUUSD +2.2R", w:1},
+      {t:"US30 −1.0R", w:0},{t:"GBPUSD +0.8R", w:1},{t:"EURJPY −1.0R", w:0}
+    ];
+    var chips = data.map(function(d){
+      var el=document.createElement("div");
+      el.className="chip "+(d.w?"win":"lose"); el.textContent=d.t;
+      stage.appendChild(el); return el;
+    });
+    var n=chips.length, base=0, last=null, SPIN=34000; // ms per revolution
+    function place(t){
+      if(last==null) last=t;
+      if(!reduce) base += (t-last)/SPIN * 2*Math.PI; last=t;
+      var r = stage.getBoundingClientRect(), cx=r.width/2, cy=r.height/2;
+      var R = Math.min(cx,cy) - 40;
+      for(var i=0;i<n;i++){
+        var a = base + i*(2*Math.PI/n);
+        chips[i].style.left = (cx + R*Math.cos(a)) + "px";
+        chips[i].style.top  = (cy + R*Math.sin(a)) + "px";
+      }
+      if(!reduce) requestAnimationFrame(place);
+    }
+    requestAnimationFrame(place);
+    var rz; window.addEventListener("resize", function(){ clearTimeout(rz); rz=setTimeout(function(){ last=null; requestAnimationFrame(place); },150); });
+  })();
+})();
+</script>
+</body>
+</html>
