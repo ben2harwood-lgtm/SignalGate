@@ -140,6 +140,67 @@ it's the hardened code.
 
 ---
 
+---
+
+# Hand this to Codex (paste the block between the markers)
+
+Give this to a computer-control agent that has (a) SSH access to your IONOS VPS
+and (b) control of the Chrome window logged into Porkbun. It does the whole
+publish and reports back.
+
+------------------------------------ PROMPT ------------------------------------
+
+## Role & mission
+You control this Mac's browser (logged into Porkbun) and have SSH to an IONOS
+Ubuntu VPS. Mission: **publish the SignalGate launch site live at
+https://signalgate.co.uk** with working HTTPS and a working waitlist, then
+verify and report. Work autonomously; stop and ask only on a hard blocker (no
+SSH access, VPS unreachable, or DNS you cannot edit).
+
+## Rules
+- Deploy the **hardened branch `claude/signalgate-full-audit-bjh0tk`**, NEVER
+  `main` (main is pre-security-hardening).
+- Do not enable the backend/bot or any live-trading path — publish only the
+  static launch site + its waitlist (`site-mockups/`).
+- Do not invent data. Report exactly what happened, including any failures.
+
+## Facts
+- Domain: `signalgate.co.uk` at **Porkbun** (edit DNS in the open Chrome tab).
+- Server: the **IONOS VPS** (get its public IPv4 from the IONOS dashboard if you
+  don't have it; confirm you can `ssh` in).
+- The launch site is `site-mockups/launch.html` served by
+  `site-mockups/site_server.py` on `127.0.0.1:8088` (waitlist + referral engine).
+
+## Steps
+1. **Get the VPS IP** and confirm SSH works (`ssh root@IP 'echo ok'`).
+2. **On the VPS**, install packages: `apt update && apt install -y python3-venv git caddy unzip`.
+3. **Get the hardened code onto the VPS** at `/opt/signalgate` (branch
+   `claude/signalgate-full-audit-bjh0tk`). Use a GitHub token clone, or download
+   the branch ZIP and upload it. Verify `site-mockups/site_server.py` is present.
+4. **Run the site as a service** (systemd unit `signalgate-site`) exactly as in
+   the "Step 2c" block of this runbook; ensure `/opt/signalgate/site-requests` is
+   writable by the service user. Confirm `curl -s localhost:8088/launch.html`
+   returns the page.
+5. **HTTPS + domain**: write the Caddyfile from "Step 2d" (reverse_proxy to
+   `127.0.0.1:8088` for `signalgate.co.uk, www.signalgate.co.uk`) and reload Caddy.
+6. **Open the IONOS firewall** for inbound TCP **80** and **443**.
+7. **Porkbun DNS** (in Chrome): remove default parking/URL-forward records; add
+   `A @ -> VPS_IP` and `A www -> VPS_IP`. Save.
+8. **Wait for DNS + certificate** (retry for up to ~30–60 min):
+   `curl -sI https://signalgate.co.uk` should return `HTTP/2 200` with valid TLS.
+9. **Functional check**: load the page; confirm the countdown renders and a test
+   POST to `/api/waitlist` returns a queue position + a referral link. Remove any
+   test signup you created from `site-requests/waitlist.jsonl` afterward.
+
+## Report back
+The VPS IP, the code branch + commit deployed, the DNS records set, the TLS/HTTP
+status of https://signalgate.co.uk, the waitlist test result, and any step that
+failed with its exact error.
+
+---------------------------------- END PROMPT ----------------------------------
+
+---
+
 ## Later (not needed just to publish the site)
 
 The **backend + Telegram bot** (for MetaTrader testers) is a separate deploy on
