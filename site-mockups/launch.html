@@ -106,6 +106,58 @@
   .foot-in{max-width:720px;margin:0 auto;padding:22px 20px 40px;font-size:12px;
            color:var(--muted);line-height:1.7}
   a{color:var(--accent)}
+
+  /* ===== added after win-rate: revolving showcase · how-it-works · growth ===== */
+  .sg-eyebrow{font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700;margin-bottom:10px}
+  .panel h2.sg-h{font-size:22px;text-transform:none;letter-spacing:-.01em;color:var(--ink);font-family:Georgia,serif;font-weight:400;margin-bottom:8px}
+  .sg-lead{color:var(--muted);font-size:14.5px;line-height:1.6;margin-bottom:20px;max-width:60ch}
+  .sg-stage{perspective:1600px}
+  .sg-card{position:relative;height:372px;transform-style:preserve-3d;background:var(--panel2);border:1px solid var(--line);border-radius:12px;will-change:transform;backface-visibility:hidden}
+  .sg-shot{position:absolute;inset:0;padding:18px;opacity:0;pointer-events:none;transition:opacity .2s;display:flex;flex-direction:column}
+  .sg-shot.on{opacity:1;pointer-events:auto}
+  .sg-shot .cap{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.12em;margin-bottom:12px}
+  .sg-dots{display:flex;gap:8px;justify-content:center;margin-top:16px;flex-wrap:wrap}
+  .sg-dots button{width:auto;margin:0;padding:7px 14px;background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:999px;font-size:12px;font-weight:600;cursor:pointer}
+  .sg-dots button.on{border-color:var(--accent);color:var(--accent);background:rgba(79,209,165,.08)}
+  .sg-tg{flex:1;background:#0e1621;border:1px solid var(--line);border-radius:10px;padding:14px}
+  .sg-tg .nm{color:#5bc98f;font-size:13px;font-weight:600;margin-bottom:6px}
+  .sg-tg .tx{color:#e8eef2;font-size:12.5px;line-height:1.55;white-space:pre-wrap}
+  .sg-tg .g{color:#8fe3c4;font-weight:600}
+  .sg-tgbtns{display:flex;gap:6px;margin-top:12px}
+  .sg-tgbtns span{flex:1;text-align:center;border:1px solid var(--line);border-radius:7px;padding:8px;font-size:12px}
+  .sg-tgbtns .y{color:var(--accent)} .sg-tgbtns .n{color:var(--muted)}
+  .sg-led{flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px}
+  .sg-led .row{display:flex;justify-content:space-between;gap:10px;padding:10px 4px;border-bottom:1px solid var(--line)}
+  .sg-led .row:last-child{border-bottom:0}
+  .sg-led .sym{color:#c6d0d9} .sg-led .win{color:var(--accent)} .sg-led .lose{color:var(--loss)}
+  .sg-curve{flex:1;display:flex;align-items:center}
+  .sg-curve svg{width:100%;height:200px}
+  .sg-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+  .sg-step{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:15px;transition:border-color .4s,box-shadow .4s,transform .4s;min-height:158px}
+  .sg-step.on{border-color:var(--accent);box-shadow:0 0 0 1px rgba(79,209,165,.5),0 16px 34px -20px rgba(79,209,165,.6);transform:translateY(-3px)}
+  .sg-step .k{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-family:ui-monospace,monospace}
+  .sg-step h3{font-family:Georgia,serif;font-weight:400;font-size:16px;margin:7px 0 6px;color:var(--ink)}
+  .sg-step p{color:var(--muted);font-size:12.5px;line-height:1.45}
+  .sg-prog{display:flex;gap:6px;margin-top:16px}
+  .sg-prog i{height:3px;flex:1;background:var(--line);border-radius:2px;overflow:hidden;position:relative}
+  .sg-prog i b{position:absolute;inset:0;width:0;background:var(--accent)}
+  .sg-prog i.on b{width:100%;transition:width 2.5s linear}
+  .sg-prog i.done b{width:100%}
+  .sg-charts{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:620px){.sg-charts{grid-template-columns:1fr}}
+  .sg-chart{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:15px;position:relative;overflow:hidden}
+  .sg-chart .tg{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;font-family:ui-monospace,monospace}
+  .sg-chart.fake .tg{color:#6b7f8c} .sg-chart.real .tg{color:var(--accent)}
+  .sg-chart h4{font-family:Georgia,serif;font-weight:400;font-size:16px;margin:4px 0 2px;color:var(--ink)}
+  .sg-chart .s{color:var(--muted);font-size:11.5px;margin-bottom:8px}
+  .sg-chart canvas{width:100%;height:150px;display:block}
+  .sg-stamp{position:absolute;top:13px;right:14px;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;font-family:ui-monospace,monospace;padding:3px 8px;border-radius:999px;border:1px solid}
+  .sg-chart.fake .sg-stamp{color:#6b7f8c;border-color:#33414b}
+  .sg-chart.real .sg-stamp{color:var(--accent);border-color:var(--accent)}
+  .sg-chart .ft{font-family:ui-monospace,monospace;font-size:10.5px;color:var(--muted);margin-top:7px}
+  .sg-chart.real .ft b{color:var(--loss)}
+  .sg-disc{color:var(--muted);font-size:12px;line-height:1.6;margin-top:16px;border-left:2px solid var(--line);padding-left:13px}
+  @media(prefers-reduced-motion:reduce){.sg-card,.sg-step,.sg-prog i b{transition:none!important}}
 </style>
 </head>
 <body>
@@ -265,6 +317,98 @@
     </p>
   </section>
 
+  <!-- REVOLVING SHOWCASE -->
+  <section class="panel">
+    <div class="sg-eyebrow">See it before you sign up</div>
+    <h2 class="sg-h">The card. The record. The curve.</h2>
+    <p class="sg-lead">The same three things, on repeat — what you'll get, what it builds, and the honest shape that follows.</p>
+    <div class="sg-stage">
+      <div class="sg-card" id="sgCard">
+        <div class="sg-shot on" data-i="0">
+          <div class="cap">The trade card · in your Telegram</div>
+          <div class="sg-tg">
+            <div class="nm">SignalGate</div>
+<div class="tx">New Demo Signal
+
+<span class="g">XAUUSD BUY</span>
+Entry: Market · Initial SL: 2343.00
+
+TP1 2353 · TP2 2358 · TP3 2363
+Demo mode · Expires in 5 minutes</div>
+            <div class="sg-tgbtns"><span class="y">✅ YES: Place Demo Trade</span><span class="n">❌ NO</span></div>
+          </div>
+        </div>
+        <div class="sg-shot" data-i="1">
+          <div class="cap">The record · Truth Room, live</div>
+          <div class="sg-led">
+            <div class="row"><span class="sym">XAUUSD BUY</span><span class="win">TP3_HIT&nbsp;&nbsp;+3.0R</span></div>
+            <div class="row"><span class="sym">EURUSD SELL</span><span class="lose">STOPPED_OUT&nbsp;&nbsp;−1.0R</span></div>
+            <div class="row"><span class="sym">GBPJPY BUY</span><span class="win">TP1_HIT&nbsp;&nbsp;+0.5R</span></div>
+            <div class="row"><span class="sym">USDJPY SELL</span><span class="lose">STOPPED_OUT&nbsp;&nbsp;−1.0R</span></div>
+            <div class="row"><span class="sym">XAUUSD BUY</span><span class="win">TP2_HIT&nbsp;&nbsp;+1.6R</span></div>
+          </div>
+        </div>
+        <div class="sg-shot" data-i="2">
+          <div class="cap">The curve · drawdown and all</div>
+          <div class="sg-curve">
+            <svg viewBox="0 0 320 200" preserveAspectRatio="none" aria-label="illustrative record curve">
+              <defs><linearGradient id="sgFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="rgba(79,209,165,.28)"/><stop offset="1" stop-color="rgba(79,209,165,0)"/></linearGradient></defs>
+              <polygon fill="url(#sgFill)" points="8,150 46,120 82,138 120,168 158,120 196,150 232,96 270,64 312,34 312,190 8,190"/>
+              <polyline fill="none" stroke="#4fd1a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="8,150 46,120 82,138 120,168 158,120 196,150 232,96 270,64 312,34"/>
+              <polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="82,138 120,168"/>
+              <polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="158,120 196,150"/>
+              <circle cx="312" cy="34" r="4" fill="#4fd1a5"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="sg-dots" id="sgDots">
+      <button class="on" data-i="0">Trade card</button>
+      <button data-i="1">The record</button>
+      <button data-i="2">The curve</button>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS (animated) -->
+  <section class="panel">
+    <div class="sg-eyebrow">How it works</div>
+    <h2 class="sg-h">One signal, start to finish.</h2>
+    <p class="sg-lead">No black box — the same four steps, every time.</p>
+    <div class="sg-steps" id="sgSteps">
+      <div class="sg-step" data-i="0"><div class="k">01 · Signal in</div><h3>The call arrives</h3><p>Your provider sends it to the bot — typed, or a screenshot the system reads back for a human to confirm.</p></div>
+      <div class="sg-step" data-i="1"><div class="k">02 · Card out</div><h3>A trade card</h3><p>It lands in your Telegram — the stop, the staged targets, the 5-minute expiry.</p></div>
+      <div class="sg-step" data-i="2"><div class="k">03 · You decide</div><h3>One tap approves</h3><p>Approve makes exactly one command — never two. Ignore it and it expires as no trade.</p></div>
+      <div class="sg-step" data-i="3"><div class="k">04 · Executed &amp; logged</div><h3>On the record</h3><p>Executed with a hard stop, managed by the rulebook, written to the Truth Room — win or loss.</p></div>
+    </div>
+    <div class="sg-prog" id="sgProg"><i><b></b></i><i><b></b></i><i><b></b></i><i><b></b></i></div>
+  </section>
+
+  <!-- GROWTH (honest dual-curve) -->
+  <section class="panel" id="sgGrowth">
+    <div class="sg-eyebrow">About that growth chart</div>
+    <h2 class="sg-h">Everyone shows you the line on the left.</h2>
+    <p class="sg-lead">We're the only ones who'll show you the one on the right — losing streaks, drawdown and all.</p>
+    <div class="sg-charts">
+      <div class="sg-chart fake">
+        <div class="sg-stamp">unverifiable</div>
+        <div class="tg">What they show you</div><h4>The screenshot curve</h4>
+        <div class="s">Only ever up. No way to check it.</div>
+        <canvas id="sgCvFake"></canvas>
+        <div class="ft">source: “trust me”</div>
+      </div>
+      <div class="sg-chart real">
+        <div class="sg-stamp">illustration</div>
+        <div class="tg">What we publish</div><h4>The real record</h4>
+        <div class="s">Cumulative R — built live in the Truth Room.</div>
+        <canvas id="sgCvReal"></canvas>
+        <div class="ft">includes a <b>−4.0R drawdown</b> · read-only · auditable</div>
+      </div>
+    </div>
+    <p class="sg-disc"><strong>Illustration of the record's format — not past performance and not a projection.</strong> Shown in R (risk multiples), not a £ figure on a “£100k account,” because R measures discipline, not a return we could promise. SignalGate has no track record yet; the real curve builds from trade one, in public.</p>
+  </section>
+
   <!-- WHAT WE WON'T DO -->
   <section class="panel">
     <h2>What we won't do</h2>
@@ -391,6 +535,103 @@ document.getElementById("st-copy").addEventListener("click", ()=>{
     setTimeout(()=>b.textContent="Copy",1800);
   }).catch(()=>{ document.execCommand("copy"); });
 });
+</script>
+<script>
+/* ===== revolving showcase · how-it-works · growth (added after win-rate) ===== */
+(function(){
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* --- revolving showcase --- */
+  (function(){
+    var card=document.getElementById("sgCard");
+    if(!card) return;
+    var shots=[].slice.call(card.querySelectorAll(".sg-shot"));
+    var dots=[].slice.call(document.querySelectorAll("#sgDots button"));
+    var i=0, timer;
+    function paint(){ shots.forEach(function(s,k){s.classList.toggle("on",k===i);});
+      dots.forEach(function(d,k){d.classList.toggle("on",k===i);}); }
+    function go(n){
+      i=(n+shots.length)%shots.length;
+      if(reduce){ paint(); return; }
+      card.style.transition="transform .26s ease-in"; card.style.transform="rotateY(90deg)";
+      setTimeout(function(){
+        paint();
+        card.style.transition="none"; card.style.transform="rotateY(-90deg)";
+        void card.offsetWidth;
+        card.style.transition="transform .26s ease-out"; card.style.transform="rotateY(0deg)";
+      },260);
+    }
+    function schedule(){ clearTimeout(timer); if(!reduce) timer=setTimeout(function(){go(i+1);schedule();},3600); }
+    dots.forEach(function(d){ d.addEventListener("click",function(){ go(+d.getAttribute("data-i")); schedule(); }); });
+    paint(); schedule();
+  })();
+
+  /* --- how it works auto-advance --- */
+  (function(){
+    var steps=[].slice.call(document.querySelectorAll("#sgSteps .sg-step"));
+    var bars=[].slice.call(document.querySelectorAll("#sgProg i"));
+    if(!steps.length) return;
+    if(reduce){ steps.forEach(function(s){s.classList.add("on");}); return; }
+    var i=-1;
+    function tick(){ i=(i+1)%steps.length;
+      steps.forEach(function(s,k){s.classList.toggle("on",k===i);});
+      if(i===0) bars.forEach(function(b){b.classList.remove("done","on");});
+      bars.forEach(function(b,k){ if(k<i)b.classList.add("done"); });
+      requestAnimationFrame(function(){ bars[i].classList.remove("done"); bars[i].classList.add("on"); });
+    }
+    tick(); setInterval(tick,2500);
+  })();
+
+  /* --- growth dual-curve --- */
+  (function(){
+    var DPR=Math.min(window.devicePixelRatio||1,2);
+    function fit(cv){ var r=cv.getBoundingClientRect(); cv.width=r.width*DPR; cv.height=r.height*DPR;
+      var c=cv.getContext("2d"); c.setTransform(DPR,0,0,DPR,0,0); return {c:c,w:r.width,h:r.height}; }
+    function ease(t){ return 1-Math.pow(1-t,3); }
+    function draw(cv,pts,o){
+      var f=fit(cv),c=f.c,w=f.w,h=f.h,pad={l:6,r:8,t:14,b:10};
+      var min=Math.min.apply(null,pts),max=Math.max.apply(null,pts),sp=(max-min)||1;
+      var xs=function(i){return pad.l+(w-pad.l-pad.r)*(i/(pts.length-1));};
+      var ys=function(v){return pad.t+(h-pad.t-pad.b)*(1-(v-min)/sp);};
+      var prog=reduce?0.999:0;
+      function frame(){
+        prog=Math.min(1,prog+0.025); var e=ease(prog); var upto=1+(pts.length-1)*e;
+        c.clearRect(0,0,w,h);
+        c.strokeStyle="rgba(60,80,92,.16)"; c.lineWidth=1;
+        for(var k=0;k<=3;k++){var y=pad.t+(h-pad.t-pad.b)*k/3;c.beginPath();c.moveTo(pad.l,y);c.lineTo(w-pad.r,y);c.stroke();}
+        var n=Math.floor(upto),frac=upto-n,ex=xs(0),ey=ys(pts[0]);
+        c.beginPath(); c.moveTo(xs(0),ys(pts[0]));
+        for(var i=1;i<n;i++)c.lineTo(xs(i),ys(pts[i]));
+        if(n<pts.length&&n>=1){var x0=xs(n-1),y0=ys(pts[n-1]),x1=xs(Math.min(n,pts.length-1)),y1=ys(pts[Math.min(n,pts.length-1)]);ex=x0+(x1-x0)*frac;ey=y0+(y1-y0)*frac;c.lineTo(ex,ey);}
+        c.lineTo(ex,h-pad.b); c.lineTo(xs(0),h-pad.b); c.closePath();
+        var g=c.createLinearGradient(0,0,0,h); g.addColorStop(0,o.fill); g.addColorStop(1,"rgba(0,0,0,0)"); c.fillStyle=g; c.fill();
+        c.lineWidth=2.2; c.lineJoin="round"; c.lineCap="round";
+        for(var j=1;j<=Math.min(n,pts.length-1);j++){
+          var ax=xs(j-1),ay=ys(pts[j-1]),bx=xs(j),by=ys(pts[j]);
+          if(j===n&&n<pts.length){bx=ex;by=ey;}
+          c.beginPath(); c.moveTo(ax,ay); c.lineTo(bx,by);
+          c.strokeStyle=(o.loss&&pts[j]<pts[j-1])?o.loss:o.line; c.stroke();
+        }
+        c.beginPath(); c.arc(ex,ey,3.2,0,7); c.fillStyle=o.line; c.fill();
+        if(prog<1&&!reduce) requestAnimationFrame(frame);
+      }
+      frame();
+    }
+    var fake=[],v=0; for(var i=0;i<24;i++){v+=0.5+i*0.13;fake.push(v);}
+    var real=[0,3,3.5,2.5,1.5,0.5,-0.5,0.5,3.5,5.1,4.1,5.7,8.7,7.7,8.2,11.2,10.2,12.8];
+    function build(){
+      var cf=document.getElementById("sgCvFake"),cr=document.getElementById("sgCvReal");
+      if(cf) draw(cf,fake,{line:"#6b7f8c",fill:"rgba(107,127,140,.16)"});
+      if(cr) draw(cr,real,{line:"#4fd1a5",fill:"rgba(79,209,165,.18)",loss:"#e0736a"});
+    }
+    var g=document.getElementById("sgGrowth"); if(!g) return;
+    if("IntersectionObserver" in window && !reduce){
+      var done=false;
+      new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting&&!done){done=true;build();}});},{threshold:.3}).observe(g);
+    } else build();
+    var rz; window.addEventListener("resize",function(){clearTimeout(rz);rz=setTimeout(build,200);});
+  })();
+})();
 </script>
 </body>
 </html>
