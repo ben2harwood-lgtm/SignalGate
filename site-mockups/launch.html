@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SignalGate — Every signal seller shows the wins. We show everything.</title>
 <meta name="description" content="Signal groups sell screenshots you can't check. SignalGate executes signals by a fixed rulebook and logs every trade to the Truth Room — a live record you can audit, losses included. Founding access.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='2' y='2' width='60' height='60' rx='16' fill='%2312202b' stroke='%234fd1a5' stroke-opacity='.22'/%3E%3Cpath d='M44 24 A15 15 0 1 0 47 39 L34 39' fill='none' stroke='%234fd1a5' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M30 33 L36 37 L48 21' fill='none' stroke='%238fe3c4' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
   :root{
     --bg:#0e1216; --panel:#161d24; --panel2:#111820; --line:#26313c;
@@ -108,15 +107,6 @@
            color:var(--muted);line-height:1.7}
   a{color:var(--accent)}
 
-  /* brand lockup (Logo C — the Monogram Gate) */
-  .brand{display:flex;align-items:center;gap:11px;margin-bottom:30px}
-  .brand svg{width:34px;height:34px;flex:0 0 auto}
-  .brand .wm{font-size:19px;font-weight:700;letter-spacing:-.01em;color:var(--ink)}
-  .brand .wm b{color:var(--accent);font-weight:700}
-  /* revolving hero visual — sits directly under the headline */
-  .sg-hero-stage{margin:4px 0 30px}
-  .sg-hero-stage .sg-eyebrow{margin-bottom:12px}
-
   /* ===== added after win-rate: revolving showcase · how-it-works · growth ===== */
   .sg-eyebrow{font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700;margin-bottom:10px}
   .panel h2.sg-h{font-size:22px;text-transform:none;letter-spacing:-.01em;color:var(--ink);font-family:Georgia,serif;font-weight:400;margin-bottom:8px}
@@ -172,15 +162,6 @@
 </head>
 <body>
 <div class="wrap">
-  <div class="brand">
-    <svg viewBox="0 0 64 64" aria-label="SignalGate">
-      <rect x="2" y="2" width="60" height="60" rx="16" fill="#12202b" stroke="#4fd1a5" stroke-opacity=".22"/>
-      <path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    <span class="wm">Signal<b>Gate</b></span>
-  </div>
-
   <div class="chip">Demo forward-test &middot; You approve every trade &middot; No live money in the system</div>
 
   <h1>Every signal seller shows you the wins.<br><em>SignalGate shows you everything.</em></h1>
@@ -190,59 +171,6 @@
     writes every result to <strong>the Truth Room</strong>: a live, read-only record anyone can
     audit. Wins, losses, drawdown, the win rate itself — all of it, or none of it.
   </p>
-
-  <!-- REVOLVING HERO -->
-  <div class="sg-hero-stage">
-    <div class="sg-eyebrow">See it before you sign up — the card, the record, the curve</div>
-    <div class="sg-stage">
-      <div class="sg-card" id="sgCard">
-        <div class="sg-shot on" data-i="0">
-          <div class="cap">The trade card · in your Telegram</div>
-          <div class="sg-tg">
-            <div class="nm">SignalGate</div>
-<div class="tx">New Demo Signal
-
-<span class="g">XAUUSD BUY</span>
-Entry: Market · Initial SL: 2343.00
-
-TP1 2353 · TP2 2358 · TP3 2363
-Demo mode · Expires in 5 minutes</div>
-            <div class="sg-tgbtns"><span class="y">✅ YES: Place Demo Trade</span><span class="n">❌ NO</span></div>
-          </div>
-        </div>
-        <div class="sg-shot" data-i="1">
-          <div class="cap">The record · Truth Room, live</div>
-          <div class="sg-led">
-            <div class="row"><span class="sym">XAUUSD BUY</span><span class="win">TP3_HIT&nbsp;&nbsp;+3.0R</span></div>
-            <div class="row"><span class="sym">EURUSD SELL</span><span class="lose">STOPPED_OUT&nbsp;&nbsp;−1.0R</span></div>
-            <div class="row"><span class="sym">GBPJPY BUY</span><span class="win">TP1_HIT&nbsp;&nbsp;+0.5R</span></div>
-            <div class="row"><span class="sym">USDJPY SELL</span><span class="lose">STOPPED_OUT&nbsp;&nbsp;−1.0R</span></div>
-            <div class="row"><span class="sym">XAUUSD BUY</span><span class="win">TP2_HIT&nbsp;&nbsp;+1.6R</span></div>
-          </div>
-        </div>
-        <div class="sg-shot" data-i="2">
-          <div class="cap">The curve · drawdown and all</div>
-          <div class="sg-curve">
-            <svg viewBox="0 0 320 200" preserveAspectRatio="none" aria-label="illustrative record curve">
-              <defs><linearGradient id="sgFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stop-color="rgba(79,209,165,.28)"/><stop offset="1" stop-color="rgba(79,209,165,0)"/></linearGradient></defs>
-              <polygon fill="url(#sgFill)" points="8,150 46,120 82,138 120,168 158,120 196,150 232,96 270,64 312,34 312,190 8,190"/>
-              <polyline fill="none" stroke="#4fd1a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="8,150 46,120 82,138 120,168 158,120 196,150 232,96 270,64 312,34"/>
-              <polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="82,138 120,168"/>
-              <polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="158,120 196,150"/>
-              <circle cx="312" cy="34" r="4" fill="#4fd1a5"/>
-            </svg>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="sg-dots" id="sgDots">
-      <button class="on" data-i="0">Trade card</button>
-      <button data-i="1">The record</button>
-      <button data-i="2">The curve</button>
-    </div>
-  </div>
-
   <p class="riskline">
     <b>Trading carries real risk of loss, and most retail traders lose money.</b> SignalGate is
     execution tooling, not advice — you approve every trade. The forward-test runs on demo
@@ -387,6 +315,60 @@ Demo mode · Expires in 5 minutes</div>
       identifier. Founding members watch it happen in real time. No screenshot. No group chat. A
       record you can check. <strong>That's the one thing no one else in this game will give you.</strong>
     </p>
+  </section>
+
+  <!-- REVOLVING SHOWCASE -->
+  <section class="panel">
+    <div class="sg-eyebrow">See it before you sign up</div>
+    <h2 class="sg-h">The card. The record. The curve.</h2>
+    <p class="sg-lead">The same three things, on repeat — what you'll get, what it builds, and the honest shape that follows.</p>
+    <div class="sg-stage">
+      <div class="sg-card" id="sgCard">
+        <div class="sg-shot on" data-i="0">
+          <div class="cap">The trade card · in your Telegram</div>
+          <div class="sg-tg">
+            <div class="nm">SignalGate</div>
+<div class="tx">New Demo Signal
+
+<span class="g">XAUUSD BUY</span>
+Entry: Market · Initial SL: 2343.00
+
+TP1 2353 · TP2 2358 · TP3 2363
+Demo mode · Expires in 5 minutes</div>
+            <div class="sg-tgbtns"><span class="y">✅ YES: Place Demo Trade</span><span class="n">❌ NO</span></div>
+          </div>
+        </div>
+        <div class="sg-shot" data-i="1">
+          <div class="cap">The record · Truth Room, live</div>
+          <div class="sg-led">
+            <div class="row"><span class="sym">XAUUSD BUY</span><span class="win">TP3_HIT&nbsp;&nbsp;+3.0R</span></div>
+            <div class="row"><span class="sym">EURUSD SELL</span><span class="lose">STOPPED_OUT&nbsp;&nbsp;−1.0R</span></div>
+            <div class="row"><span class="sym">GBPJPY BUY</span><span class="win">TP1_HIT&nbsp;&nbsp;+0.5R</span></div>
+            <div class="row"><span class="sym">USDJPY SELL</span><span class="lose">STOPPED_OUT&nbsp;&nbsp;−1.0R</span></div>
+            <div class="row"><span class="sym">XAUUSD BUY</span><span class="win">TP2_HIT&nbsp;&nbsp;+1.6R</span></div>
+          </div>
+        </div>
+        <div class="sg-shot" data-i="2">
+          <div class="cap">The curve · drawdown and all</div>
+          <div class="sg-curve">
+            <svg viewBox="0 0 320 200" preserveAspectRatio="none" aria-label="illustrative record curve">
+              <defs><linearGradient id="sgFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="rgba(79,209,165,.28)"/><stop offset="1" stop-color="rgba(79,209,165,0)"/></linearGradient></defs>
+              <polygon fill="url(#sgFill)" points="8,150 46,120 82,138 120,168 158,120 196,150 232,96 270,64 312,34 312,190 8,190"/>
+              <polyline fill="none" stroke="#4fd1a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="8,150 46,120 82,138 120,168 158,120 196,150 232,96 270,64 312,34"/>
+              <polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="82,138 120,168"/>
+              <polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="158,120 196,150"/>
+              <circle cx="312" cy="34" r="4" fill="#4fd1a5"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="sg-dots" id="sgDots">
+      <button class="on" data-i="0">Trade card</button>
+      <button data-i="1">The record</button>
+      <button data-i="2">The curve</button>
+    </div>
   </section>
 
   <!-- HOW IT WORKS (animated) -->
