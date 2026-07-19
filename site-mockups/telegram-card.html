@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SignalGate — Telegram trade card</title>
+<style>
+  :root{
+    --tg-bg:#0e1621; --tg-header:#17212b; --tg-bubble:#182433; --tg-out:#2b5278;
+    --tg-name:#5bc98f; --tg-text:#ffffff; --tg-sub:#7d8b99; --tg-time:#6d7f8f;
+    --tg-btn-text:#7dd3fc; --tg-line:#101820;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#05080b;display:grid;place-items:center;min-height:100vh;padding:24px;
+       font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+  /* phone frame */
+  .phone{width:380px;max-width:100%;border-radius:38px;background:#000;padding:10px;
+         box-shadow:0 30px 80px rgba(0,0,0,.6),0 0 0 1px #222 inset}
+  .screen{border-radius:30px;overflow:hidden;background:var(--tg-bg);position:relative}
+  /* status bar */
+  .status{display:flex;justify-content:space-between;align-items:center;
+          padding:9px 22px 5px;color:#fff;font-size:13px;font-weight:600;background:var(--tg-header)}
+  .status .icons{display:flex;gap:6px;align-items:center;font-size:12px}
+  /* chat header */
+  .chdr{display:flex;align-items:center;gap:11px;padding:8px 14px 10px;background:var(--tg-header)}
+  .chdr .back{color:#6ab3f3;font-size:22px;line-height:1;margin-right:2px}
+  .avatar{width:40px;height:40px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;
+          background:linear-gradient(135deg,#4fd1a5,#2b8f74);color:#06231a;font-weight:800;font-size:15px;
+          letter-spacing:.5px}
+  .who{flex:1;min-width:0}
+  .who .n{color:#fff;font-size:16px;font-weight:600;line-height:1.2}
+  .who .s{color:var(--tg-sub);font-size:13px}
+  .chdr .menu{color:#6a7a89;font-size:20px}
+  /* chat area */
+  .chat{padding:14px 10px 12px;
+        background:
+          radial-gradient(circle at 20% 15%, rgba(79,209,165,.05), transparent 40%),
+          radial-gradient(circle at 85% 80%, rgba(43,82,120,.07), transparent 45%),
+          var(--tg-bg);
+        min-height:520px;display:flex;flex-direction:column;gap:6px}
+  .daylabel{align-self:center;background:rgba(0,0,0,.35);color:#c9d3dd;font-size:12px;
+            padding:4px 12px;border-radius:12px;margin:2px 0 8px}
+  /* message bubble */
+  .msg{max-width:88%;align-self:flex-start}
+  .bubble{background:var(--tg-bubble);border-radius:12px;border-top-left-radius:4px;
+          padding:8px 11px 6px;position:relative;box-shadow:0 1px 1px rgba(0,0,0,.15)}
+  .name{color:var(--tg-name);font-size:14px;font-weight:600;margin-bottom:3px}
+  .text{color:var(--tg-text);font-size:15px;line-height:1.42;white-space:pre-wrap;word-wrap:break-word}
+  .text .hl{color:#8fe3c4;font-weight:600}
+  .time{float:right;color:var(--tg-time);font-size:11px;margin:4px 0 0 10px;user-select:none}
+  /* inline keyboard */
+  .kb{margin-top:2px;display:flex;gap:2px}
+  .kb button{flex:1;background:rgba(24,36,51,.9);border:0;color:var(--tg-btn-text);
+             padding:12px 8px;font-size:14px;font-weight:500;cursor:default;
+             font-family:inherit}
+  .kb button:first-child{border-bottom-left-radius:12px}
+  .kb button:last-child{border-bottom-right-radius:12px}
+  .kb button.yes{color:#7be0a8}
+  .kb .divider{width:2px;background:var(--tg-line)}
+  .kbwrap{border-bottom-left-radius:12px;border-bottom-right-radius:12px;overflow:hidden;
+          margin-top:3px;box-shadow:0 1px 1px rgba(0,0,0,.15)}
+  /* input bar */
+  .input{display:flex;align-items:center;gap:12px;padding:11px 16px;background:var(--tg-header);
+         color:#5d6b78;font-size:15px}
+  .input .field{flex:1}
+  .input .ic{font-size:19px;color:#6a7a89}
+</style>
+</head>
+<body>
+  <div class="phone">
+    <div class="screen">
+      <div class="status">
+        <span>9:41</span>
+        <span class="icons">●●● &nbsp;&#128246;&nbsp; &#128267;</span>
+      </div>
+      <div class="chdr">
+        <span class="back">&#8249;</span>
+        <div class="avatar">SG</div>
+        <div class="who">
+          <div class="n">SignalGate</div>
+          <div class="s">bot</div>
+        </div>
+        <span class="menu">&#8942;</span>
+      </div>
+      <div class="chat">
+        <div class="daylabel">Today</div>
+        <div class="msg">
+          <div class="bubble">
+            <div class="name">SignalGate</div>
+<div class="text">New Demo Signal
+
+<span class="hl">XAUUSD BUY</span>
+Entry: Market
+Initial SL: 2343.00
+
+TP1: 2353.00
+Close TP1 child / move remaining SL to breakeven
+
+TP2: 2358.00
+Close TP2 child / move remaining SL to TP1
+
+TP3: 2363.00
+Close final child
+
+Demo mode only.
+Split-ticket partial mode: ON
+Expires in: 5 minutes
+
+Approve this demo trade?<span class="time">14:32</span></div>
+          </div>
+          <div class="kbwrap">
+            <div class="kb">
+              <button class="yes">&#9989; YES: Place Demo Trade</button>
+              <div class="divider"></div>
+              <button>&#10060; NO: Ignore</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="input">
+        <span class="ic">&#128206;</span>
+        <span class="field">Message</span>
+        <span class="ic">&#127908;</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
