@@ -95,12 +95,12 @@
   function smooth(a,b,t){ if(t<=a)return 0; if(t>=b)return 1; var x=(t-a)/(b-a); return x*x*(3-2*x); }
   function paint(spin){
     var W=stage.clientWidth, H=stage.clientHeight;
-    var Cx=W*0.42, Cy=H*0.52, R=H*0.54;              // centre lower-left → visible arc sweeps mid-top → mid-right
+    var Cx=W*0.42, Cy=H*0.52, R=H*0.58;              // centre lower-left → visible arc sweeps mid-top → mid-right
     for(var i=0;i<cards.length;i++){
       var c=cards[i], f=c.base+spin;
       var d=Math.atan2(Math.sin(f),Math.cos(f))/D;    // orbital angle in degrees, -180..180
       var x=Cx+R*Math.cos(f), y=Cy+R*Math.sin(f);
-      var s=0.60+0.34*Math.cos(f);                    // biggest at mid-right (f≈0)
+      var s=0.86+0.52*Math.cos(f);                    // bigger overall; biggest at mid-right (f≈0)
       var op=smooth(-152,-126,d)*(1-smooth(34,60,d)); // visible arc only; fades top-left & lower-right
       var lean=-13+Math.sin(f)*8;
       c.el.style.transform="translate("+x.toFixed(1)+"px,"+y.toFixed(1)+"px) rotateZ("+lean.toFixed(2)+"deg) rotateY("+d.toFixed(2)+"deg) scale("+s.toFixed(3)+")";
@@ -111,7 +111,7 @@
   var dbg=parseFloat((location.hash.match(/a=([-\d.]+)/)||[])[1]);
   if(reduce||!isNaN(dbg)){ paint(isNaN(dbg)?0:dbg); return; }
   var auto=0, drag=0;
-  function frame(){ auto+=0.006; var sc=window.scrollY||0; paint(auto+sc*0.002+drag); requestAnimationFrame(frame); }
+  function frame(){ auto+=0.0022; var sc=window.scrollY||0; paint(auto+sc*0.0016+drag); requestAnimationFrame(frame); }
   requestAnimationFrame(frame);
   var dragging=false,lastY=0;
   stage.addEventListener("pointerdown",function(e){dragging=true;lastY=e.clientY;try{stage.setPointerCapture(e.pointerId);}catch(_e){}});
