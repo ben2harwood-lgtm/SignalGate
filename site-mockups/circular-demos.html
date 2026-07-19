@@ -36,32 +36,30 @@
   .loop-core .k{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
   .loop-core .v{font-family:Georgia,serif;font-size:16px;color:var(--ink);margin-top:2px;max-width:120px;line-height:1.25}
 
-  /* ---------- 2. 3D carousel ---------- */
-  .cz-scene{width:100%;max-width:300px;height:320px;perspective:1100px;position:relative}
-  .cz-cyl{position:absolute;inset:0;transform-style:preserve-3d;transition:transform .95s cubic-bezier(.68,0,.24,1)}
-  .cz-face{position:absolute;top:0;left:50%;width:240px;height:300px;margin-left:-120px;
-           background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:16px;
-           display:flex;flex-direction:column;backface-visibility:hidden;
-           transition:opacity .6s,filter .6s;box-shadow:0 24px 50px -30px rgba(0,0,0,.8)}
-  .cz-face.dim{opacity:.34;filter:saturate(.6) brightness(.8)}
-  .cz-cap{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);margin-bottom:11px}
-  .cz-tg{flex:1;background:#0e1621;border:1px solid var(--line);border-radius:9px;padding:12px}
-  .cz-tg .nm{color:#5bc98f;font-size:12px;font-weight:600;margin-bottom:5px}
-  .cz-tg .tx{color:#e8eef2;font-size:11.5px;line-height:1.5;white-space:pre-wrap}
-  .cz-tg .g{color:#8fe3c4;font-weight:600}
-  .cz-btns{display:flex;gap:6px;margin-top:10px}
-  .cz-btns span{flex:1;text-align:center;border:1px solid var(--line);border-radius:6px;padding:7px;font-size:11px}
-  .cz-btns .y{color:var(--accent)} .cz-btns .n{color:var(--muted)}
-  .cz-led{flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px}
-  .cz-led .row{display:flex;justify-content:space-between;gap:8px;padding:9px 2px;border-bottom:1px solid var(--line)}
-  .cz-led .row:last-child{border-bottom:0}
-  .cz-led .sym{color:#c6d0d9} .cz-led .win{color:var(--accent)} .cz-led .lose{color:var(--loss)}
-  .cz-curve{flex:1;display:flex;align-items:center}
-  .cz-curve svg{width:100%;height:190px}
-  .cz-dots{display:flex;gap:8px;justify-content:center;margin-top:20px}
-  .cz-dots button{width:9px;height:9px;padding:0;border-radius:50%;border:1px solid var(--line);
-                  background:transparent;cursor:pointer}
-  .cz-dots button.on{background:var(--accent);border-color:var(--accent)}
+  /* ---------- 2. diagonal orbit of cards ---------- */
+  .orbit-stage{position:relative;width:100%;max-width:480px;height:490px;margin:0 auto}
+  .orbit-card{position:absolute;left:0;top:0;width:140px;height:166px;
+              background:var(--panel2);border:1px solid var(--line);border-radius:13px;padding:11px;
+              transform-origin:center center;will-change:transform,opacity;
+              box-shadow:0 22px 46px -26px rgba(0,0,0,.9);overflow:hidden;
+              display:flex;flex-direction:column}
+  .oc-cap{font-size:9px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+  .oc-tg{flex:1;font-size:10.5px;line-height:1.5}
+  .oc-tg .nm{color:#5bc98f;font-weight:600;margin-bottom:4px}
+  .oc-tg .tx{color:#dbe6ec;white-space:pre-line}
+  .oc-tg .tx b{color:#8fe3c4}
+  .oc-btns{display:flex;gap:5px;margin-top:9px}
+  .oc-btns span{flex:1;text-align:center;border:1px solid var(--line);border-radius:5px;padding:5px;font-size:10px}
+  .oc-btns .y{color:var(--accent)} .oc-btns .n{color:var(--muted)}
+  .oc-led{flex:1;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px}
+  .oc-led .row{display:flex;justify-content:space-between;gap:6px;padding:6px 1px;border-bottom:1px solid var(--line)}
+  .oc-led .row:last-child{border-bottom:0}
+  .oc-led .sym{color:#c6d0d9} .oc-led .win{color:var(--accent)} .oc-led .lose{color:var(--loss)}
+  .oc-curve{flex:1;display:flex;align-items:center}
+  .oc-curve svg{width:100%;height:118px}
+  .oc-big{font-family:Georgia,serif;font-size:15px;color:var(--ink);line-height:1.22;margin-top:2px}
+  .oc-sub{font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.45}
+  .oc-mark{margin-top:auto;width:28px;height:28px}
 
   /* ---------- 3. wheel of results ---------- */
   .wheel-stage{width:100%;max-width:400px;aspect-ratio:1/1;position:relative}
@@ -109,57 +107,66 @@
 
   <!-- 2 -->
   <section class="panel">
-    <div class="eyebrow">Study 2 · cards on a carousel</div>
+    <div class="eyebrow">Study 2 · cards on a diagonal orbit</div>
     <h2>Revolving card carousel</h2>
-    <p class="say">The three shots ride a rotating cylinder, turning past the front one at a time — the literal
-      “cards going round in a circle.”</p>
+    <p class="say">The cards travel round a tilted, diagonal circle — leaning back into the screen, growing
+      as they swing to the front and shrinking to the back. The motion you saw on the reference.</p>
     <div class="stagewrap">
-      <div class="cz-scene">
-        <div class="cz-cyl" id="czCyl">
-          <div class="cz-face" data-i="0">
-            <div class="cz-cap">The trade card · your Telegram</div>
-            <div class="cz-tg">
-              <div class="nm">SignalGate</div>
-<div class="tx">New Demo Signal
-
-<span class="g">XAUUSD BUY</span>
-Entry: Market · SL 2343.00
-TP1 2353 · TP2 2358 · TP3 2363
-Expires in 5 minutes</div>
-              <div class="cz-btns"><span class="y">✅ YES</span><span class="n">❌ NO</span></div>
-            </div>
-          </div>
-          <div class="cz-face" data-i="1">
-            <div class="cz-cap">The record · Truth Room</div>
-            <div class="cz-led">
-              <div class="row"><span class="sym">XAUUSD BUY</span><span class="win">TP3&nbsp;&nbsp;+3.0R</span></div>
-              <div class="row"><span class="sym">EURUSD SELL</span><span class="lose">STOP&nbsp;&nbsp;−1.0R</span></div>
-              <div class="row"><span class="sym">GBPJPY BUY</span><span class="win">TP1&nbsp;&nbsp;+0.5R</span></div>
-              <div class="row"><span class="sym">USDJPY SELL</span><span class="lose">STOP&nbsp;&nbsp;−1.0R</span></div>
-              <div class="row"><span class="sym">XAUUSD BUY</span><span class="win">TP2&nbsp;&nbsp;+1.6R</span></div>
-            </div>
-          </div>
-          <div class="cz-face" data-i="2">
-            <div class="cz-cap">The curve · drawdown and all</div>
-            <div class="cz-curve">
-              <svg viewBox="0 0 320 190" preserveAspectRatio="none" aria-label="illustrative record curve">
-                <defs><linearGradient id="czFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0" stop-color="rgba(79,209,165,.28)"/><stop offset="1" stop-color="rgba(79,209,165,0)"/></linearGradient></defs>
-                <polygon fill="url(#czFill)" points="8,140 46,112 82,128 120,158 158,112 196,140 232,90 270,60 312,32 312,180 8,180"/>
-                <polyline fill="none" stroke="#4fd1a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="8,140 46,112 82,128 120,158 158,112 196,140 232,90 270,60 312,32"/>
-                <polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="82,128 120,158"/>
-                <polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="158,112 196,140"/>
-                <circle cx="312" cy="32" r="4" fill="#4fd1a5"/>
-              </svg>
-            </div>
+      <div class="orbit-stage" id="orbit">
+        <div class="orbit-card" data-i="0">
+          <div class="oc-cap">Trade card</div>
+          <div class="oc-tg">
+            <div class="nm">SignalGate</div>
+<div class="tx"><b>XAUUSD BUY</b>
+SL 2343.00
+TP1 2353 · TP2 2358
+TP3 2363</div>
+            <div class="oc-btns"><span class="y">✅ YES</span><span class="n">NO</span></div>
           </div>
         </div>
+        <div class="orbit-card" data-i="1">
+          <div class="oc-cap">The record · Truth Room</div>
+          <div class="oc-led">
+            <div class="row"><span class="sym">XAUUSD</span><span class="win">+3.0R</span></div>
+            <div class="row"><span class="sym">EURUSD</span><span class="lose">−1.0R</span></div>
+            <div class="row"><span class="sym">GBPJPY</span><span class="win">+0.5R</span></div>
+            <div class="row"><span class="sym">USDJPY</span><span class="lose">−1.0R</span></div>
+            <div class="row"><span class="sym">AUDUSD</span><span class="win">+1.6R</span></div>
+          </div>
+        </div>
+        <div class="orbit-card" data-i="2">
+          <div class="oc-cap">The curve · drawdown and all</div>
+          <div class="oc-curve">
+            <svg viewBox="0 0 300 118" preserveAspectRatio="none" aria-label="illustrative record curve">
+              <defs><linearGradient id="ocFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="rgba(79,209,165,.28)"/><stop offset="1" stop-color="rgba(79,209,165,0)"/></linearGradient></defs>
+              <polygon fill="url(#ocFill)" points="6,86 40,68 74,80 108,98 142,68 176,86 210,54 244,36 294,18 294,112 6,112"/>
+              <polyline fill="none" stroke="#4fd1a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="6,86 40,68 74,80 108,98 142,68 176,86 210,54 244,36 294,18"/>
+              <polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="74,80 108,98"/>
+              <polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="142,68 176,86"/>
+              <circle cx="294" cy="18" r="3.5" fill="#4fd1a5"/>
+            </svg>
+          </div>
+        </div>
+        <div class="orbit-card" data-i="3">
+          <div class="oc-cap">The rulebook</div>
+          <div class="oc-big">A hard stop on every trade</div>
+          <div class="oc-sub">Your loss is bounded before the trade ever opens.</div>
+          <svg class="oc-mark" viewBox="0 0 64 64" aria-hidden="true">
+            <path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="orbit-card" data-i="4">
+          <div class="oc-cap">One tap</div>
+          <div class="oc-big">One approval = one command</div>
+          <div class="oc-sub">Never two. The same tap can't fire twice.</div>
+          <svg class="oc-mark" viewBox="0 0 64 64" aria-hidden="true">
+            <path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
       </div>
-    </div>
-    <div class="cz-dots" id="czDots">
-      <button class="on" data-i="0" aria-label="Trade card"></button>
-      <button data-i="1" aria-label="The record"></button>
-      <button data-i="2" aria-label="The curve"></button>
     </div>
     <p class="place">Good <b>mid-page</b>, replacing the flip-card showcase after the win-rate.</p>
   </section>
@@ -254,26 +261,39 @@ Expires in 5 minutes</div>
     var rz; window.addEventListener("resize", function(){ clearTimeout(rz); rz=setTimeout(function(){ fit(); if(reduce){ last=null; requestAnimationFrame(frame);} },150); });
   })();
 
-  /* =========== 2. 3D carousel =========== */
+  /* =========== 2. diagonal orbit of cards =========== */
   (function(){
-    var cyl = document.getElementById("czCyl");
-    if(!cyl) return;
-    var faces = [].slice.call(cyl.querySelectorAll(".cz-face"));
-    var dots = [].slice.call(document.querySelectorAll("#czDots button"));
-    var RAD = 300, k = 0, timer;
-    faces.forEach(function(f,i){ f.style.transform = "rotateY("+(i*120)+"deg) translateZ("+RAD+"px)"; });
-    function paint(){
-      cyl.style.transform = "translateZ(-"+RAD+"px) rotateY("+(-k*120)+"deg)";
-      var active = ((k%3)+3)%3;
-      faces.forEach(function(f){ f.classList.toggle("dim", +f.getAttribute("data-i")!==active); });
-      dots.forEach(function(d){ d.classList.toggle("on", +d.getAttribute("data-i")===active); });
+    var stage = document.getElementById("orbit");
+    if(!stage) return;
+    var cards = [].slice.call(stage.querySelectorAll(".orbit-card"));
+    var N = cards.length;
+    // orbit plane: leaned back (TILT) then rotated in-screen (GAMMA) so the ellipse runs diagonally
+    var TILT = 56*Math.PI/180, GAMMA = 24*Math.PI/180;
+    var cosT=Math.cos(TILT), sinT=Math.sin(TILT), cosG=Math.cos(GAMMA), sinG=Math.sin(GAMMA);
+    var base = 0, last = null, PERIOD = 17000;  // ms per full revolution
+    function frame(t){
+      if(last==null) last=t;
+      if(!reduce) base += (t-last)/PERIOD*2*Math.PI;
+      last=t;
+      var r = stage.getBoundingClientRect(), cx=r.width/2, cy=r.height/2;
+      var R = Math.min(r.width, r.height)*0.30;
+      var FOCAL = R*3.4, Zmax = R*sinT;
+      var sMin = FOCAL/(FOCAL+Zmax), sMax = FOCAL/(FOCAL-Zmax);
+      for(var i=0;i<N;i++){
+        var th = base + i*(2*Math.PI/N);
+        var x0 = Math.cos(th), y0 = Math.sin(th);
+        var X = R*x0, Y = R*y0*cosT, Z = R*y0*sinT;   // lean the circle back
+        var Xr = X*cosG - Y*sinG, Yr = X*sinG + Y*cosG; // rotate the ellipse diagonally
+        var s = FOCAL/(FOCAL - Z);                       // perspective scale (front bigger)
+        var el = cards[i];
+        el.style.transform = "translate(-50%,-50%) translate("+(cx+Xr*s).toFixed(1)+"px,"+(cy+Yr*s).toFixed(1)+"px) scale("+s.toFixed(3)+")";
+        el.style.zIndex = String(1000 + Math.round(Z));
+        el.style.opacity = (0.32 + 0.68*(s-sMin)/(sMax-sMin || 1)).toFixed(3);
+      }
+      if(!reduce) requestAnimationFrame(frame);
     }
-    function schedule(){ clearTimeout(timer); if(!reduce) timer=setTimeout(function(){ k++; paint(); schedule(); }, 3000); }
-    dots.forEach(function(d){ d.addEventListener("click", function(){
-      var want=+d.getAttribute("data-i"), cur=((k%3)+3)%3, diff=(want-cur+3)%3;
-      k += (diff===2?-1:diff); paint(); schedule();
-    }); });
-    paint(); schedule();
+    requestAnimationFrame(frame);
+    var rz; window.addEventListener("resize", function(){ clearTimeout(rz); rz=setTimeout(function(){ last=null; requestAnimationFrame(frame); },150); });
   })();
 
   /* =========== 3. wheel of results =========== */
