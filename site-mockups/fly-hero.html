@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SignalGate — orbiting hero</title>
+<title>SignalGate — orbiting ring hero</title>
 <style>
   :root{
     --bg:#0e1216; --panel:#161d24; --panel2:#141d26; --line:#26313c;
@@ -14,56 +14,64 @@
   html,body{background:var(--bg);color:var(--ink);overflow-x:hidden;
        font:16px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 
-  .scene{position:relative;height:calc(100vh + 2200px)}      /* scroll runway */
-  .pin{position:sticky;top:0;height:100vh;overflow:hidden;perspective:1500px;cursor:grab;touch-action:pan-y}
+  .scene{position:relative;height:calc(100vh + 2200px)}          /* scroll runway */
+  .pin{position:sticky;top:0;height:100vh;overflow:hidden;perspective:1200px;cursor:grab;touch-action:pan-y}
   .pin:active{cursor:grabbing}
 
-  .ring{position:absolute;inset:0;transform-style:preserve-3d}
+  /* the wheel spins on a horizontal axis; cards ride up the front and show their back over the top */
+  .wheel{position:absolute;left:0;top:0;width:100%;height:100%;transform-style:preserve-3d;
+         transform-origin:50% 50%;will-change:transform}
+  .rc{position:absolute;left:50%;top:50%;width:300px;height:186px;margin:-93px 0 0 -150px;
+      transform-style:preserve-3d;will-change:transform}
+  .rc-face{position:absolute;inset:0;backface-visibility:hidden;border-radius:14px;overflow:hidden;
+           border:1px solid var(--line);box-shadow:0 40px 80px -34px rgba(0,0,0,.95);
+           background:var(--panel2);display:flex;flex-direction:column}
+  .rc-face.back{transform:rotateX(180deg);align-items:center;justify-content:center;gap:11px;
+                background:radial-gradient(120% 120% at 50% 38%, #182531, #0f171e)}
+  .rc-face.back .g{width:44px;height:44px;opacity:.95}
+  .rc-face.back .w{font-size:15px;font-weight:700;letter-spacing:.01em;color:var(--ink)}
+  .rc-face.back .w b{color:var(--accent)}
+  .rc-face.back .tag{font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--muted)}
 
-  /* landscape "screenshot" cards that ride the circle */
-  .rc{position:absolute;left:0;top:0;width:340px;height:212px;margin:-106px 0 0 -170px;
-      background:var(--panel2);border:1px solid var(--line);border-radius:14px;overflow:hidden;
-      box-shadow:0 40px 80px -34px rgba(0,0,0,.95);backface-visibility:hidden;
-      will-change:transform,opacity;display:flex;flex-direction:column;transform-origin:center center}
-  .rc-bar{display:flex;align-items:center;gap:6px;padding:8px 11px;border-bottom:1px solid var(--line);background:var(--panel)}
-  .rc-bar i{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
-  .rc-bar .t{margin-left:8px;font-size:9.5px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .rc-body{flex:1;padding:12px;overflow:hidden}
-  .rc-tg{display:flex;gap:10px}
-  .rc-tg .av{width:34px;height:34px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;background:linear-gradient(135deg,#4fd1a5,#2b8f74);color:#06231a;font-weight:800;font-size:12px}
-  .rc-tg .bub{flex:1;background:#0e1621;border:1px solid var(--line);border-radius:10px;padding:9px 11px}
-  .rc-tg .nm{color:#5bc98f;font-size:11px;font-weight:600;margin-bottom:3px}
-  .rc-tg .tx{color:#e8eef2;font-size:11px;line-height:1.5}
+  .rc-bar{display:flex;align-items:center;gap:6px;padding:7px 10px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .rc-bar i{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+  .rc-bar .t{margin-left:7px;font-size:9px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rc-body{flex:1;padding:11px;overflow:hidden}
+  .rc-tg{display:flex;gap:9px}
+  .rc-tg .av{width:30px;height:30px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;background:linear-gradient(135deg,#4fd1a5,#2b8f74);color:#06231a;font-weight:800;font-size:11px}
+  .rc-tg .bub{flex:1;background:#0e1621;border:1px solid var(--line);border-radius:9px;padding:8px 10px}
+  .rc-tg .nm{color:#5bc98f;font-size:10.5px;font-weight:600;margin-bottom:3px}
+  .rc-tg .tx{color:#e8eef2;font-size:10.5px;line-height:1.5}
   .rc-tg .tx b{color:#8fe3c4}
-  .rc-tg .kb{display:flex;gap:6px;margin-top:9px}
-  .rc-tg .kb span{flex:1;text-align:center;border:1px solid var(--line);border-radius:6px;padding:6px;font-size:10px}
+  .rc-tg .kb{display:flex;gap:5px;margin-top:8px}
+  .rc-tg .kb span{flex:1;text-align:center;border:1px solid var(--line);border-radius:5px;padding:5px;font-size:9.5px}
   .rc-tg .kb .y{color:var(--accent)} .rc-tg .kb .n{color:var(--muted)}
-  .rc-led{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px}
-  .rc-led .row{display:flex;justify-content:space-between;gap:10px;padding:7.5px 2px;border-bottom:1px solid var(--line)}
+  .rc-led{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px}
+  .rc-led .row{display:flex;justify-content:space-between;gap:9px;padding:6.5px 2px;border-bottom:1px solid var(--line)}
   .rc-led .row:last-child{border-bottom:0}
   .rc-led .sym{color:#c6d0d9;flex:1} .rc-led .st{color:var(--muted)} .rc-led .win{color:var(--accent)} .rc-led .lose{color:var(--loss)}
   .rc-curve{height:100%;display:flex;align-items:center}
-  .rc-curve svg{width:100%;height:150px}
+  .rc-curve svg{width:100%;height:132px}
   .rc-state{display:flex;flex-direction:column;justify-content:center;height:100%}
-  .rc-state .big{font-family:Georgia,serif;font-size:22px;line-height:1.16;color:var(--ink)}
-  .rc-state .sub{color:var(--muted);font-size:12px;margin-top:9px}
-  .rc-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-  .rc-stats .s{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:7px 10px}
-  .rc-stats .n{font-family:Georgia,serif;font-size:19px;color:var(--ink);line-height:1}
+  .rc-state .big{font-family:Georgia,serif;font-size:20px;line-height:1.16;color:var(--ink)}
+  .rc-state .sub{color:var(--muted);font-size:11px;margin-top:8px}
+  .rc-stats{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  .rc-stats .s{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 9px}
+  .rc-stats .n{font-family:Georgia,serif;font-size:17px;color:var(--ink);line-height:1}
   .rc-stats .n .lose{color:var(--loss)} .rc-stats .n .win{color:var(--accent)}
-  .rc-stats .l{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-top:4px}
+  .rc-stats .l{font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-top:3px}
 
-  /* copy over the top; scrim keeps it readable and hides the ring's left arc */
   .scrim{position:absolute;inset:0;z-index:35;pointer-events:none;
-         background:linear-gradient(90deg,var(--bg) 8%,rgba(14,18,22,.7) 32%,rgba(14,18,22,0) 60%)}
-  .copy{position:absolute;z-index:40;left:6%;top:50%;transform:translateY(-50%);max-width:31rem;pointer-events:none}
-  .brand{display:flex;align-items:center;gap:11px;margin-bottom:22px}
-  .brand svg{width:34px;height:34px}
-  .brand .wm{font-size:19px;font-weight:700;letter-spacing:-.01em}
+         background:linear-gradient(90deg,var(--bg) 10%,rgba(14,18,22,.72) 34%,rgba(14,18,22,0) 62%)}
+  .copy{position:absolute;z-index:40;left:6%;top:50%;transform:translateY(-50%);max-width:32rem;pointer-events:none}
+  .chip{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:12.5px;color:var(--muted);margin-bottom:22px}
+  .brand{display:flex;align-items:center;gap:11px;margin-bottom:18px}
+  .brand svg{width:32px;height:32px}
+  .brand .wm{font-size:18px;font-weight:700;letter-spacing:-.01em}
   .brand .wm b{color:var(--accent)}
   .copy h1{font-family:Georgia,"Times New Roman",serif;font-size:clamp(30px,5vw,47px);line-height:1.1;letter-spacing:-.01em;margin-bottom:16px}
   .copy h1 em{color:var(--accent);font-style:normal}
-  .copy p{color:#c6d0d9;font-size:16.5px;max-width:34ch}
+  .copy p{color:#c6d0d9;font-size:16.5px;max-width:36ch}
   .hint{position:absolute;z-index:40;left:6%;bottom:30px;color:var(--muted);font-size:12.5px;display:flex;align-items:center;gap:9px;pointer-events:none}
   .hint .key{border:1px solid var(--line);border-radius:6px;padding:2px 8px;color:var(--ink);font-size:11.5px}
   .hint .dn{animation:bob 1.8s ease-in-out infinite}
@@ -73,17 +81,13 @@
   .after h2{font-family:Georgia,serif;font-weight:400;font-size:24px;margin-bottom:10px}
   .after p{color:var(--muted);font-size:15px;max-width:60ch}
 
-  @media(max-width:760px){
-    .copy{top:auto;bottom:15%;transform:none;right:6%}
-    .scrim{background:linear-gradient(0deg,var(--bg) 12%,rgba(14,18,22,.6) 36%,rgba(14,18,22,0) 72%)}
-  }
   @media(prefers-reduced-motion:reduce){.hint .dn{animation:none}}
 </style>
 </head>
 <body>
   <div class="scene">
     <div class="pin" id="pin">
-      <div class="ring" id="ring"></div>
+      <div class="wheel" id="wheel"></div>
       <div class="scrim"></div>
       <div class="copy">
         <div class="brand">
@@ -94,8 +98,9 @@
           </svg>
           <span class="wm">Signal<b>Gate</b></span>
         </div>
-        <h1>Every signal seller shows the wins.<br><em>We show everything.</em></h1>
-        <p>Every trade, executed by the rulebook and written to the Truth Room — a record you can audit, losses included.</p>
+        <div class="chip">Demo forward-test · You approve every trade · No live money in the system</div>
+        <h1>Every signal seller shows you the wins.<br><em>SignalGate shows you everything.</em></h1>
+        <p>Executed by the rulebook, written to the Truth Room — a live record you can audit, losses included.</p>
       </div>
       <div class="hint"><span class="dn">↕</span> Scroll to spin the ring &nbsp;·&nbsp; <span class="key">drag</span> to nudge it</div>
     </div>
@@ -103,94 +108,81 @@
 
   <div class="after">
     <h2>That's the hero.</h2>
-    <p>The SignalGate screens ride a big vertical ring — in at the top, down the right, out at the bottom,
-      round again behind the headline. Scroll spins it and reverses it; drag nudges it. Self-contained
-      CSS 3D, no libraries, on our real product screens.</p>
+    <p>The SignalGate screens ride a wheel spinning on a horizontal axis — up the front, edge-on over
+      the top where you see the printed back, then down and round again. Packed close, off the top and
+      bottom, behind the headline. Scroll spins and reverses it; drag nudges it. CSS 3D, no libraries.</p>
   </div>
 
 <script>
 (function(){
   var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   var pin = document.getElementById("pin");
-  var ring = document.getElementById("ring");
+  var wheel = document.getElementById("wheel");
   var scene = document.querySelector(".scene");
 
-  var gate = '<svg viewBox="0 0 64 64" style="width:100%;height:100%"><path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var gate = '<svg viewBox="0 0 64 64" style="width:100%;height:100%"><rect x="2" y="2" width="60" height="60" rx="16" fill="none" stroke="#4fd1a5" stroke-opacity=".2"/><path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var gateplain = '<svg viewBox="0 0 64 64" style="width:100%;height:100%"><path d="M44 24 A15 15 0 1 0 47 39 L34 39" fill="none" stroke="#4fd1a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M30 33 L36 37 L48 21" fill="none" stroke="#8fe3c4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   var dots = '<i style="background:#e0736a"></i><i style="background:#e0b25a"></i><i style="background:#4fd1a5"></i>';
-  var T = [
+  var FRONTS = [
     '<div class="rc-bar">'+dots+'<span class="t">SignalGate · Telegram</span></div><div class="rc-body rc-tg">'+
       '<div class="av">SG</div><div class="bub"><div class="nm">SignalGate</div>'+
-      '<div class="tx"><b>XAUUSD BUY</b> · Entry Market<br>SL 2343 · TP1 2353 · TP2 2358 · TP3 2363</div>'+
-      '<div class="kb"><span class="y">✅ YES: Place Demo Trade</span><span class="n">❌ NO</span></div></div></div>',
+      '<div class="tx"><b>XAUUSD BUY</b> · Entry Market<br>SL 2343 · TP1 2353 · TP2 2358</div>'+
+      '<div class="kb"><span class="y">✅ YES: Place Demo Trade</span><span class="n">❌ NO</span></div></div>',
     '<div class="rc-bar">'+dots+'<span class="t">The Truth Room · live record</span></div><div class="rc-body rc-led">'+
       '<div class="row"><span class="sym">XAUUSD BUY</span><span class="st">TP3_HIT</span><span class="win">+3.0R</span></div>'+
       '<div class="row"><span class="sym">EURUSD SELL</span><span class="st">STOPPED_OUT</span><span class="lose">−1.0R</span></div>'+
       '<div class="row"><span class="sym">GBPJPY BUY</span><span class="st">TP1_HIT</span><span class="win">+0.5R</span></div>'+
       '<div class="row"><span class="sym">USDJPY SELL</span><span class="st">STOPPED_OUT</span><span class="lose">−1.0R</span></div></div>',
     '<div class="rc-bar">'+dots+'<span class="t">Cumulative R · drawdown and all</span></div><div class="rc-body"><div class="rc-curve">'+
-      '<svg viewBox="0 0 320 150" preserveAspectRatio="none"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">'+
+      '<svg viewBox="0 0 300 132" preserveAspectRatio="none"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">'+
       '<stop offset="0" stop-color="rgba(79,209,165,.28)"/><stop offset="1" stop-color="rgba(79,209,165,0)"/></linearGradient></defs>'+
-      '<polygon fill="url(#g)" points="8,110 46,88 82,100 120,126 158,88 196,110 232,66 270,44 312,22 312,144 8,144"/>'+
-      '<polyline fill="none" stroke="#4fd1a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="8,110 46,88 82,100 120,126 158,88 196,110 232,66 270,44 312,22"/>'+
-      '<polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" points="82,100 120,126"/>'+
-      '<polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" points="158,88 196,110"/>'+
-      '<circle cx="312" cy="22" r="4" fill="#4fd1a5"/></svg></div></div>',
+      '<polygon fill="url(#g)" points="8,98 46,78 82,90 120,112 158,78 196,98 232,58 270,38 292,20 292,126 8,126"/>'+
+      '<polyline fill="none" stroke="#4fd1a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="8,98 46,78 82,90 120,112 158,78 196,98 232,58 270,38 292,20"/>'+
+      '<polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" points="82,90 120,112"/>'+
+      '<polyline fill="none" stroke="#e0736a" stroke-width="3" stroke-linecap="round" points="158,78 196,98"/>'+
+      '<circle cx="292" cy="20" r="4" fill="#4fd1a5"/></svg></div></div>',
     '<div class="rc-bar">'+dots+'<span class="t">The rulebook</span></div><div class="rc-body rc-state">'+
-      '<div style="width:30px;height:30px;margin-bottom:10px">'+gate+'</div>'+
+      '<div style="width:28px;height:28px;margin-bottom:9px">'+gateplain+'</div>'+
       '<div class="big">A hard stop on every trade</div><div class="sub">Your loss is bounded before it ever opens.</div></div>',
     '<div class="rc-bar">'+dots+'<span class="t">Admin · today</span></div><div class="rc-body rc-stats">'+
       '<div class="s"><div class="n">12</div><div class="l">Signals</div></div>'+
       '<div class="s"><div class="n">9</div><div class="l">Approved</div></div>'+
       '<div class="s"><div class="n">9</div><div class="l">Executed</div></div>'+
-      '<div class="s"><div class="n"><span class="win">5</span> · <span class="lose">4</span></div><div class="l">Win · Loss</div></div></div>'
+      '<div class="s"><div class="n"><span class="win">5</span> · <span class="lose">4</span></div><div class="l">Win · Loss</div></div></div>',
+    '<div class="rc-bar">'+dots+'<span class="t">Managed for you</span></div><div class="rc-body rc-state">'+
+      '<div style="width:28px;height:28px;margin-bottom:9px">'+gateplain+'</div>'+
+      '<div class="big">SL → breakeven at TP1</div><div class="sub">Then TP3’s stop moves to TP1. Automatically.</div></div>'
   ];
+  var back = '<div class="rc-face back"><div class="g">'+gate+'</div><div class="w">Signal<b>Gate</b></div><div class="tag">Demo forward-test</div></div>';
 
-  var N = 7, step = 2*Math.PI/N, cards = [];
+  /* build a densely-packed wheel: N cards evenly around a horizontal axle */
+  var N = 12, R = 430, step = 360/N;
   for(var i=0;i<N;i++){
     var el = document.createElement("div"); el.className = "rc";
-    el.innerHTML = T[i % T.length]; ring.appendChild(el);
-    cards.push(el);
+    el.innerHTML = '<div class="rc-face front">'+FRONTS[i % FRONTS.length]+'</div>'+back;
+    el.style.transform = "rotateX("+(i*step)+"deg) translateZ("+R+"px)";
+    wheel.appendChild(el);
   }
 
-  function smoothstep(a,b,t){ if(t<=a) return 0; if(t>=b) return 1; var x=(t-a)/(b-a); return x*x*(3-2*x); }
-  function paint(a){
-    var W = pin.clientWidth, H = pin.clientHeight;
-    var Cx = W*0.40, Cy = H*0.5, R = H*0.58;      // circle bigger than the screen → off top & bottom
-    for(var i=0;i<cards.length;i++){
-      var th = a + i*step;
-      var ct = Math.cos(th), st2 = Math.sin(th);
-      var x = Cx + R*ct, y = Cy + R*st2;
-      var depth = (ct+1)/2;                          // 0 = far left (behind copy) … 1 = 3 o'clock (front)
-      var scale = 0.60 + 0.45*depth;
-      var op = smoothstep(-0.30, 0.12, ct);          // fade out on the left, behind the headline
-      var rz = st2 * 9;                              // gentle lean that flips top↔bottom
-      var el = cards[i];
-      el.style.transform = "translate(-50%,-50%) translate("+x.toFixed(1)+"px,"+y.toFixed(1)+"px) "+
-                           "rotateX(7deg) rotateY(-13deg) rotateZ("+rz.toFixed(2)+"deg) scale("+scale.toFixed(3)+")";
-      el.style.opacity = op.toFixed(3);
-      el.style.zIndex = String(Math.round(depth*1000));
-    }
-  }
+  function set(spin){ wheel.style.transform = "translateX(20%) rotateY(-16deg) rotateX("+spin.toFixed(2)+"deg)"; }
 
-  /* optional debug: #a=1.2 freezes the ring at a fixed angle for inspection */
   var dbg = parseFloat((location.hash.match(/a=([-\d.]+)/)||[])[1]);
-  if(reduce || !isNaN(dbg)){ paint(isNaN(dbg)?(-Math.PI/2):dbg); return; }
+  if(reduce || !isNaN(dbg)){ set(isNaN(dbg)?18:dbg); return; }
 
-  var auto = -Math.PI/2, s = 0, drag = 0;
+  var auto = 0, s = 0, drag = 0;
   function frame(){
     var range = scene.offsetHeight - window.innerHeight;
     var prog = range > 0 ? Math.min(1, Math.max(0, -scene.getBoundingClientRect().top / range)) : 0;
-    s += (prog*Math.PI*2*1.5 - s) * 0.09;            // scroll drives ~1.5 turns, with inertia
-    auto += 0.0016;                                  // gentle idle spin (~65s / revolution)
-    paint(auto + s + drag);
+    s += (prog*360*1.6 - s) * 0.09;         // scroll spins ~1.6 turns, with inertia
+    auto += 0.16;                            // gentle idle spin (~37s / revolution)
+    set(auto + s + drag);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
-  /* drag up/down to nudge the spin */
   var dragging = false, lastY = 0;
   pin.addEventListener("pointerdown", function(e){ dragging = true; lastY = e.clientY; try{ pin.setPointerCapture(e.pointerId);}catch(_e){} });
-  window.addEventListener("pointermove", function(e){ if(!dragging) return; drag += (e.clientY - lastY)*0.006; lastY = e.clientY; });
+  window.addEventListener("pointermove", function(e){ if(!dragging) return; drag += (e.clientY - lastY)*0.25; lastY = e.clientY; });
   window.addEventListener("pointerup", function(){ dragging = false; });
 })();
 </script>
