@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SignalGate — strategy-automation competitor teardown</title>
+<style>
+  :root{
+    --bg:#0d1116; --panel:#151d25; --panel2:#111820; --line:#26313c; --line2:#33414d;
+    --ink:#eaf0f4; --muted:#8fa0ac; --dim:#63727e;
+    --accent:#4fd1a5; --accent-ink:#08150f; --warn:#e0b25a; --loss:#e0736a;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --serif:Georgia,"Times New Roman",serif;
+    --sans:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:radial-gradient(1100px 560px at 82% -12%, rgba(79,209,165,.06), transparent 60%), var(--bg);
+    color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased;font-size:15px;line-height:1.55}
+  .wrap{max-width:1120px;margin:0 auto;padding:34px 20px 64px}
+  .eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  h1{font-family:var(--serif);font-weight:400;font-size:clamp(25px,3.6vw,36px);letter-spacing:-.01em;margin:8px 0 8px;text-wrap:balance}
+  .lede{color:var(--muted);max-width:74ch;font-size:15px}
+  .lede b{color:var(--ink)}
+
+  .camp{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:700;
+        margin:30px 0 10px;display:flex;align-items:center;gap:10px}
+  .camp:before{content:"";flex:0 0 24px;height:1px;background:var(--line2)}
+
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+  table{width:100%;border-collapse:collapse;min-width:760px}
+  th,td{text-align:left;padding:13px 16px;vertical-align:top;border-top:1px solid var(--line)}
+  thead th{border-top:0;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
+    font-weight:700;background:var(--panel2);position:sticky;top:0}
+  tbody tr:hover{background:rgba(255,255,255,.015)}
+  .who{font-weight:700;font-size:14.5px;color:var(--ink);white-space:nowrap}
+  .who small{display:block;font-weight:400;font-size:11px;color:var(--dim);margin-top:2px;letter-spacing:.02em}
+  .what{color:#c4ced6;font-size:13.5px;max-width:34ch}
+  .price{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:13.5px;color:var(--ink);white-space:nowrap}
+  .price small{color:var(--dim);font-size:11px}
+  .gap{color:var(--muted);font-size:13px;max-width:40ch}
+  .gap b{color:var(--loss);font-weight:600}
+
+  tr.sg{background:linear-gradient(90deg,rgba(79,209,165,.10),rgba(79,209,165,.02))}
+  tr.sg td{border-top:1px solid rgba(79,209,165,.4)}
+  tr.sg .who{color:var(--accent)}
+  tr.sg .gap b{color:var(--accent)}
+
+  .callout{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:12px;padding:18px 20px;margin-top:26px;font-size:15px;color:#cdd8e0}
+  .callout .label{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--accent);font-weight:700;margin-bottom:8px}
+  .callout b{color:var(--ink)}
+
+  .note{font-size:12px;color:var(--dim);line-height:1.7;margin-top:24px}
+  .note b{color:var(--muted)}
+  a{color:var(--accent)}
+  .src{font-size:11.5px;color:var(--dim);margin-top:8px}
+  .src a{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">SignalGate · competitor teardown</div>
+  <h1>Everyone automates the trade. Nobody proves the record.</h1>
+  <p class="lede">The strategy-automation space is crowded — the automation itself is commoditised (some tools are free).
+    Read the last column down the page: <b>every one of them leans on a backtest or a selective stat, and none give you a live, auditable forward record.</b>
+    That empty column is the only defensible place to stand.</p>
+
+  <!-- CAMP A -->
+  <div class="camp">Camp A — build &amp; run your own rules (no-code EA / bot builders)</div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Player</th><th>What it is</th><th>Price (approx)</th><th>The trust gap</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="who">EA Builder / Pro<small>MT4 · MT5</small></td>
+          <td class="what">Form/visual builder that generates a runnable MT4/MT5 Expert Advisor from indicators + IF-THEN rules.</td>
+          <td class="price">~£75 <small>one-time / freemium</small></td>
+          <td class="gap">You judge it on <b>your own backtest</b> — curve-fitting is on you. No forward proof, no accountability once it's live.</td>
+        </tr>
+        <tr>
+          <td class="who">Build Alpha<small>pro EA generation</small></td>
+          <td class="what">Serious strategy generation, backtesting and stress-testing; exports MT4/MT5 EAs. Aimed at semi-pros.</td>
+          <td class="price">~£800–1,000/yr</td>
+          <td class="gap">Best-in-class testing, but still <b>backtest-driven</b>. Nothing published live for a follower to verify.</td>
+        </tr>
+        <tr>
+          <td class="who">Tradetron<small>strategy marketplace</small></td>
+          <td class="what">No-code condition builder; deploy your own or subscribe to others' strategies from a marketplace.</td>
+          <td class="price">~£40/mo</td>
+          <td class="gap">Marketplace strategies advertise <b>backtests and short live runs</b>; buyer-beware, ranking can be gamed.</td>
+        </tr>
+        <tr>
+          <td class="who">Capitalise.ai<small>natural-language, forex</small></td>
+          <td class="what">Type your strategy in plain English ("if RSI &lt; 30 buy…") and it executes on connected brokers. Often white-labelled.</td>
+          <td class="price">Free via brokers – ~£40/mo</td>
+          <td class="gap">Executes your rules faithfully — but offers <b>no independent proof the rules make money</b>.</td>
+        </tr>
+        <tr>
+          <td class="who">Composer<small>US equities / portfolios</small></td>
+          <td class="what">No-code "symphonies" — rule-based portfolios that rebalance automatically. Slick, backtest-first.</td>
+          <td class="price">Free tier · ~£25–30/mo</td>
+          <td class="gap">Leads with <b>historical backtests</b>; the past-performance framing is exactly the thing regulators warn about.</td>
+        </tr>
+        <tr>
+          <td class="who">3Commas<small>crypto bots</small></td>
+          <td class="what">DCA/grid/signal bots and copy-a-leader for crypto. Large, friendly, freemium.</td>
+          <td class="price">Free · leaders ~£20–75/mo <small>+ perf fee</small></td>
+          <td class="gap">Leader stats can be <b>short-dated and selective</b>; crypto-only; nothing independently audited.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- CAMP B -->
+  <div class="camp">Camp B — copy someone else's trades (social / copy trading)</div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Player</th><th>What it is</th><th>Price (approx)</th><th>The trust gap</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="who">eToro CopyTrader<small>~35M users</small></td>
+          <td class="what">One tap to auto-mirror another trader's positions in your own account. The giant of the space.</td>
+          <td class="price">No copy fee <small>spread · £5 withdrawal · inactivity</small></td>
+          <td class="gap">"Popular Investor" stats are real but <b>survivorship-selective</b> — you copy a person, not a rule you control, and losers quietly vanish from the leaderboard.</td>
+        </tr>
+        <tr>
+          <td class="who">ZuluTrade<small>~30M accounts</small></td>
+          <td class="what">Broker-agnostic hub that auto-executes 10,000+ signal providers' trades into your account.</td>
+          <td class="price">Free-ish <small>via broker spreads</small></td>
+          <td class="gap">Huge provider count = huge variance; rankings are <b>gamed</b> and a "top" provider can be brand-new and curve-fit.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- MARKETPLACE -->
+  <div class="camp">And the store everyone shops in</div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Player</th><th>What it is</th><th>Price (approx)</th><th>The trust gap</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="who">MQL5 Market<small>the EA bazaar</small></td>
+          <td class="what">The default marketplace to buy or rent ready-made MT4/MT5 robots.</td>
+          <td class="price">~£25–450 <small>per EA</small></td>
+          <td class="gap"><b>Flooded with faked equity curves</b> and undisclosed test settings; documented 2–6 month "sell then collapse" scam windows.</td>
+        </tr>
+        <tr class="sg">
+          <td class="who">SignalGate<small>the honest lane</small></td>
+          <td class="what">One-tap-approved (or rule-fired) trades, opened with a hard stop and staged exits, then written to the Truth Room.</td>
+          <td class="price">% of the provider's sub <small>(demo-first)</small></td>
+          <td class="gap">A <b>live, forward, auditable record</b> — every fill, every stop, every loss, on a read-only account. Not a backtest. The one column above that nobody else can fill.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <div class="label">The one gap they all share</div>
+    Strip away the interfaces and they're the same bet: <b>trust my backtest</b>, or <b>trust my leaderboard</b>. Both are exactly what
+    blows up on a 2–6 month cycle when live losses arrive. SignalGate's wedge isn't the automation — it's being the only one whose numbers
+    you can <b>check while they happen</b>. In a category built on unverifiable curves, "audit it yourself" is a position almost no one occupies.
+  </div>
+
+  <p class="note">
+    <b>Prices are approximate and shift by broker, tier, and region</b> — verify current pricing before quoting any of these. Descriptions are
+    a neutral read of each product's public positioning as of mid-2026, not endorsements. The recurring pattern — backtest-led marketing, selective
+    leaderboards, and short reputation half-lives — is drawn from the sources below.
+    <div class="src">Sources:
+      <a href="https://www.vpsforextrader.com/blog/no-code-trading-platforms/">no-code platforms guide</a> ·
+      <a href="https://slashdot.org/software/comparison/Capitalise.ai-vs-Composer-Trade/">Capitalise.ai vs Composer</a> ·
+      <a href="https://www.xpay.sh/saas-pricing/composer-tool/">Composer pricing</a> ·
+      <a href="https://finbold.com/guide/3commas-fees/">3Commas fees</a> ·
+      <a href="https://eabuilderpro.com/">EA Builder</a> ·
+      <a href="https://www.buildalpha.com/metatrader-ea-generator/">Build Alpha</a> ·
+      <a href="https://newyorkcityservers.com/blog/how-to-spot-forex-ea-scams">EA scam red flags</a> ·
+      <a href="https://www.dailyforex.com/comparison/etoro-vs-zulutrade">eToro vs ZuluTrade</a>
+    </div>
+  </p>
+</div>
+</body>
+</html>
