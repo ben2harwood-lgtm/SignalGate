@@ -97,6 +97,9 @@
   .fstage .fv{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600;font-size:15px}
   .fstage.final{border-color:rgba(79,209,165,.4)} .fstage.final .fv{color:var(--accent)}
 
+  .scalechip{flex:1;min-width:92px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 11px;text-align:center}
+  .scalechip span{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
+  .scalechip b{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--accent);font-size:16px;font-weight:600}
   .callout{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--accent);
     border-radius:10px;padding:15px 17px;font-size:14px;color:#cdd8e0}
   .callout b{color:var(--ink)}
@@ -154,7 +157,7 @@
 
   <!-- B2B ENGINE -->
   <div class="sectitle"><span class="n">01</span><h2 class="sec">The B2B engine — sell execution to providers who already have an audience</h2></div>
-  <div class="sub" style="margin-top:-10px">Providers offer their members a SignalGate-powered service — one-tap execution + the Truth Room record. Members pay monthly (<b style="color:var(--muted)">Nick's price was £130</b>); you take a share. You never build the audience.</div>
+  <div class="sub" style="margin-top:-10px">You charge a <b style="color:var(--muted)">percentage of each member's subscription</b> — so a £50 group costs far less than a £300 group, the same cut scaled to the service. Nick's sits at the £130 anchor. You never build the audience.</div>
   <div class="grid two">
     <div class="panel">
       <div class="ctrl"><div class="row"><b>Providers signed</b><span class="out"><span id="o_providers" class="num">25</span></span></div>
@@ -163,10 +166,10 @@
         <input type="range" id="p_audience" min="100" max="10000" step="100" value="1200"></div>
       <div class="ctrl"><div class="row"><b>…who become paying members</b><span class="out"><span id="o_take" class="num">3.5</span>%</span></div>
         <input type="range" id="p_take" min="0.5" max="20" step="0.5" value="3.5"></div>
-      <div class="ctrl"><div class="row"><b>Price per member / month</b><span class="out">£<span id="o_price" class="num">130</span></span></div>
-        <input type="range" id="p_price" min="10" max="250" step="5" value="130"></div>
-      <div class="ctrl"><div class="row"><b>Your share of the subscription</b><span class="out"><span id="o_split" class="num">40</span>%</span></div>
-        <input type="range" id="p_split" min="10" max="90" step="5" value="40"></div>
+      <div class="ctrl"><div class="row"><b>Avg subscription price (their service)</b><span class="out">£<span id="o_price" class="num">130</span></span></div>
+        <input type="range" id="p_price" min="20" max="400" step="10" value="130"></div>
+      <div class="ctrl"><div class="row"><b>Your fee — % of their sub</b><span class="out"><span id="o_split" class="num">30</span>%</span></div>
+        <input type="range" id="p_split" min="5" max="50" step="2.5" value="30"></div>
       <div class="ctrl" style="margin-bottom:0"><div class="row"><b>Platform fee / provider / month</b><span class="out">£<span id="o_fee" class="num">99</span></span></div>
         <input type="range" id="p_fee" min="0" max="500" step="10" value="99"></div>
     </div>
@@ -174,11 +177,20 @@
     <div class="panel">
       <div class="label" style="margin-bottom:10px">Where the money comes from</div>
       <div class="outrow"><span class="k">Active paying users</span><span class="v" id="r_users">—</span></div>
-      <div class="outrow"><span class="k">Rev-share (your split of upgrades)</span><span class="v" id="r_revshare">—</span></div>
+      <div class="outrow"><span class="k">Your fee (× paying members)</span><span class="v" id="r_revshare">—</span></div>
       <div class="outrow"><span class="k">Platform fees (<span id="r_pcount">25</span> providers)</span><span class="v" id="r_platform">—</span></div>
       <div class="outrow total"><span class="k">Total MRR</span><span class="v" id="r_mrr">—</span></div>
       <div class="outrow"><span class="k">ARR</span><span class="v" id="r_arr">—</span></div>
       <div class="outrow"><span class="k">Biggest provider = share of revenue</span><span class="v" id="r_conc">—</span></div>
+
+      <div style="margin-top:18px">
+        <div class="label" style="margin-bottom:10px">Sliding scale — your fee per member, by their price</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <div class="scalechip"><span>£50 group</span><b id="sc50">—</b></div>
+          <div class="scalechip"><span>£130 · Nick</span><b id="sc130">—</b></div>
+          <div class="scalechip"><span>£300 group</span><b id="sc300">—</b></div>
+        </div>
+      </div>
 
       <div class="callout" style="margin-top:18px">
         <div class="label" style="margin-bottom:8px">Target solver</div>
@@ -245,16 +257,17 @@
 
   <hr class="d">
   <p class="note">
-    <b>Grounded in a real price:</b> £130/month is what Nick's members actually paid, so the model defaults
-    to that — the market clearly bears premium pricing. <b>The catch is the trade-off:</b> the higher the
-    price, the fewer convert. Paid conversion from a free channel is usually <b>1–5%</b> of the audience,
-    which is why the default sits at 3.5% — push the price up and you'd nudge conversion down. <b>Your share</b>
-    is the other lever: 40% assumes a genuine partnership (you run the platform, execution and record); if a
-    provider only bolts execution onto their own paid tier, expect less. Retail-trader counts vary a lot by
-    source (~10–15M retail FX globally is commonly cited) — treat the market dials as sanity-checks, not
-    facts. Nothing here models costs, payment fees, churn, or the regulatory step-up that comes with
-    executing live money for other people's customers — get proper UK/FCA advice before that stage.
-    Demo-first keeps you clear of it for now.
+    <b>Priced as a share of each provider's own subscription</b>, so it scales: at a 30% fee a £50 group
+    yields £15/member and a £300 group £90/member — same cut, very different money. £130 is Nick's anchor;
+    set the <b>average subscription price</b> to reflect the mix of providers you'd actually sign. <b>The
+    trade-off to respect:</b> premium subs convert fewer members — paid conversion off a free channel is
+    usually <b>1–5%</b> of the audience, which is why the default sits at 3.5%. Whether your fee is carved
+    from the existing sub or added on top as an upgrade the member pays is a commercial detail — the maths
+    (your revenue/member = sub × fee%) is the same either way. Retail-trader counts vary a lot by source
+    (~10–15M retail FX globally is commonly cited) — treat the market dials as sanity-checks, not facts.
+    Nothing here models costs, payment fees, churn, or the regulatory step-up that comes with executing live
+    money for other people's customers — get proper UK/FCA advice before that stage. Demo-first keeps you
+    clear of it for now.
   </p>
 </div>
 
@@ -270,10 +283,10 @@
   }
 
   var PRESETS={
-    cons:{p_providers:10,p_audience:800,p_take:2,p_price:100,p_split:40,p_fee:49},
-    base:{p_providers:25,p_audience:1200,p_take:3.5,p_price:130,p_split:40,p_fee:99},
-    amb:{p_providers:75,p_audience:2000,p_take:5,p_price:150,p_split:45,p_fee:149},
-    nick:{p_providers:1,p_audience:4,p_take:100,p_price:130,p_split:50,p_fee:0}
+    cons:{p_providers:10,p_audience:800,p_take:2,p_price:80,p_split:25,p_fee:49},
+    base:{p_providers:25,p_audience:1200,p_take:3.5,p_price:130,p_split:30,p_fee:99},
+    amb:{p_providers:75,p_audience:2000,p_take:5,p_price:220,p_split:35,p_fee:149},
+    nick:{p_providers:1,p_audience:4,p_take:100,p_price:130,p_split:30,p_fee:0}
   };
   var NICK={n_audience:4,n_take:100};
 
@@ -318,6 +331,11 @@
     $("r_arr").textContent="£"+gbp(arr)+"/yr";
     $("r_conc").textContent=conc.toFixed(conc<10?1:0)+"%";
 
+    // sliding scale: your fee per member at three subscription prices
+    $("sc50").textContent="£"+gbp(50*(s/100));
+    $("sc130").textContent="£"+gbp(130*(s/100));
+    $("sc300").textContent="£"+gbp(300*(s/100));
+
     // target solver
     var target=num("t_target");
     $("o_target").textContent=gbp(target);
@@ -330,7 +348,7 @@
     var nickUsers=na*(nt/100);
     var nickMRR=nickUsers*U*(s/100);
     var nickARR=nickMRR*12;
-    $("nick-line").innerHTML='~'+na+' paying members at £'+gbp(U)+' → <b class="num" style="color:var(--loss)">£'+gbp(nickMRR)+'/mo</b> (£'+gbp(nickARR)+'/yr). '+
+    $("nick-line").innerHTML='~'+na+' members × £'+gbp(U)+' sub × '+s+'% → <b class="num" style="color:var(--loss)">£'+gbp(nickMRR)+'/mo</b> (£'+gbp(nickARR)+'/yr). '+
       'Even at his <b>claimed</b> 100 that\'s ~£'+gbp(100*(nt/100)*U*(s/100))+'/mo — and still 100% on one person.';
 
     // ---- compare ----
