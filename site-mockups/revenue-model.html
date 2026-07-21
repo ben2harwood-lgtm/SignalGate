@@ -154,19 +154,19 @@
 
   <!-- B2B ENGINE -->
   <div class="sectitle"><span class="n">01</span><h2 class="sec">The B2B engine — sell execution to providers who already have an audience</h2></div>
-  <div class="sub" style="margin-top:-10px">They add it as a one-tap “auto-execution” upgrade for their members; you split the upgrade fee, so they only gain. You never build an audience.</div>
+  <div class="sub" style="margin-top:-10px">Providers offer their members a SignalGate-powered service — one-tap execution + the Truth Room record. Members pay monthly (<b style="color:var(--muted)">Nick's price was £130</b>); you take a share. You never build the audience.</div>
   <div class="grid two">
     <div class="panel">
       <div class="ctrl"><div class="row"><b>Providers signed</b><span class="out"><span id="o_providers" class="num">25</span></span></div>
         <input type="range" id="p_providers" min="1" max="200" step="1" value="25"></div>
       <div class="ctrl"><div class="row"><b>Avg audience per provider</b><span class="out"><span id="o_audience" class="num">1,200</span></span></div>
         <input type="range" id="p_audience" min="100" max="10000" step="100" value="1200"></div>
-      <div class="ctrl"><div class="row"><b>Take the upgrade</b><span class="out"><span id="o_take" class="num">7</span>%</span></div>
-        <input type="range" id="p_take" min="1" max="25" step="0.5" value="7"></div>
-      <div class="ctrl"><div class="row"><b>Upgrade price / month</b><span class="out">£<span id="o_price" class="num">20</span></span></div>
-        <input type="range" id="p_price" min="5" max="100" step="1" value="20"></div>
-      <div class="ctrl"><div class="row"><b>Your split of the upgrade</b><span class="out"><span id="o_split" class="num">50</span>%</span></div>
-        <input type="range" id="p_split" min="10" max="90" step="5" value="50"></div>
+      <div class="ctrl"><div class="row"><b>…who become paying members</b><span class="out"><span id="o_take" class="num">3.5</span>%</span></div>
+        <input type="range" id="p_take" min="0.5" max="20" step="0.5" value="3.5"></div>
+      <div class="ctrl"><div class="row"><b>Price per member / month</b><span class="out">£<span id="o_price" class="num">130</span></span></div>
+        <input type="range" id="p_price" min="10" max="250" step="5" value="130"></div>
+      <div class="ctrl"><div class="row"><b>Your share of the subscription</b><span class="out"><span id="o_split" class="num">40</span>%</span></div>
+        <input type="range" id="p_split" min="10" max="90" step="5" value="40"></div>
       <div class="ctrl" style="margin-bottom:0"><div class="row"><b>Platform fee / provider / month</b><span class="out">£<span id="o_fee" class="num">99</span></span></div>
         <input type="range" id="p_fee" min="0" max="500" step="10" value="99"></div>
     </div>
@@ -245,13 +245,16 @@
 
   <hr class="d">
   <p class="note">
-    <b>Assumptions are illustrative.</b> Retail-trader counts vary a lot by source — a figure around
-    10–15 million retail FX traders globally is commonly cited, and “broader retail” is larger — so treat
-    every market dial as something to sanity-check against your own research, not a fact. The B2B dials
-    (take-rate, price, split) are the ones to pressure-test first: early take-rates for a paid add-on are
-    often 2–5%, which the per-provider platform fee is there to cushion. Nothing here models costs, tax,
-    payment fees, churn, or the regulatory step-up that comes with executing live money for other people's
-    customers — get proper UK/FCA advice before that stage. Demo-first keeps you clear of it for now.
+    <b>Grounded in a real price:</b> £130/month is what Nick's members actually paid, so the model defaults
+    to that — the market clearly bears premium pricing. <b>The catch is the trade-off:</b> the higher the
+    price, the fewer convert. Paid conversion from a free channel is usually <b>1–5%</b> of the audience,
+    which is why the default sits at 3.5% — push the price up and you'd nudge conversion down. <b>Your share</b>
+    is the other lever: 40% assumes a genuine partnership (you run the platform, execution and record); if a
+    provider only bolts execution onto their own paid tier, expect less. Retail-trader counts vary a lot by
+    source (~10–15M retail FX globally is commonly cited) — treat the market dials as sanity-checks, not
+    facts. Nothing here models costs, payment fees, churn, or the regulatory step-up that comes with
+    executing live money for other people's customers — get proper UK/FCA advice before that stage.
+    Demo-first keeps you clear of it for now.
   </p>
 </div>
 
@@ -267,12 +270,12 @@
   }
 
   var PRESETS={
-    cons:{p_providers:10,p_audience:800,p_take:4,p_price:15,p_split:50,p_fee:49},
-    base:{p_providers:25,p_audience:1200,p_take:7,p_price:20,p_split:50,p_fee:99},
-    amb:{p_providers:75,p_audience:2000,p_take:10,p_price:25,p_split:50,p_fee:149},
-    nick:{p_providers:1,p_audience:4,p_take:40,p_price:20,p_split:50,p_fee:0}
+    cons:{p_providers:10,p_audience:800,p_take:2,p_price:100,p_split:40,p_fee:49},
+    base:{p_providers:25,p_audience:1200,p_take:3.5,p_price:130,p_split:40,p_fee:99},
+    amb:{p_providers:75,p_audience:2000,p_take:5,p_price:150,p_split:45,p_fee:149},
+    nick:{p_providers:1,p_audience:4,p_take:100,p_price:130,p_split:50,p_fee:0}
   };
-  var NICK={n_audience:4,n_take:40};
+  var NICK={n_audience:4,n_take:100};
 
   function reflectFill(el){
     var min=+el.min,max=+el.max,v=+el.value,pct=((v-min)/(max-min))*100;
@@ -327,8 +330,8 @@
     var nickUsers=na*(nt/100);
     var nickMRR=nickUsers*U*(s/100);
     var nickARR=nickMRR*12;
-    $("nick-line").innerHTML='~'+na+' followers · '+nt+'% take → <b class="num" style="color:var(--loss)">£'+gbp(nickMRR)+'/mo</b> (£'+gbp(nickARR)+'/yr). '+
-      'Even at his <b>claimed</b> 100 followers that\'s only ~£'+gbp(100*(nt/100)*U*(s/100))+'/mo — and still 100% dependent on him.';
+    $("nick-line").innerHTML='~'+na+' paying members at £'+gbp(U)+' → <b class="num" style="color:var(--loss)">£'+gbp(nickMRR)+'/mo</b> (£'+gbp(nickARR)+'/yr). '+
+      'Even at his <b>claimed</b> 100 that\'s ~£'+gbp(100*(nt/100)*U*(s/100))+'/mo — and still 100% on one person.';
 
     // ---- compare ----
     $("c_nick").textContent=gbp(nickARR);
