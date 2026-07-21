@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SignalGate — revenue & market model</title>
+<style>
+  :root{
+    --bg:#0d1116; --panel:#151d25; --panel2:#111820; --line:#26313c; --line2:#33414d;
+    --ink:#eaf0f4; --muted:#8fa0ac; --dim:#63727e;
+    --accent:#4fd1a5; --accent-ink:#08150f; --warn:#e0b25a; --loss:#e0736a;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --serif:Georgia,"Times New Roman",serif;
+    --sans:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(79,209,165,.06), transparent 60%),
+      var(--bg);
+    color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased;
+    font-size:15px;line-height:1.55}
+  .wrap{max-width:1060px;margin:0 auto;padding:34px 20px 70px}
+  .eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  h1{font-family:var(--serif);font-weight:400;font-size:clamp(26px,4vw,38px);letter-spacing:-.01em;margin:8px 0 6px;text-wrap:balance}
+  .lede{color:var(--muted);max-width:70ch;font-size:15px}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px}
+  .grid{display:grid;gap:18px}
+  @media(min-width:840px){.two{grid-template-columns:1fr 1fr}.hero-grid{grid-template-columns:1.15fr .85fr}}
+  h2.sec{font-family:var(--serif);font-weight:400;font-size:20px;margin-bottom:4px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+  .label{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);font-weight:600}
+
+  /* headline */
+  .headline{background:linear-gradient(180deg,rgba(79,209,165,.08),rgba(79,209,165,0));
+            border:1px solid rgba(79,209,165,.32)}
+  .big{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600;
+       font-size:clamp(38px,7vw,60px);line-height:1;color:var(--accent);letter-spacing:-.02em}
+  .big .cur{font-size:.5em;color:var(--accent);opacity:.8;vertical-align:.16em;margin-right:2px}
+  .kpis{display:flex;gap:26px;flex-wrap:wrap;margin-top:16px}
+  .kpi .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:22px;font-weight:600}
+  .kpi .k{font-size:11px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-top:2px}
+  .chip{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line2);border-radius:999px;
+        padding:6px 12px;font-size:12.5px;color:var(--muted)}
+  .dot{width:8px;height:8px;border-radius:50%}
+  .chip.good{border-color:rgba(79,209,165,.45);color:var(--accent)} .chip.good .dot{background:var(--accent)}
+  .chip.warn{border-color:rgba(224,178,90,.45);color:var(--warn)} .chip.warn .dot{background:var(--warn)}
+  .chip.bad{border-color:rgba(224,115,106,.5);color:var(--loss)} .chip.bad .dot{background:var(--loss)}
+
+  /* presets */
+  .presets{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
+  .presets button{font-family:var(--sans);font-size:13px;font-weight:600;color:var(--muted);
+    background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:8px 15px;cursor:pointer;
+    transition:border-color .15s,color .15s}
+  .presets button:hover{border-color:var(--line2);color:var(--ink)}
+  .presets button.on{border-color:var(--accent);color:var(--accent);background:rgba(79,209,165,.08)}
+
+  /* controls */
+  .ctrl{margin-bottom:16px}
+  .ctrl .row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px}
+  .ctrl .row b{font-size:13.5px;font-weight:600;color:var(--ink)}
+  .ctrl .row .out{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:14px;color:var(--accent);font-weight:600}
+  input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:6px;border-radius:99px;
+    background:var(--line);outline:none;cursor:pointer}
+  input[type=range]:focus-visible{box-shadow:0 0 0 3px rgba(79,209,165,.35)}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;
+    background:var(--accent);border:3px solid var(--panel);box-shadow:0 0 0 1px var(--accent);cursor:pointer}
+  input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;background:var(--accent);
+    border:3px solid var(--panel);box-shadow:0 0 0 1px var(--accent);cursor:pointer}
+
+  /* output rows */
+  .outrow{display:flex;justify-content:space-between;align-items:baseline;padding:10px 0;border-top:1px solid var(--line)}
+  .outrow:first-child{border-top:0}
+  .outrow .k{color:var(--muted);font-size:13.5px}
+  .outrow .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:15.5px;font-weight:600}
+  .outrow.total .k{color:var(--ink);font-weight:600} .outrow.total .v{color:var(--accent);font-size:18px}
+
+  /* compare bars */
+  .cmp{display:flex;flex-direction:column;gap:16px;margin-top:4px}
+  .cmp .name{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+  .cmp .name .t{font-size:13.5px;font-weight:600} .cmp .name .t small{color:var(--muted);font-weight:400}
+  .cmp .name .val{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600;font-size:15px}
+  .bar{height:16px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);overflow:hidden}
+  .bar > i{display:block;height:100%;border-radius:5px 0 0 5px}
+  .bar.risk > i{background:linear-gradient(90deg,#c8564d,var(--loss))}
+  .bar.safe > i{background:linear-gradient(90deg,#2f8f74,var(--accent))}
+  .cmp .note{font-size:12px;color:var(--muted);margin-top:2px}
+  .cmp .note b.bad{color:var(--loss)} .cmp .note b.good{color:var(--accent)}
+
+  /* funnel */
+  .funnel{display:flex;flex-direction:column;gap:9px}
+  .fstage{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:11px 13px;
+    display:flex;justify-content:space-between;align-items:center;position:relative;overflow:hidden}
+  .fstage .fill{position:absolute;inset:0;background:rgba(79,209,165,.10);border-right:2px solid rgba(79,209,165,.5);z-index:0}
+  .fstage .ft,.fstage .fv{position:relative;z-index:1}
+  .fstage .ft{font-size:13px;color:var(--ink)} .fstage .ft small{color:var(--muted);display:block;font-size:11px;margin-top:1px}
+  .fstage .fv{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600;font-size:15px}
+  .fstage.final{border-color:rgba(79,209,165,.4)} .fstage.final .fv{color:var(--accent)}
+
+  .callout{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:10px;padding:15px 17px;font-size:14px;color:#cdd8e0}
+  .callout b{color:var(--ink)}
+  .callout .num{color:var(--accent)}
+
+  .note{font-size:12px;color:var(--dim);line-height:1.65}
+  .note b{color:var(--muted)}
+  a{color:var(--accent)}
+  hr.d{border:0;border-top:1px solid var(--line);margin:34px 0}
+  .sectitle{display:flex;align-items:baseline;gap:12px;margin:0 0 16px}
+  .sectitle .n{font-family:var(--mono);color:var(--dim);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">SignalGate · business model</div>
+  <h1>What's this worth if you stop relying on one person?</h1>
+  <p class="lede">Two ways to sell the execution engine. Drag the dials — everything recalculates live.
+    The point isn't a single number; it's the <em>shape</em>: one provider is a cliff, a portfolio of providers is a business.</p>
+
+  <div class="presets" id="presets">
+    <button data-preset="cons">Conservative</button>
+    <button data-preset="base" class="on">Base case</button>
+    <button data-preset="amb">Ambitious</button>
+    <button data-preset="nick">Nick only</button>
+  </div>
+
+  <!-- HEADLINE -->
+  <div class="grid hero-grid" style="margin-top:20px">
+    <div class="panel headline">
+      <div class="label">Your revenue — B2B portfolio (per year)</div>
+      <div class="big" style="margin-top:10px"><span class="cur">£</span><span id="h-arr" class="num">0</span></div>
+      <div class="kpis">
+        <div class="kpi"><div class="v"><span class="cur" style="font-size:.6em;color:var(--muted)">£</span><span id="h-mrr" class="num">0</span></div><div class="k">per month</div></div>
+        <div class="kpi"><div class="v"><span id="h-users" class="num">0</span></div><div class="k">paying users</div></div>
+        <div class="kpi"><div class="v"><span id="h-perprov" class="num">£0</span></div><div class="k">avg / provider / mo</div></div>
+      </div>
+      <div style="margin-top:16px"><span id="h-conc" class="chip warn"><span class="dot"></span>—</span></div>
+    </div>
+
+    <div class="panel">
+      <div class="label">Reality check</div>
+      <div class="callout" style="margin-top:12px">
+        You earn this <b>whether the signals win or lose</b> — you're selling execution and the record,
+        not the alpha. So a provider's win-rate wobble (Nick's “61%”) doesn't touch your income.
+      </div>
+      <div class="note" style="margin-top:14px">
+        <b>Nick-only, at his real numbers</b><br>
+        <span id="nick-line">—</span>
+      </div>
+    </div>
+  </div>
+
+  <hr class="d">
+
+  <!-- B2B ENGINE -->
+  <div class="sectitle"><span class="n">01</span><h2 class="sec">The B2B engine — sell execution to providers who already have an audience</h2></div>
+  <div class="sub" style="margin-top:-10px">They add it as a one-tap “auto-execution” upgrade for their members; you split the upgrade fee, so they only gain. You never build an audience.</div>
+  <div class="grid two">
+    <div class="panel">
+      <div class="ctrl"><div class="row"><b>Providers signed</b><span class="out"><span id="o_providers" class="num">25</span></span></div>
+        <input type="range" id="p_providers" min="1" max="200" step="1" value="25"></div>
+      <div class="ctrl"><div class="row"><b>Avg audience per provider</b><span class="out"><span id="o_audience" class="num">1,200</span></span></div>
+        <input type="range" id="p_audience" min="100" max="10000" step="100" value="1200"></div>
+      <div class="ctrl"><div class="row"><b>Take the upgrade</b><span class="out"><span id="o_take" class="num">7</span>%</span></div>
+        <input type="range" id="p_take" min="1" max="25" step="0.5" value="7"></div>
+      <div class="ctrl"><div class="row"><b>Upgrade price / month</b><span class="out">£<span id="o_price" class="num">20</span></span></div>
+        <input type="range" id="p_price" min="5" max="100" step="1" value="20"></div>
+      <div class="ctrl"><div class="row"><b>Your split of the upgrade</b><span class="out"><span id="o_split" class="num">50</span>%</span></div>
+        <input type="range" id="p_split" min="10" max="90" step="5" value="50"></div>
+      <div class="ctrl" style="margin-bottom:0"><div class="row"><b>Platform fee / provider / month</b><span class="out">£<span id="o_fee" class="num">99</span></span></div>
+        <input type="range" id="p_fee" min="0" max="500" step="10" value="99"></div>
+    </div>
+
+    <div class="panel">
+      <div class="label" style="margin-bottom:10px">Where the money comes from</div>
+      <div class="outrow"><span class="k">Active paying users</span><span class="v" id="r_users">—</span></div>
+      <div class="outrow"><span class="k">Rev-share (your split of upgrades)</span><span class="v" id="r_revshare">—</span></div>
+      <div class="outrow"><span class="k">Platform fees (<span id="r_pcount">25</span> providers)</span><span class="v" id="r_platform">—</span></div>
+      <div class="outrow total"><span class="k">Total MRR</span><span class="v" id="r_mrr">—</span></div>
+      <div class="outrow"><span class="k">ARR</span><span class="v" id="r_arr">—</span></div>
+      <div class="outrow"><span class="k">Biggest provider = share of revenue</span><span class="v" id="r_conc">—</span></div>
+
+      <div class="callout" style="margin-top:18px">
+        <div class="label" style="margin-bottom:8px">Target solver</div>
+        <div class="row" style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+          <b style="font-size:13.5px">Reach this ARR</b><span class="out" style="font-family:var(--mono);color:var(--accent);font-weight:600">£<span id="o_target" class="num">250,000</span></span>
+        </div>
+        <input type="range" id="t_target" min="50000" max="2000000" step="10000" value="250000">
+        <div style="margin-top:12px;font-size:14px;color:#cdd8e0">→ you need about <b class="num" id="prov_needed" style="color:var(--accent);font-size:17px">—</b> providers at the settings above.</div>
+      </div>
+    </div>
+  </div>
+
+  <hr class="d">
+
+  <!-- COMPARE -->
+  <div class="sectitle"><span class="n">02</span><h2 class="sec">One provider vs a portfolio</h2></div>
+  <div class="panel">
+    <div class="cmp">
+      <div>
+        <div class="name"><span class="t">Nick only <small>— his real audience</small></span><span class="val" style="color:var(--loss)">£<span id="c_nick" class="num">0</span>/yr</span></div>
+        <div class="bar risk"><i id="c_nickbar" style="width:2%"></i></div>
+        <div class="note">Concentration: <b class="bad">100%</b> on one person. If he quits, lies about his numbers, or has a bad month, the business is <b class="bad">£0</b>.</div>
+      </div>
+      <div>
+        <div class="name"><span class="t">B2B portfolio <small>— <span id="c_pcount">25</span> providers</span></span><span class="val" style="color:var(--accent)">£<span id="c_port" class="num">0</span>/yr</span></div>
+        <div class="bar safe"><i id="c_portbar" style="width:100%"></i></div>
+        <div class="note">No single provider is critical, and your income doesn't depend on anyone's win rate. <b class="good">That's</b> a business you own.</div>
+      </div>
+    </div>
+    <div class="note" style="margin-top:16px"><span id="mult-line">—</span></div>
+  </div>
+
+  <hr class="d">
+
+  <!-- MARKET -->
+  <div class="sectitle"><span class="n">03</span><h2 class="sec">How big is the pond?</h2></div>
+  <div class="sub" style="margin-top:-10px">Top-down sizing. These are dials, not facts — set them to whatever you can defend, then see the ceiling.</div>
+  <div class="grid two">
+    <div class="panel">
+      <div class="ctrl"><div class="row"><b>Retail traders you could reach (global)</b><span class="out"><span id="o_traders" class="num">10,000,000</span></span></div>
+        <input type="range" id="m_traders" min="1000000" max="50000000" step="500000" value="10000000"></div>
+      <div class="ctrl"><div class="row"><b>…on MetaTrader (MT4/MT5)</b><span class="out"><span id="o_mt5" class="num">60</span>%</span></div>
+        <input type="range" id="m_mt5" min="20" max="90" step="5" value="60"></div>
+      <div class="ctrl"><div class="row"><b>…who follow signal providers</b><span class="out"><span id="o_signals" class="num">25</span>%</span></div>
+        <input type="range" id="m_signals" min="5" max="60" step="1" value="25"></div>
+      <div class="ctrl" style="margin-bottom:0"><div class="row"><b>…who'd pay for one-tap execution</b><span class="out"><span id="o_pay" class="num">20</span>%</span></div>
+        <input type="range" id="m_pay" min="2" max="40" step="1" value="20"></div>
+    </div>
+    <div class="panel">
+      <div class="label" style="margin-bottom:12px">The funnel to your reachable market</div>
+      <div class="funnel" id="funnel">
+        <div class="fstage"><div class="fill" style="width:100%"></div><div class="ft">Retail traders<small>starting pool</small></div><div class="fv" id="f0">—</div></div>
+        <div class="fstage"><div class="fill" id="fill1"></div><div class="ft">On MetaTrader</div><div class="fv" id="f1">—</div></div>
+        <div class="fstage"><div class="fill" id="fill2"></div><div class="ft">Follow signals</div><div class="fv" id="f2">—</div></div>
+        <div class="fstage final"><div class="fill" id="fill3"></div><div class="ft">Would pay for execution<small>your reachable market</small></div><div class="fv" id="f3">—</div></div>
+      </div>
+      <div class="callout" style="margin-top:16px">
+        That's <b class="num" id="m_reach">—</b> reachable people — a theoretical ceiling of
+        <b class="num" id="m_tam">—</b>/year for your cut. Win a realistic
+        <b>1–3%</b> of it and that's <b class="num" id="m_som">—</b>/year.
+      </div>
+    </div>
+  </div>
+
+  <hr class="d">
+  <p class="note">
+    <b>Assumptions are illustrative.</b> Retail-trader counts vary a lot by source — a figure around
+    10–15 million retail FX traders globally is commonly cited, and “broader retail” is larger — so treat
+    every market dial as something to sanity-check against your own research, not a fact. The B2B dials
+    (take-rate, price, split) are the ones to pressure-test first: early take-rates for a paid add-on are
+    often 2–5%, which the per-provider platform fee is there to cushion. Nothing here models costs, tax,
+    payment fees, churn, or the regulatory step-up that comes with executing live money for other people's
+    customers — get proper UK/FCA advice before that stage. Demo-first keeps you clear of it for now.
+  </p>
+</div>
+
+<script>
+(function(){
+  var $=function(id){return document.getElementById(id);};
+  var gbp=function(n){return Math.round(n).toLocaleString("en-GB");};
+  function compact(n){
+    n=Math.round(n);
+    if(n>=1e6) return (n/1e6).toFixed(n>=1e7?0:1).replace(/\.0$/,"")+"M";
+    if(n>=1e3) return (n/1e3).toFixed(n>=1e5?0:0)+"k";
+    return gbp(n);
+  }
+
+  var PRESETS={
+    cons:{p_providers:10,p_audience:800,p_take:4,p_price:15,p_split:50,p_fee:49},
+    base:{p_providers:25,p_audience:1200,p_take:7,p_price:20,p_split:50,p_fee:99},
+    amb:{p_providers:75,p_audience:2000,p_take:10,p_price:25,p_split:50,p_fee:149},
+    nick:{p_providers:1,p_audience:4,p_take:40,p_price:20,p_split:50,p_fee:0}
+  };
+  var NICK={n_audience:4,n_take:40};
+
+  function reflectFill(el){
+    var min=+el.min,max=+el.max,v=+el.value,pct=((v-min)/(max-min))*100;
+    el.style.background="linear-gradient(90deg,var(--accent) 0%,var(--accent) "+pct+"%,var(--line) "+pct+"%,var(--line) 100%)";
+  }
+
+  function num(id){return +$(id).value;}
+  function update(){
+    // ---- B2B ----
+    var P=num("p_providers"),A=num("p_audience"),t=num("p_take"),U=num("p_price"),
+        s=num("p_split"),F=num("p_fee");
+    var users=P*A*(t/100);
+    var revshare=users*U*(s/100);
+    var platform=P*F;
+    var mrr=revshare+platform;
+    var arr=mrr*12;
+    var perProv=P>0?mrr/P:0;
+    var conc=P>0?100/P:100;
+
+    $("o_providers").textContent=gbp(P);
+    $("o_audience").textContent=gbp(A);
+    $("o_take").textContent=t;
+    $("o_price").textContent=gbp(U);
+    $("o_split").textContent=s;
+    $("o_fee").textContent=gbp(F);
+
+    $("h-arr").textContent=gbp(arr);
+    $("h-mrr").textContent=gbp(mrr);
+    $("h-users").textContent=gbp(users);
+    $("h-perprov").textContent="£"+gbp(perProv);
+    var cc=$("h-conc");
+    cc.className="chip "+(conc>=50?"bad":conc>=15?"warn":"good");
+    cc.innerHTML='<span class="dot"></span>Biggest provider ≈ '+conc.toFixed(conc<10?1:0)+'% of revenue'+(conc>=50?" — fragile":conc>=15?" — watch it":" — diversified");
+
+    $("r_users").textContent=gbp(users);
+    $("r_revshare").textContent="£"+gbp(revshare)+"/mo";
+    $("r_platform").textContent="£"+gbp(platform)+"/mo";
+    $("r_pcount").textContent=gbp(P);
+    $("r_mrr").textContent="£"+gbp(mrr)+"/mo";
+    $("r_arr").textContent="£"+gbp(arr)+"/yr";
+    $("r_conc").textContent=conc.toFixed(conc<10?1:0)+"%";
+
+    // target solver
+    var target=num("t_target");
+    $("o_target").textContent=gbp(target);
+    var perProvMRR=A*(t/100)*U*(s/100)+F;
+    var need=perProvMRR>0?Math.ceil((target/12)/perProvMRR):0;
+    $("prov_needed").textContent=gbp(need);
+
+    // ---- Nick only ----
+    var na=NICK.n_audience,nt=NICK.n_take;
+    var nickUsers=na*(nt/100);
+    var nickMRR=nickUsers*U*(s/100);
+    var nickARR=nickMRR*12;
+    $("nick-line").innerHTML='~'+na+' followers · '+nt+'% take → <b class="num" style="color:var(--loss)">£'+gbp(nickMRR)+'/mo</b> (£'+gbp(nickARR)+'/yr). '+
+      'Even at his <b>claimed</b> 100 followers that\'s only ~£'+gbp(100*(nt/100)*U*(s/100))+'/mo — and still 100% dependent on him.';
+
+    // ---- compare ----
+    $("c_nick").textContent=gbp(nickARR);
+    $("c_port").textContent=gbp(arr);
+    $("c_pcount").textContent=gbp(P);
+    var ratio=arr>0?Math.max(2,nickARR/arr*100):2;
+    $("c_nickbar").style.width=Math.min(100,Math.max(1.5,ratio)).toFixed(1)+"%";
+    $("c_portbar").style.width="100%";
+    var mult=nickARR>0?Math.round(arr/nickARR):null;
+    $("mult-line").innerHTML=mult?("The portfolio is <b style='color:var(--accent)'>"+gbp(mult)+"×</b> the single-provider case — and it doesn't die when one relationship does."):
+      "The single-provider case rounds to zero. The portfolio is the whole business.";
+
+    // ---- market ----
+    var T=num("m_traders"),mt5=num("m_mt5"),sig=num("m_signals"),pay=num("m_pay");
+    $("o_traders").textContent=gbp(T);
+    $("o_mt5").textContent=mt5; $("o_signals").textContent=sig; $("o_pay").textContent=pay;
+    var s1=T*(mt5/100), s2=s1*(sig/100), s3=s2*(pay/100);
+    $("f0").textContent=compact(T);
+    $("f1").textContent=compact(s1); $("f2").textContent=compact(s2); $("f3").textContent=compact(s3);
+    $("fill1").style.width=(s1/T*100)+"%";
+    $("fill2").style.width=(s2/T*100)+"%";
+    $("fill3").style.width=(s3/T*100)+"%";
+    var tam=s3*U*(s/100)*12;
+    $("m_reach").textContent=compact(s3);
+    $("m_tam").textContent="£"+compact(tam);
+    $("m_som").textContent="£"+compact(tam*0.02);
+
+    document.querySelectorAll('input[type=range]').forEach(reflectFill);
+  }
+
+  function applyPreset(key){
+    var p=PRESETS[key]; if(!p) return;
+    Object.keys(p).forEach(function(k){ if($(k)) $(k).value=p[k]; });
+    document.querySelectorAll("#presets button").forEach(function(b){ b.classList.toggle("on",b.dataset.preset===key); });
+    update();
+  }
+
+  document.querySelectorAll("#presets button").forEach(function(b){
+    b.addEventListener("click",function(){ applyPreset(b.dataset.preset); });
+  });
+  document.querySelectorAll('input[type=range]').forEach(function(el){
+    el.addEventListener("input",function(){
+      // manual edit clears the active preset highlight
+      document.querySelectorAll("#presets button").forEach(function(b){b.classList.remove("on");});
+      update();
+    });
+  });
+  update();
+})();
+</script>
+</body>
+</html>
