@@ -8,10 +8,10 @@
   :root{--bg:#0e1216;--panel:#161d24;--panel2:#141d26;--line:#26313c;--ink:#e9eef3;--muted:#93a1ad;--accent:#4fd1a5;--accent-ink:#08150f;--loss:#e0736a;--warn:#e0b25a}
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{background:var(--bg);color:var(--ink);overflow-x:hidden;font:16px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
-  .stage{position:relative;height:100vh;min-height:640px;overflow:hidden;perspective:1300px}
+  .stage{position:relative;height:100vh;min-height:640px;overflow:hidden;perspective:1700px}
   .ring{position:absolute;inset:0;transform-style:preserve-3d;transform-origin:50% 50%}
-  .rc{position:absolute;left:0;top:0;width:344px;height:212px;margin:-106px 0 0 -172px;transform-style:preserve-3d;will-change:transform,opacity}
-  .rf{position:absolute;inset:0;backface-visibility:hidden;border-radius:14px;overflow:hidden;border:1px solid var(--line);box-shadow:0 40px 80px -34px rgba(0,0,0,.95);background:var(--panel2);display:flex;flex-direction:column}
+  .rc{position:absolute;left:50%;top:50%;width:344px;height:212px;margin:-106px 0 0 -172px;transform-style:preserve-3d;will-change:transform,opacity}
+  .rf{position:absolute;inset:0;-webkit-backface-visibility:hidden;backface-visibility:hidden;border-radius:14px;overflow:hidden;border:1px solid var(--line);box-shadow:0 40px 80px -34px rgba(0,0,0,.95);background:var(--panel2);display:flex;flex-direction:column}
   .rf.back{transform:rotateY(180deg);align-items:center;justify-content:center;gap:11px;background:radial-gradient(120% 120% at 50% 38%,#182531,#0f171e)}
   .rf.back .g{width:44px;height:44px}
   .rf.back .w{font-size:15px;font-weight:700;color:var(--ink)} .rf.back .w b{color:var(--accent)}
@@ -84,39 +84,33 @@
   ];
   var back = '<div class="rf back"><div class="g">'+gate+'</div><div class="w">Signal<b>Gate</b></div><div class="tag">Demo forward-test</div></div>';
 
-  var N = 5, cards = [];
+  // cards mounted around a cylinder, facing outward, two-sided → fronts on the near arc, backs on the far arc
+  var N = 7, R = 540, step = 360/N, cards = [];
   for(var i=0;i<N;i++){
     var el = document.createElement("div"); el.className = "rc";
     el.innerHTML = '<div class="rf front">'+FR[i % FR.length]+'</div>'+back;
+    el.style.transform = "rotateY("+(i*step)+"deg) translateZ("+R+"px)";
     ring.appendChild(el);
-    cards.push({el:el, base:i/N});
+    cards.push({fr:el.querySelector(".rf.front"), bk:el.querySelector(".rf.back"), a:i*step});
   }
-  function smooth(a,b,t){ if(t<=a)return 0; if(t>=b)return 1; var x=(t-a)/(b-a); return x*x*(3-2*x); }
-  function paint(prog){
-    var W=stage.clientWidth, H=stage.clientHeight;
-    // steep, nearly-straight diagonal: enter above top-centre → exit below lower-right (~60°)
-    var P0x=W*0.50, P0y=-H*0.22, P1x=W*0.95, P1y=H*1.22;
+  // the whole ring spins; pushed back and gently tilted so its near arc runs on a diagonal
+  function set(spin){
+    ring.style.transform = "translateX(12%) translateZ(-240px) rotateZ(-19deg) rotateX(10deg) rotateY("+spin.toFixed(2)+"deg)";
+    // force the correct face per card (CSS backface culling is unreliable at grazing angles)
     for(var i=0;i<cards.length;i++){
-      var c=cards[i];
-      var t=((c.base+prog)%1+1)%1;                    // 0 at top, 1 at bottom; cards spaced 1/N apart
-      var x=P0x+t*(P1x-P0x), y=P0y+t*(P1y-P0y);
-      var u=t-0.46;
-      var s=0.70+0.55*Math.exp(-(u*u)/(2*0.20*0.20)); // biggest through the middle of the run
-      var op=smooth(0.03,0.15,t)*(1-smooth(0.85,0.99,t));
-      var ry=(t<0.17)?(-15+(0.17-t)/0.17*195):-15;    // enters from above showing its back, turns to front
-      c.el.style.transform="translate("+x.toFixed(1)+"px,"+y.toFixed(1)+"px) rotateZ(-11deg) rotateY("+ry.toFixed(1)+"deg) rotateX(5deg) scale("+s.toFixed(3)+")";
-      c.el.style.opacity=op.toFixed(3);
-      c.el.style.zIndex=String(1000+Math.round(s*300));
+      var front = Math.cos((cards[i].a + spin) * Math.PI/180) > 0;
+      cards[i].fr.style.opacity = front ? "1" : "0";
+      cards[i].bk.style.opacity = front ? "0" : "1";
     }
   }
   var dbg=parseFloat((location.hash.match(/a=([-\d.]+)/)||[])[1]);
-  if(reduce||!isNaN(dbg)){ paint(isNaN(dbg)?0.3:dbg); return; }
-  var prog=0, drag=0;
-  function frame(){ prog+=0.0011; var sc=window.scrollY||0; paint(prog+sc*0.0006+drag); requestAnimationFrame(frame); }
+  if(reduce||!isNaN(dbg)){ set(isNaN(dbg)?0:dbg); return; }
+  var auto=0, drag=0;
+  function frame(){ auto+=0.11; var sc=window.scrollY||0; set(auto+sc*0.05+drag); requestAnimationFrame(frame); }
   requestAnimationFrame(frame);
   var dragging=false,lastY=0;
   stage.addEventListener("pointerdown",function(e){dragging=true;lastY=e.clientY;try{stage.setPointerCapture(e.pointerId);}catch(_e){}});
-  window.addEventListener("pointermove",function(e){if(!dragging)return;drag+=(e.clientY-lastY)*0.0009;lastY=e.clientY;});
+  window.addEventListener("pointermove",function(e){if(!dragging)return;drag+=(e.clientY-lastY)*0.35;lastY=e.clientY;});
   window.addEventListener("pointerup",function(){dragging=false;});
 })();
 </script>
