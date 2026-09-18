@@ -24,26 +24,26 @@
 <div class="card"><b>Operational evidence</b><p>Signal, decision, command, execution and management events are retained as one traceable lifecycle.</p></div>
 </div>
 </div></header>
-<section id="how"><div class="wrap"><h2>The provider keeps the relationship. SignalGate controls the path.</h2><p class="sub">The architecture is deliberately boring where it matters: explicit ownership, deterministic parsing, scoped credentials, expiry, idempotency and reconciliation.</p>
+<section id="how"><div class="wrap"><h2>The provider keeps the relationship. SignalGate controls the path.</h2><p class="sub">The current hardening build proves deterministic parsing, scoped service credentials, expiry, account ownership checks, retry controls and audit. Full provider/organisation isolation is a separate production release gate.</p>
 <div class="flow">
 <div class="step"><span class="n">01</span><b>Signal source</b><small>Telegram first; API/webhook target.</small></div>
 <div class="step"><span class="n">02</span><b>Validate</b><small>Normalise fields; reject ambiguity.</small></div>
 <div class="step"><span class="n">03</span><b>Authorise</b><small>Apply the required customer decision/policy.</small></div>
-<div class="step"><span class="n">04</span><b>Command</b><small>Issue a structured tenant/account-bound command.</small></div>
+<div class="step"><span class="n">04</span><b>Command</b><small>Issue a structured account-bound command.</small></div>
 <div class="step"><span class="n">05</span><b>Execute</b><small>Demo MT5 EA/simulator reports outcome.</small></div>
 <div class="step"><span class="n">06</span><b>Reconcile</b><small>Compare intended and observed lifecycle.</small></div>
 </div></div></section>
 <section><div class="wrap"><h2>Built for providers, not for selling another signal channel.</h2>
 <div class="compare">
 <div class="card"><b>You own</b><ul><li>strategy and signal generation</li><li>customer relationship and brand</li><li>commercial offer</li><li>required regulatory permissions/responsibilities</li></ul></div>
-<div class="card"><b>SignalGate owns</b><ul><li>ingestion and validation controls</li><li>authorisation/execution transport</li><li>tenant/account isolation</li><li>retry/idempotency controls</li><li>audit and reconciliation evidence</li></ul></div>
+<div class="card"><b>SignalGate controls today</b><ul><li>ingestion and deterministic validation</li><li>authorisation/execution transport</li><li>customer account ownership binding</li><li>retry/idempotency controls under hardening</li><li>audit and lifecycle evidence</li></ul></div>
 </div></div></section>
-<section><div class="wrap"><h2>What a serious buyer should be able to verify.</h2><p class="sub">We are packaging the product around evidence rather than marketing adjectives.</p>
+<section><div class="wrap"><h2>What must be proved before production.</h2><p class="sub">Release gates are evidence requirements, not marketing adjectives.</p>
 <div class="proof">
-<div class="card"><b>Cross-tenant isolation</b><p>A provider or customer credential must never read or act on another tenant.</p></div>
+<div class="card"><b>Cross-tenant isolation</b><p>Before multi-provider production, a provider credential must be proved unable to read or act on another tenant.</p></div>
 <div class="card"><b>Retry safety</b><p>Network retries must not create a second command or replay lifecycle state.</p></div>
 <div class="card"><b>Fail-closed input</b><p>Conflicting symbols, stops, targets or stale signals do not proceed.</p></div>
-<div class="card"><b>Recovery</b><p>Unknown broker outcomes are reconciled, never blindly retried.</p></div>
+<div class="card"><b>Recovery</b><p>Unknown broker outcomes must be reconciled, never blindly retried.</p></div>
 </div></div></section>
 <section><div class="wrap"><div class="card status"><strong>Release status</strong><h2>Demo-only hardening is intentional.</h2><p>SignalGate is not being presented here as a completed live-trading service. Production multi-tenancy, provider UI, operational recovery, independent penetration testing and the final UK regulatory-perimeter review are explicit release gates before any retail real-money launch.</p></div></div></section>
 <section id="pilot" class="cta"><div class="wrap"><div class="cta-box"><div class="eyebrow">Provider pilot</div><h2>Bring one feed and a demo cohort. Test the infrastructure, not a profit story.</h2><p class="sub">The target pilot moves through sandbox, demo accounts, adversarial/retry scenarios and audit review before any broader commercial rollout.</p><div class="actions"><a class="btn primary" href="mailto:hello@signalgate.example">Provider pilot enquiry</a></div><p class="micro">Replace the placeholder email and legal/regulatory entity details before publishing.</p></div></div></section>
