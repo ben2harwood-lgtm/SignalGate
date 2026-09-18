@@ -1,0 +1,51 @@
+name: SignalGate CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - codex/signalgate-hardening-2026-09-18
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signalgate-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            telegram_bot/requirements.txt
+      - name: Install backend dependencies
+        run: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
+      - name: Run backend tests
+        working-directory: backend
+        run: python -m pytest -q
+      - name: Compile Python sources
+        run: python -m compileall -q backend telegram_bot simulator scripts
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+      - name: Audit backend dependencies
+        run: pip-audit -r backend/requirements.txt
+      - name: Audit Telegram bot dependencies
+        run: pip-audit -r telegram_bot/requirements.txt
