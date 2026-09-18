@@ -11,6 +11,7 @@ import secrets
 from typing import List, Optional
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import models
@@ -297,7 +298,30 @@ def create_signal(
         status="VALID" if parsed.is_valid else "REJECTED",
     )
     db.add(signal)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        if not source_message_id:
+            raise
+        # Another worker may have inserted the same provider message after our
+        # pre-check. Let the database uniqueness constraint arbitrate the race.
+        db.rollback()
+        existing = db.scalar(
+            select(models.Signal).where(
+                models.Signal.source == source,
+                models.Signal.source_message_id == source_message_id,
+            )
+        )
+        if existing is None:
+            raise
+        add_audit(
+            db,
+            "SIGNAL_REPLAY_IGNORED",
+            "signal",
+            existing.id,
+            {"source": source, "source_message_id": source_message_id, "raced": True},
+        )
+        return existing
 
     add_audit(
         db,
