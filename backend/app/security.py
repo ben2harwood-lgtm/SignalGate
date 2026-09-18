@@ -34,10 +34,12 @@ def require_ea_api_key(x_ea_api_key: str = Header(default="")) -> str:
 def require_registration(
     x_registration_api_key: str = Header(default="", alias="X-Registration-API-Key"),
 ) -> str:
-    """Protect public user creation in hosted mode.
+    """Authenticate the shared bot's hosted user/decision service calls.
 
-    The shared Telegram bot owns this secret and supplies it when registering a
-    chat. Local demo mode remains open to preserve the existing test flow.
+    The header name is retained for backwards compatibility, but this credential
+    protects both registration and subscriber YES/NO callbacks. Telegram ids are
+    identity claims; this server-held secret is the credential. Local demo mode
+    remains open to preserve the offline test flow.
     """
     if settings.require_license and not _matches(
         x_registration_api_key, settings.registration_api_key
