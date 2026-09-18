@@ -1,12 +1,13 @@
-"""Simple auth dependencies for the local prototype.
+"""Authentication dependencies for SignalGate.
 
-EA endpoints require an X-EA-API-Key header matching EA_API_KEY.
-Admin endpoints require an X-Admin-Id header that matches one of
-ADMIN_TELEGRAM_IDS. Signal-provider endpoints accept either an admin id or a
-limited X-Signal-Provider-Id matching SIGNAL_PROVIDER_TELEGRAM_IDS. This is
-intentionally lightweight — enough for a local demo, not production-grade auth.
+Local demo mode keeps the original lightweight identity headers so existing
+offline/demo workflows keep working. Hosted mode (REQUIRE_LICENSE=true) adds
+server-held API secrets and constant-time comparison. Telegram ids remain
+identity labels; they are not treated as credentials in hosted mode.
 """
 from __future__ import annotations
+
+import secrets
 
 from fastapi import Header, HTTPException, status
 
@@ -15,8 +16,14 @@ from .config import get_settings
 settings = get_settings()
 
 
+def _matches(candidate: str, expected: str) -> bool:
+    if not candidate or not expected:
+        return False
+    return secrets.compare_digest(candidate.encode(), expected.encode())
+
+
 def require_ea_api_key(x_ea_api_key: str = Header(default="")) -> str:
-    if x_ea_api_key != settings.ea_api_key:
+    if not _matches(x_ea_api_key, settings.ea_api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing X-EA-API-Key",
@@ -24,29 +31,75 @@ def require_ea_api_key(x_ea_api_key: str = Header(default="")) -> str:
     return x_ea_api_key
 
 
-def require_admin(x_admin_id: str = Header(default="")) -> str:
+def require_registration(
+    x_registration_api_key: str = Header(default="", alias="X-Registration-API-Key"),
+) -> str:
+    """Protect public user creation in hosted mode.
+
+    The shared Telegram bot owns this secret and supplies it when registering a
+    chat. Local demo mode remains open to preserve the existing test flow.
+    """
+    if settings.require_license and not _matches(
+        x_registration_api_key, settings.registration_api_key
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing registration credential",
+        )
+    return x_registration_api_key
+
+
+def require_admin(
+    x_admin_id: str = Header(default=""),
+    x_admin_api_key: str = Header(default="", alias="X-Admin-API-Key"),
+) -> str:
     if not x_admin_id or x_admin_id not in settings.admin_telegram_ids:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin privileges required (X-Admin-Id)",
+        )
+    if settings.require_license and not _matches(
+        x_admin_api_key, settings.admin_api_key
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin credential required",
         )
     return x_admin_id
 
 
 def require_signal_provider(
     x_admin_id: str = Header(default=""),
+    x_admin_api_key: str = Header(default="", alias="X-Admin-API-Key"),
     x_signal_provider_id: str = Header(default=""),
+    x_signal_provider_api_key: str = Header(
+        default="", alias="X-Signal-Provider-API-Key"
+    ),
 ) -> str:
-    """Allow admins or limited screenshot providers to create signal previews.
+    """Allow an authenticated admin or a least-privilege signal provider."""
+    if x_admin_id and settings.is_admin(x_admin_id):
+        if settings.require_license and not _matches(
+            x_admin_api_key, settings.admin_api_key
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin credential required",
+            )
+        return x_admin_id
 
-    Signal providers are intentionally narrower than admins: they can submit a
-    screenshot, confirm extracted text, and trigger the normal trade-card
-    broadcast. They cannot pause/resume trading or use admin reporting endpoints.
-    """
-    candidate = x_signal_provider_id or x_admin_id
-    if not candidate or not settings.is_signal_provider(candidate):
+    if (
+        not x_signal_provider_id
+        or x_signal_provider_id not in settings.signal_provider_telegram_ids
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Signal provider privileges required",
         )
-    return candidate
+    if settings.require_license and not _matches(
+        x_signal_provider_api_key, settings.signal_provider_api_key
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Signal provider credential required",
+        )
+    return x_signal_provider_id
