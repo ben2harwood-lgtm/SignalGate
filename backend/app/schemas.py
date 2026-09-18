@@ -174,3 +174,8 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     demo_only_mode: bool
     admin_paused: bool
+
+
+class ReadinessResponse(BaseModel):
+    status: str = "ready"
+    database: str = "ok"
