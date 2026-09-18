@@ -16,11 +16,12 @@ SignalGate does **not** supply investment signals and must not make profitabilit
 
 - `main`: July demo baseline. Do not market as production SaaS.
 - `codex/signalgate-hardening-2026-09-18`: hardening integration branch.
-- CI/dependency security: **implemented on integration branch**.
+- CI/dependency security: **implemented on integration branch**; dependency resolver/audit gate repaired and green in PR #6 before merge.
 - Hosted auth/least privilege: **implemented, PR #2 pending acceptance**.
 - Tenant-bound execution/retry safety: **implemented, PR #3 pending acceptance**.
 - Adversarial ingestion/parser hardening: **implemented, PR #4 pending acceptance**.
 - Provider Edition documentation/site package: **this branch, pending acceptance**.
+- Production-operations baseline (readiness/container/backup tooling): **PR #7 pending acceptance**.
 
 ## Capability ledger
 
