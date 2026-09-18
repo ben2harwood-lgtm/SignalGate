@@ -122,6 +122,11 @@ def report_execution(
     _require_command_owner(db, command, x_sg_license_key)
     try:
         execution, created = crud.record_execution(db, command, payload)
+    except crud.ExecutionReportConflict as exc:
+        # Keep the conflict audit receipt. The incoming callback does not alter
+        # execution or command state.
+        db.commit()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -168,7 +173,11 @@ def report_management_event(
 ) -> SimpleStatus:
     command = _get_command_or_404(db, command_id)
     _require_command_owner(db, command, x_sg_license_key)
-    _event, created = crud.record_management_event(db, command, payload)
+    try:
+        _event, created = crud.record_management_event(db, command, payload)
+    except crud.ManagementEventConflict as exc:
+        db.commit()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.commit()
     if not created:
         return SimpleStatus(status="duplicate_ignored")

@@ -611,6 +611,77 @@ def mark_command_received(db: Session, command: models.Command) -> None:
 
 # --- Executions -----------------------------------------------------------
 
+class ExecutionReportConflict(ValueError):
+    """A retry disagrees with the already-recorded broker execution outcome."""
+
+
+_EXECUTION_REPORT_FIELDS = (
+    "status",
+    "broker_ticket",
+    "child_tickets_json",
+    "executed_symbol",
+    "executed_direction",
+    "requested_price",
+    "executed_price",
+    "lot_size",
+    "initial_stop_loss",
+    "tp1",
+    "tp2",
+    "tp3",
+    "spread_at_execution",
+    "slippage",
+    "error_code",
+    "error_message",
+)
+
+
+def _execution_report_mismatches(
+    existing: models.Execution, payload
+) -> list[str]:
+    return [
+        field
+        for field in _EXECUTION_REPORT_FIELDS
+        if getattr(existing, field) != getattr(payload, field)
+    ]
+
+
+def _existing_execution_or_conflict(
+    db: Session,
+    command: models.Command,
+    existing: models.Execution,
+    payload,
+    *,
+    raced: bool = False,
+) -> tuple[models.Execution, bool]:
+    mismatches = _execution_report_mismatches(existing, payload)
+    if mismatches:
+        add_audit(
+            db,
+            "EXECUTION_REPORT_CONFLICT",
+            "command",
+            command.id,
+            {
+                "execution_id": existing.id,
+                "mismatched_fields": mismatches,
+                "existing_status": existing.status,
+                "incoming_status": payload.status,
+                "raced": raced,
+            },
+        )
+        raise ExecutionReportConflict(
+            "Conflicting execution report for command; manual reconciliation required"
+        )
+
+    add_audit(
+        db,
+        "DUPLICATE_EXECUTION_REPORT_IGNORED",
+        "command",
+        command.id,
+        {"execution_id": existing.id, "raced": raced},
+    )
+    return existing, False
+
+
 def record_execution(
     db: Session, command: models.Command, payload
 ) -> tuple[models.Execution, bool]:
@@ -625,14 +696,7 @@ def record_execution(
         select(models.Execution).where(models.Execution.command_id == command.id)
     )
     if existing is not None:
-        add_audit(
-            db,
-            "DUPLICATE_EXECUTION_REPORT_IGNORED",
-            "command",
-            command.id,
-            {"execution_id": existing.id},
-        )
-        return existing, False
+        return _existing_execution_or_conflict(db, command, existing, payload)
 
     if command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}:
         raise ValueError(f"Cannot report execution for terminal command {command.status}")
@@ -678,7 +742,9 @@ def record_execution(
             select(models.Execution).where(models.Execution.command_id == command.id)
         )
         if existing is not None:
-            return existing, False
+            return _existing_execution_or_conflict(
+                db, command, existing, payload, raced=True
+            )
         raise
 
     add_audit(
@@ -693,6 +759,72 @@ def record_execution(
 
 
 # --- Management events ----------------------------------------------------
+
+class ManagementEventConflict(ValueError):
+    """A retried lifecycle event disagrees with the stored event payload."""
+
+
+_MANAGEMENT_EVENT_FIELDS = (
+    "broker_ticket",
+    "event_type",
+    "stage",
+    "requested_action",
+    "result",
+    "price",
+    "lot_size_before",
+    "lot_size_after",
+    "stop_loss_before",
+    "stop_loss_after",
+    "error_code",
+    "error_message",
+)
+
+
+def _management_event_mismatches(
+    existing: models.TradeManagementEvent, payload
+) -> list[str]:
+    return [
+        field
+        for field in _MANAGEMENT_EVENT_FIELDS
+        if getattr(existing, field) != getattr(payload, field)
+    ]
+
+
+def _existing_management_event_or_conflict(
+    db: Session,
+    command: models.Command,
+    existing: models.TradeManagementEvent,
+    payload,
+    *,
+    raced: bool = False,
+) -> tuple[models.TradeManagementEvent, bool]:
+    mismatches = _management_event_mismatches(existing, payload)
+    if mismatches:
+        add_audit(
+            db,
+            "MANAGEMENT_EVENT_CONFLICT",
+            "command",
+            command.id,
+            {
+                "event_id": existing.id,
+                "event_type": payload.event_type,
+                "mismatched_fields": mismatches,
+                "raced": raced,
+            },
+        )
+        raise ManagementEventConflict(
+            "Conflicting management event retry; manual reconciliation required"
+        )
+
+    add_audit(
+        db,
+        "DUPLICATE_MANAGEMENT_EVENT_IGNORED",
+        "command",
+        command.id,
+        {"event_id": existing.id, "event_type": payload.event_type, "raced": raced},
+    )
+    return existing, False
+
 
 # Map of management event_type -> resulting command status (if any).
 _EVENT_TO_COMMAND_STATUS = {
@@ -731,14 +863,9 @@ def record_management_event(
         )
     )
     if existing is not None:
-        add_audit(
-            db,
-            "DUPLICATE_MANAGEMENT_EVENT_IGNORED",
-            "command",
-            command.id,
-            {"event_id": existing.id, "event_type": payload.event_type},
+        return _existing_management_event_or_conflict(
+            db, command, existing, payload
         )
-        return existing, False
 
     event = models.TradeManagementEvent(
         id=_next_id(db, models.TradeManagementEvent),
@@ -778,7 +905,9 @@ def record_management_event(
             )
         )
         if existing is not None:
-            return existing, False
+            return _existing_management_event_or_conflict(
+                db, command, existing, payload, raced=True
+            )
         raise
 
     add_audit(

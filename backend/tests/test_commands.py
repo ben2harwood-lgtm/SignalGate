@@ -245,3 +245,140 @@ def test_hosted_callback_is_bound_to_owning_license(client):
         assert allowed.status_code == 200
     finally:
         crud.settings.require_license = False
+
+
+
+def test_conflicting_execution_retry_is_409_and_audited(client):
+    from app import models
+    from app.database import SessionLocal
+
+    user = register_user(client, "123")
+    sig = create_signal(client, VALID)
+    client.post(f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"})
+    cmd = client.get(
+        "/commands/pending", params={"user_id": user["id"]}, headers=EA_HEADERS
+    ).json()["command"]
+    cid = cmd["command_id"]
+
+    first = client.post(
+        f"/commands/{cid}/execution",
+        json={
+            "status": "SUCCESS",
+            "broker_ticket": "100",
+            "executed_symbol": "XAUUSD",
+            "executed_direction": "BUY",
+            "executed_price": 2345.0,
+            "lot_size": 0.04,
+        },
+        headers=EA_HEADERS,
+    )
+    conflict = client.post(
+        f"/commands/{cid}/execution",
+        json={
+            "status": "FAILED",
+            "error_code": "BROKER_TIMEOUT",
+            "error_message": "contradictory retry",
+        },
+        headers=EA_HEADERS,
+    )
+
+    assert first.status_code == 200
+    assert conflict.status_code == 409
+    assert "manual reconciliation" in conflict.json()["detail"].lower()
+
+    db = SessionLocal()
+    try:
+        assert db.query(models.Execution).count() == 1
+        audit = (
+            db.query(models.AuditLog)
+            .filter(models.AuditLog.event_type == "EXECUTION_REPORT_CONFLICT")
+            .one()
+        )
+        assert audit.entity_id == cid
+    finally:
+        db.close()
+
+
+def test_same_status_different_broker_ticket_is_execution_conflict(client):
+    user = register_user(client, "123")
+    sig = create_signal(client, VALID)
+    client.post(f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"})
+    cmd = client.get(
+        "/commands/pending", params={"user_id": user["id"]}, headers=EA_HEADERS
+    ).json()["command"]
+    cid = cmd["command_id"]
+
+    payload = {
+        "status": "SUCCESS",
+        "broker_ticket": "100",
+        "executed_symbol": "XAUUSD",
+        "executed_direction": "BUY",
+        "executed_price": 2345.0,
+        "lot_size": 0.04,
+    }
+    first = client.post(
+        f"/commands/{cid}/execution", json=payload, headers=EA_HEADERS
+    )
+    second = client.post(
+        f"/commands/{cid}/execution",
+        json={**payload, "broker_ticket": "999"},
+        headers=EA_HEADERS,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+
+def test_conflicting_management_retry_is_409_and_audited(client):
+    from app import models
+    from app.database import SessionLocal
+
+    user = register_user(client, "123")
+    sig = create_signal(client, VALID)
+    client.post(f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"})
+    cmd = client.get(
+        "/commands/pending", params={"user_id": user["id"]}, headers=EA_HEADERS
+    ).json()["command"]
+    cid = cmd["command_id"]
+    client.post(
+        f"/commands/{cid}/execution",
+        json={"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04},
+        headers=EA_HEADERS,
+    )
+
+    first = client.post(
+        f"/commands/{cid}/management_event",
+        json={
+            "event_type": "TP1_CLOSE_SUCCESS",
+            "stage": "TP1_DONE",
+            "result": "SUCCESS",
+            "price": 2353.0,
+        },
+        headers=EA_HEADERS,
+    )
+    conflict = client.post(
+        f"/commands/{cid}/management_event",
+        json={
+            "event_type": "TP1_CLOSE_SUCCESS",
+            "stage": "TP1_DONE",
+            "result": "SUCCESS",
+            "price": 2354.0,
+        },
+        headers=EA_HEADERS,
+    )
+
+    assert first.status_code == 200
+    assert conflict.status_code == 409
+    assert "manual reconciliation" in conflict.json()["detail"].lower()
+
+    db = SessionLocal()
+    try:
+        assert db.query(models.TradeManagementEvent).count() == 1
+        audit = (
+            db.query(models.AuditLog)
+            .filter(models.AuditLog.event_type == "MANAGEMENT_EVENT_CONFLICT")
+            .one()
+        )
+        assert audit.entity_id == cid
+    finally:
+        db.close()
