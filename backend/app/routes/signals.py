@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from .. import crud
@@ -20,6 +20,7 @@ from ..security import require_admin, require_signal_provider
 from ..vision_extractor import get_extractor
 
 router = APIRouter(tags=["signals"])
+MAX_SIGNAL_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 @router.post("/signals/extract", response_model=ExtractionResponse)
@@ -35,7 +36,17 @@ def extract_signal(
     a signal or broadcast anything — the bot shows this to the provider to
     confirm/edit, and only then calls /signals/create.
     """
-    image_bytes = file.file.read()
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Signal extraction accepts image uploads only",
+        )
+    image_bytes = file.file.read(MAX_SIGNAL_IMAGE_BYTES + 1)
+    if len(image_bytes) > MAX_SIGNAL_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Signal image exceeds 5 MiB limit",
+        )
     extractor = get_extractor()
     extracted = extractor.extract(image_bytes, mime=file.content_type or "image/png")
 
