@@ -56,17 +56,27 @@ async def _backend_post(path: str, **kwargs) -> Optional[Any]:
 
 
 def _admin_headers(user_id: int) -> Dict[str, str]:
-    return {"X-Admin-Id": str(user_id)}
+    headers = {"X-Admin-Id": str(user_id)}
+    if config.admin_api_key:
+        headers["X-Admin-API-Key"] = config.admin_api_key
+    return headers
+
+
+def _registration_headers() -> Dict[str, str]:
+    if not config.registration_api_key:
+        return {}
+    return {"X-Registration-API-Key": config.registration_api_key}
 
 
 def _signal_provider_headers(user_id: int) -> Dict[str, str]:
-    # If the bot has verified a provider locally (via invite code), let the bot
-    # call provider-only backend actions with the configured admin header. The
-    # provider never sees this header; it just avoids an env edit + restart.
-    admin_id = config.first_admin_id()
-    if admin_id:
-        return {"X-Admin-Id": admin_id}
-    return {"X-Signal-Provider-Id": str(user_id)}
+    # Preserve the caller's least-privilege identity. Hosted mode also requires
+    # a server-held API secret that never leaves this bot process.
+    if config.is_admin(user_id):
+        return _admin_headers(user_id)
+    headers = {"X-Signal-Provider-Id": str(user_id)}
+    if config.signal_provider_api_key:
+        headers["X-Signal-Provider-API-Key"] = config.signal_provider_api_key
+    return headers
 
 
 # --- user commands --------------------------------------------------------
@@ -88,6 +98,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "telegram_username": user.username,
                 "first_name": user.first_name,
             },
+            headers=_registration_headers(),
         )
         await update.message.reply_text(
             "SignalGate demo tester registered.\nDemo mode only. No live trades."
