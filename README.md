@@ -22,8 +22,11 @@ claim.
 ## Current architecture
 
 Provider source → deterministic ingestion/validation → stored signal → required
-customer authorisation → tenant/account-bound command → MT5 EA or simulator →
+customer authorisation → account-bound command → MT5 EA or simulator →
 execution/management reports → ledger/audit.
+
+Full organisation/provider/feed tenancy is **not** part of the current demo
+architecture; it is a separate production release gate.
 
 The July prototype is intentionally human-in-the-loop: a trade requires explicit
 YES approval and the MT5 EA refuses real accounts.
@@ -42,6 +45,8 @@ YES approval and the MT5 EA refuses real accounts.
 - PostgreSQL-capable backend.
 - GitHub CI, Python compile checks and dependency vulnerability audit on the
   hardening integration branch.
+- Hosted fail-closed startup and separated admin/provider/registration/EA
+  service credentials on the hardening integration branch.
 
 ## Hardening work in progress
 
@@ -50,13 +55,13 @@ The active integration branch is
 
 Independent lanes add:
 
-- strong hosted credentials and fail-closed deployment validation;
 - command/account ownership checks and retry-safe execution reporting;
 - adversarial parser/input/replay controls;
-- provider packaging and release evidence.
+- provider packaging and release evidence;
+- deployment/readiness/backup tooling.
 
-PRs are not counted as complete until CI, adversarial tests, review and
-acceptance are all green.
+PRs are not counted as complete until CI, adversarial tests, independent review
+and acceptance are all green. Machine-green is necessary, not sufficient.
 
 ## Not yet production-complete
 
@@ -94,8 +99,8 @@ The target provider experience is described in
 [Provider Edition](docs/PROVIDER_EDITION.md) and
 [Provider Onboarding](docs/PROVIDER_ONBOARDING.md).
 
-The provider-facing sales demonstration deliberately sells control, isolation
-and evidence — not trading returns:
+The provider-facing sales demonstration deliberately sells control and evidence
+— not trading returns. Full cross-tenant isolation remains a production gate:
 [10-minute Provider Demo](docs/SALES_DEMO.md).
 
 ## Regulatory gate
