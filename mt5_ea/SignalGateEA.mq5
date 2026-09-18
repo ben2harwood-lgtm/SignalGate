@@ -488,7 +488,8 @@ bool IsLiveAccount()
 //+------------------------------------------------------------------+
 string HttpGet(const string url)
 {
-   string headers = "X-EA-API-Key: " + EAApiKey + "\r\n";
+   string headers = "X-EA-API-Key: " + EAApiKey + "\r\n" +
+                    "X-SG-License-Key: " + LicenseKey + "\r\n";
    char   post[];
    char   result[];
    string result_headers;
@@ -508,7 +509,7 @@ string HttpGet(const string url)
 string HttpPost(const string url, const string body)
 {
    string headers = "Content-Type: application/json\r\nX-EA-API-Key: " +
-                    EAApiKey + "\r\n";
+                    EAApiKey + "\r\nX-SG-License-Key: " + LicenseKey + "\r\n";
    char   post[];
    char   result[];
    string result_headers;
@@ -534,8 +535,7 @@ string HttpPost(const string url, const string body)
 //+------------------------------------------------------------------+
 string PollPendingCommand()
 {
-   string url = BackendURL + "/commands/pending?user_id=" + UserID +
-                "&license_key=" + LicenseKey;
+   string url = BackendURL + "/commands/pending?user_id=" + UserID;
    return(HttpGet(url));
 }
 
