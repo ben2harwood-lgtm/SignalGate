@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SignalGate — Execution infrastructure for signal providers</title>
+<meta name="description" content="Provider-agnostic infrastructure for controlled signal validation, customer authorisation, execution transport, reconciliation and audit.">
+<style>
+:root{--bg:#080b12;--panel:#111725;--line:#253049;--text:#f5f7fb;--muted:#9ca9c0;--accent:#74d6b5;--accent2:#8aa7ff;--warn:#f1c36b;--max:1120px}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{color:inherit}.wrap{max-width:var(--max);margin:auto;padding:0 24px}.nav{position:sticky;top:0;background:rgba(8,11,18,.9);backdrop-filter:blur(14px);border-bottom:1px solid var(--line);z-index:5}.nav .wrap{height:68px;display:flex;align-items:center;justify-content:space-between}.brand{font-weight:800;letter-spacing:-.02em}.pill{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:6px 10px;color:var(--muted);font-size:13px}.hero{padding:90px 0 70px}.eyebrow{color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.12em;font-size:12px}.hero h1{font-size:clamp(42px,7vw,76px);line-height:1.02;letter-spacing:-.055em;max-width:920px;margin:18px 0}.hero h1 span{color:var(--accent)}.lede{font-size:20px;color:#c9d2e2;max-width:780px}.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:30px}.btn{display:inline-block;text-decoration:none;border-radius:10px;padding:12px 17px;font-weight:700}.primary{background:var(--text);color:#091019}.secondary{border:1px solid var(--line)}.micro{color:var(--muted);font-size:13px;margin-top:14px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:50px}.card{background:linear-gradient(180deg,#111827,#0d1320);border:1px solid var(--line);border-radius:16px;padding:24px}.card b{display:block;margin-bottom:8px}.card p{margin:0;color:var(--muted)}section{padding:72px 0;border-top:1px solid #151c2c}h2{font-size:clamp(30px,4vw,46px);letter-spacing:-.035em;line-height:1.08;margin:0 0 18px}.sub{color:var(--muted);max-width:760px}.flow{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:32px}.step{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;min-height:130px}.n{color:var(--accent2);font:700 12px ui-monospace,monospace}.step b{display:block;margin:9px 0 5px}.step small{color:var(--muted)}.compare{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:28px}.compare ul{margin:0;padding-left:20px;color:#cbd4e4}.compare li{margin:10px 0}.proof{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:28px}.proof .card{min-height:150px}.status{border-color:#5d4e2c;background:#17150e}.status strong{color:var(--warn)}.cta{padding:76px 0}.cta-box{padding:42px;border:1px solid var(--line);border-radius:20px;background:radial-gradient(circle at 20% 0,#17253a,#0d121c 60%)}footer{border-top:1px solid var(--line);padding:30px 0;color:var(--muted);font-size:13px}@media(max-width:900px){.grid3,.proof{grid-template-columns:1fr 1fr}.flow{grid-template-columns:1fr 1fr 1fr}}@media(max-width:620px){.grid3,.proof,.compare,.flow{grid-template-columns:1fr}.hero{padding-top:58px}.nav .pill{display:none}}
+</style>
+</head>
+<body>
+<nav class="nav"><div class="wrap"><div class="brand">SignalGate</div><span class="pill">Provider Edition · private demo pilots</span></div></nav>
+<header class="hero"><div class="wrap">
+<div class="eyebrow">Execution infrastructure for signal providers</div>
+<h1>Your signals. Your customers. <span>A controlled execution layer.</span></h1>
+<p class="lede">SignalGate turns provider signals into validated, authorised, account-bound commands, then records execution and management events in one audit trail. You keep the strategy, customers and brand.</p>
+<div class="actions"><a class="btn primary" href="#pilot">Discuss a provider pilot</a><a class="btn secondary" href="#how">See the control path</a></div>
+<p class="micro">Current hardening release is demo-only. No profitability claim. No proprietary signals.</p>
+<div class="grid3">
+<div class="card"><b>Deterministic validation</b><p>Ambiguous or malformed signal text fails closed instead of being guessed into an order.</p></div>
+<div class="card"><b>Authorised execution</b><p>Commands are issued only through the configured approval policy and bound to the intended account.</p></div>
+<div class="card"><b>Operational evidence</b><p>Signal, decision, command, execution and management events are retained as one traceable lifecycle.</p></div>
+</div>
+</div></header>
+<section id="how"><div class="wrap"><h2>The provider keeps the relationship. SignalGate controls the path.</h2><p class="sub">The architecture is deliberately boring where it matters: explicit ownership, deterministic parsing, scoped credentials, expiry, idempotency and reconciliation.</p>
+<div class="flow">
+<div class="step"><span class="n">01</span><b>Signal source</b><small>Telegram first; API/webhook target.</small></div>
+<div class="step"><span class="n">02</span><b>Validate</b><small>Normalise fields; reject ambiguity.</small></div>
+<div class="step"><span class="n">03</span><b>Authorise</b><small>Apply the required customer decision/policy.</small></div>
+<div class="step"><span class="n">04</span><b>Command</b><small>Issue a structured tenant/account-bound command.</small></div>
+<div class="step"><span class="n">05</span><b>Execute</b><small>Demo MT5 EA/simulator reports outcome.</small></div>
+<div class="step"><span class="n">06</span><b>Reconcile</b><small>Compare intended and observed lifecycle.</small></div>
+</div></div></section>
+<section><div class="wrap"><h2>Built for providers, not for selling another signal channel.</h2>
+<div class="compare">
+<div class="card"><b>You own</b><ul><li>strategy and signal generation</li><li>customer relationship and brand</li><li>commercial offer</li><li>required regulatory permissions/responsibilities</li></ul></div>
+<div class="card"><b>SignalGate owns</b><ul><li>ingestion and validation controls</li><li>authorisation/execution transport</li><li>tenant/account isolation</li><li>retry/idempotency controls</li><li>audit and reconciliation evidence</li></ul></div>
+</div></div></section>
+<section><div class="wrap"><h2>What a serious buyer should be able to verify.</h2><p class="sub">We are packaging the product around evidence rather than marketing adjectives.</p>
+<div class="proof">
+<div class="card"><b>Cross-tenant isolation</b><p>A provider or customer credential must never read or act on another tenant.</p></div>
+<div class="card"><b>Retry safety</b><p>Network retries must not create a second command or replay lifecycle state.</p></div>
+<div class="card"><b>Fail-closed input</b><p>Conflicting symbols, stops, targets or stale signals do not proceed.</p></div>
+<div class="card"><b>Recovery</b><p>Unknown broker outcomes are reconciled, never blindly retried.</p></div>
+</div></div></section>
+<section><div class="wrap"><div class="card status"><strong>Release status</strong><h2>Demo-only hardening is intentional.</h2><p>SignalGate is not being presented here as a completed live-trading service. Production multi-tenancy, provider UI, operational recovery, independent penetration testing and the final UK regulatory-perimeter review are explicit release gates before any retail real-money launch.</p></div></div></section>
+<section id="pilot" class="cta"><div class="wrap"><div class="cta-box"><div class="eyebrow">Provider pilot</div><h2>Bring one feed and a demo cohort. Test the infrastructure, not a profit story.</h2><p class="sub">The target pilot moves through sandbox, demo accounts, adversarial/retry scenarios and audit review before any broader commercial rollout.</p><div class="actions"><a class="btn primary" href="mailto:hello@signalgate.example">Provider pilot enquiry</a></div><p class="micro">Replace the placeholder email and legal/regulatory entity details before publishing.</p></div></div></section>
+<footer><div class="wrap">SignalGate Provider Edition · demo-only hardening build · execution tooling, not investment advice · replace all placeholders before publication.</div></footer>
+</body></html>
