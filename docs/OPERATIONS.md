@@ -38,7 +38,8 @@ Load balancers should use `/readyz`; process supervisors may use `/livez`.
 
 - versioned/reversible database migrations;
 - central log aggregation and alerts;
-- restore drill evidence;
+- production-like retained-backup restore drill with measured RTO/RPO (CI now
+  proves the backup/restore scripts round-trip data on ephemeral PostgreSQL);
 - SLO/error budget;
 - credential rotation drill;
 - independent penetration test;

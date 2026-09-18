@@ -31,4 +31,10 @@ After restore:
 4. record RTO/RPO and discrepancies;
 5. destroy the isolated restore environment.
 
-G6 remains failed until a dated restore drill has actually succeeded.
+CI now performs an ephemeral PostgreSQL backup → checksum verification → restore
+→ sentinel-data verification on every change to this lane. That proves the
+scripts can round-trip real database data.
+
+G6 still remains failed until a production-like drill restores a retained,
+encrypted backup into an isolated environment and records RTO/RPO, table/audit
+comparisons, access controls, and any discrepancies.
