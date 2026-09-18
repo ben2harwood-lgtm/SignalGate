@@ -51,6 +51,9 @@ class User(Base):
 
 class Signal(Base):
     __tablename__ = "signals"
+    __table_args__ = (
+        UniqueConstraint("source", "source_message_id", name="uq_signal_source_message"),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     source: Mapped[str] = mapped_column(String, default="TELEGRAM_ADMIN_TEST")
