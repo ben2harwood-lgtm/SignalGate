@@ -37,10 +37,18 @@ _PREFIXES = {
 
 
 def _next_id(db: Session, model) -> str:
-    """Generate the next sequential prefixed ID for a model."""
+    """Generate a collision-resistant id.
+
+    Local demo users retain USER-000001 style ids because the bundled EA/demo
+    instructions rely on that convenience. Hosted mode and all safety-critical
+    entities use unpredictable ids so command/signal ids are not enumerable and
+    concurrent inserts do not derive the same id from a row count.
+    """
     prefix = _PREFIXES[model]
-    count = db.scalar(select(func.count()).select_from(model)) or 0
-    return f"{prefix}-{count + 1:06d}"
+    if model is models.User and not settings.require_license:
+        count = db.scalar(select(func.count()).select_from(model)) or 0
+        return f"{prefix}-{count + 1:06d}"
+    return f"{prefix}-{secrets.token_hex(8).upper()}"
 
 
 # --- Audit logging --------------------------------------------------------
@@ -195,7 +203,7 @@ def issue_license(db: Session, user: models.User) -> str:
             user.license_key = key
             user.updated_at = utcnow()
             db.flush()
-            add_audit(db, "LICENSE_ISSUED", "user", user.id, {"license_key": key})
+            add_audit(db, "LICENSE_ISSUED", "user", user.id, {"rotated": True})
             return key
     raise RuntimeError("Could not generate a unique license key")
 
@@ -544,33 +552,41 @@ def _create_command(
 def get_pending_command_for_user(
     db: Session, user_id: str
 ) -> Optional[models.Command]:
-    """Return + claim the oldest pending non-expired command for a user.
+    """Atomically claim the oldest pending non-expired command for a user.
 
-    Marks the command SENT_TO_EA so it is never handed out twice. Expired
-    pending commands are transitioned to EXPIRED and skipped.
+    PostgreSQL uses SELECT ... FOR UPDATE SKIP LOCKED so two EA polls/workers
+    cannot claim the same command concurrently. SQLite keeps the simple local
+    demo path, where the test/demo process is single-worker.
     """
-    candidates = db.scalars(
-        select(models.Command)
-        .where(
-            models.Command.user_id == user_id,
-            models.Command.status == "PENDING",
+    while True:
+        query = (
+            select(models.Command)
+            .where(
+                models.Command.user_id == user_id,
+                models.Command.status == "PENDING",
+            )
+            .order_by(models.Command.created_at.asc())
+            .limit(1)
         )
-        .order_by(models.Command.created_at.asc())
-    ).all()
+        bind = db.get_bind()
+        if bind is not None and bind.dialect.name == "postgresql":
+            query = query.with_for_update(skip_locked=True)
 
-    for command in candidates:
+        command = db.scalar(query)
+        if command is None:
+            return None
+
         if _is_expired(command.expires_at):
             command.status = "EXPIRED"
             db.flush()
             add_audit(db, "COMMAND_EXPIRED", "command", command.id)
             continue
-        # Claim it.
+
         command.status = "SENT_TO_EA"
         command.sent_to_ea_at = utcnow()
         db.flush()
         add_audit(db, "COMMAND_SENT_TO_EA", "command", command.id)
         return command
-    return None
 
 
 def get_command(db: Session, command_id: str) -> Optional[models.Command]:
@@ -595,9 +611,29 @@ def mark_command_received(db: Session, command: models.Command) -> None:
 
 def record_execution(
     db: Session, command: models.Command, payload
-) -> models.Execution:
-    """Record an EA execution result and update command status + ledger."""
+) -> tuple[models.Execution, bool]:
+    """Record an execution result exactly once.
+
+    EA/network retries are normal. A retry for a command that already has an
+    execution returns the original row and does not replay ledger/state changes.
+    """
     from . import ledger
+
+    existing = db.scalar(
+        select(models.Execution).where(models.Execution.command_id == command.id)
+    )
+    if existing is not None:
+        add_audit(
+            db,
+            "DUPLICATE_EXECUTION_REPORT_IGNORED",
+            "command",
+            command.id,
+            {"execution_id": existing.id},
+        )
+        return existing, False
+
+    if command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}:
+        raise ValueError(f"Cannot report execution for terminal command {command.status}")
 
     execution = models.Execution(
         id=_next_id(db, models.Execution),
@@ -639,7 +675,7 @@ def record_execution(
         {"status": payload.status, "command_id": command.id},
     )
     ledger.on_execution(db, command, execution)
-    return execution
+    return execution, True
 
 
 # --- Management events ----------------------------------------------------
@@ -658,9 +694,28 @@ _EVENT_TO_COMMAND_STATUS = {
 
 def record_management_event(
     db: Session, command: models.Command, payload
-) -> models.TradeManagementEvent:
-    """Store a management event and advance command status + ledger."""
+) -> tuple[models.TradeManagementEvent, bool]:
+    """Store a management event idempotently and advance state monotonically."""
     from . import ledger
+
+    existing = db.scalar(
+        select(models.TradeManagementEvent).where(
+            models.TradeManagementEvent.command_id == command.id,
+            models.TradeManagementEvent.event_type == payload.event_type,
+            models.TradeManagementEvent.stage == payload.stage,
+            models.TradeManagementEvent.result == payload.result,
+            models.TradeManagementEvent.broker_ticket == payload.broker_ticket,
+        )
+    )
+    if existing is not None:
+        add_audit(
+            db,
+            "DUPLICATE_MANAGEMENT_EVENT_IGNORED",
+            "command",
+            command.id,
+            {"event_id": existing.id, "event_type": payload.event_type},
+        )
+        return existing, False
 
     event = models.TradeManagementEvent(
         id=_next_id(db, models.TradeManagementEvent),
@@ -680,8 +735,9 @@ def record_management_event(
     )
     db.add(event)
 
+    terminal = command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}
     new_status = _EVENT_TO_COMMAND_STATUS.get(payload.event_type)
-    if new_status:
+    if new_status and not terminal:
         command.status = new_status
         if new_status in {"FULLY_CLOSED", "FAILED"}:
             command.processed_at = utcnow()
@@ -692,10 +748,15 @@ def record_management_event(
         "MANAGEMENT_EVENT",
         "management_event",
         event.id,
-        {"event_type": payload.event_type, "command_id": command.id},
+        {
+            "event_type": payload.event_type,
+            "command_id": command.id,
+            "state_advanced": bool(new_status and not terminal),
+        },
     )
-    ledger.on_management_event(db, command, event)
-    return event
+    if not terminal:
+        ledger.on_management_event(db, command, event)
+    return event, True
 
 
 # --- helpers --------------------------------------------------------------
