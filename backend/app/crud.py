@@ -6,11 +6,13 @@ admin pause, one-command-per-approval) live here.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import secrets
 from typing import List, Optional
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import models
@@ -666,7 +668,19 @@ def record_execution(
         command.last_error = payload.error_message or payload.error_code
         command.processed_at = utcnow()
 
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # A simultaneous retry may have won the unique(command_id) race after
+        # our initial lookup. Roll back this transaction and return the winner.
+        db.rollback()
+        existing = db.scalar(
+            select(models.Execution).where(models.Execution.command_id == command.id)
+        )
+        if existing is not None:
+            return existing, False
+        raise
+
     add_audit(
         db,
         "EXECUTION_RECORDED",
@@ -692,19 +706,28 @@ _EVENT_TO_COMMAND_STATUS = {
 }
 
 
+def _management_event_key(command: models.Command, payload) -> str:
+    parts = [
+        command.id,
+        payload.event_type or "",
+        payload.stage or "",
+        payload.result or "",
+        payload.broker_ticket or "",
+        payload.requested_action or "",
+    ]
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
 def record_management_event(
     db: Session, command: models.Command, payload
 ) -> tuple[models.TradeManagementEvent, bool]:
     """Store a management event idempotently and advance state monotonically."""
     from . import ledger
 
+    event_key = _management_event_key(command, payload)
     existing = db.scalar(
         select(models.TradeManagementEvent).where(
-            models.TradeManagementEvent.command_id == command.id,
-            models.TradeManagementEvent.event_type == payload.event_type,
-            models.TradeManagementEvent.stage == payload.stage,
-            models.TradeManagementEvent.result == payload.result,
-            models.TradeManagementEvent.broker_ticket == payload.broker_ticket,
+            models.TradeManagementEvent.idempotency_key == event_key
         )
     )
     if existing is not None:
@@ -720,6 +743,7 @@ def record_management_event(
     event = models.TradeManagementEvent(
         id=_next_id(db, models.TradeManagementEvent),
         command_id=command.id,
+        idempotency_key=event_key,
         broker_ticket=payload.broker_ticket,
         event_type=payload.event_type,
         stage=payload.stage,
@@ -742,7 +766,21 @@ def record_management_event(
         if new_status in {"FULLY_CLOSED", "FAILED"}:
             command.processed_at = utcnow()
 
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # Same event raced us. The unique idempotency key makes the DB the
+        # final arbiter even with multiple API workers.
+        db.rollback()
+        existing = db.scalar(
+            select(models.TradeManagementEvent).where(
+                models.TradeManagementEvent.idempotency_key == event_key
+            )
+        )
+        if existing is not None:
+            return existing, False
+        raise
+
     add_audit(
         db,
         "MANAGEMENT_EVENT",
