@@ -253,6 +253,26 @@ def create_signal(
     """Store + deterministically parse a signal. Always creates a ledger row."""
     from . import ledger  # local import to avoid cycle
 
+    # Deduplicate provider/webhook retries before parsing/broadcast. Returning
+    # the original Signal means downstream per-user approval idempotency still
+    # guarantees at most one command for that source message.
+    if source_message_id:
+        existing = db.scalar(
+            select(models.Signal).where(
+                models.Signal.source == source,
+                models.Signal.source_message_id == source_message_id,
+            )
+        )
+        if existing is not None:
+            add_audit(
+                db,
+                "SIGNAL_REPLAY_IGNORED",
+                "signal",
+                existing.id,
+                {"source": source, "source_message_id": source_message_id},
+            )
+            return existing
+
     expiry_minutes = get_setting_int(
         db, "default_signal_expiry_minutes", settings.default_signal_expiry_minutes
     )
