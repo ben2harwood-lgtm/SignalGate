@@ -48,12 +48,15 @@ class EASimulator:
         http: HttpLike,
         user_id: str,
         api_key: str,
+        license_key: str = "",
         delay: float = 0.5,
         verbose: bool = True,
     ) -> None:
         self.http = http
         self.user_id = user_id
         self.headers = {"X-EA-API-Key": api_key}
+        if license_key:
+            self.headers["X-SG-License-Key"] = license_key
         self.delay = delay
         self.verbose = verbose
         self.processed: set = set()  # local idempotency, like the real EA
@@ -246,6 +249,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SignalGate EA SIMULATOR (no trading)")
     parser.add_argument("--user-id", required=True, help="e.g. USER-000001")
     parser.add_argument("--api-key", default="local-demo-ea-key")
+    parser.add_argument("--license-key", default="")
     parser.add_argument("--backend", default="http://127.0.0.1:8000")
     parser.add_argument("--poll-interval", type=float, default=2.0)
     parser.add_argument(
@@ -264,6 +268,7 @@ def main() -> None:
             http=http,
             user_id=args.user_id,
             api_key=args.api_key,
+            license_key=args.license_key,
             delay=args.delay,
         )
         if args.once:
