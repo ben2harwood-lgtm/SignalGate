@@ -18,6 +18,9 @@ class BotConfig:
         self.backend_base_url: str = os.getenv(
             "BACKEND_BASE_URL", "http://127.0.0.1:8000"
         )
+        self.admin_api_key: str = os.getenv("ADMIN_API_KEY", "")
+        self.signal_provider_api_key: str = os.getenv("SIGNAL_PROVIDER_API_KEY", "")
+        self.registration_api_key: str = os.getenv("REGISTRATION_API_KEY", "")
         admin_raw: str = os.getenv("ADMIN_TELEGRAM_IDS", "")
         self.admin_ids: List[str] = [x.strip() for x in admin_raw.split(",") if x.strip()]
         provider_raw: str = os.getenv("SIGNAL_PROVIDER_TELEGRAM_IDS", "")
