@@ -16,7 +16,7 @@ from ..schemas import (
     ExtractionResponse,
     SignalOut,
 )
-from ..security import require_admin, require_signal_provider
+from ..security import require_admin, require_registration, require_signal_provider
 from ..vision_extractor import get_extractor
 
 router = APIRouter(tags=["signals"])
@@ -137,6 +137,7 @@ def approve(
     signal_id: str,
     payload: DecisionRequest,
     db: Session = Depends(get_db),
+    _bot: str = Depends(require_registration),
 ) -> DecisionResponse:
     result = crud.approve_signal(db, signal_id, payload.telegram_user_id)
     db.commit()
@@ -148,6 +149,7 @@ def reject(
     signal_id: str,
     payload: DecisionRequest,
     db: Session = Depends(get_db),
+    _bot: str = Depends(require_registration),
 ) -> DecisionResponse:
     result = crud.reject_signal(db, signal_id, payload.telegram_user_id)
     db.commit()
