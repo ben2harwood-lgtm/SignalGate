@@ -99,3 +99,31 @@ def test_hosted_startup_refuses_weak_secrets(monkeypatch):
     monkeypatch.setenv("REGISTRATION_API_KEY", "r" * 40)
     with pytest.raises(RuntimeError, match="EA_API_KEY"):
         Settings().validate_startup()
+
+
+def test_hosted_decision_endpoint_rejects_spoofed_telegram_id(client):
+    from .conftest import create_signal, register_user
+
+    user = register_user(client, "321")
+    sig = create_signal(client, "XAUUSD BUY SL 2343 TP1 2353")
+
+    _set_hosted_security(True)
+    old = security.settings.registration_api_key
+    security.settings.registration_api_key = "r" * 40
+    try:
+        denied = client.post(
+            f"/signals/{sig['id']}/approve",
+            json={"telegram_user_id": "321"},
+        )
+        assert denied.status_code == 401
+
+        allowed = client.post(
+            f"/signals/{sig['id']}/approve",
+            json={"telegram_user_id": "321"},
+            headers={"X-Registration-API-Key": "r" * 40},
+        )
+        assert allowed.status_code == 200
+        assert allowed.json()["result"] == "APPROVED"
+    finally:
+        security.settings.registration_api_key = old
+        _set_hosted_security(False)
