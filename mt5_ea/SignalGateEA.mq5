@@ -259,7 +259,7 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
       {
          ReportError(command_id, "LOT_SIZE_INVALID",
                      "Lot invalid for child " + IntegerToString(i+1));
-         CloseAllChildren(symbol);
+         CloseAllChildren(symbol, command_id);
          return(false);
       }
 
@@ -274,7 +274,7 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
          ReportError(command_id, "ORDER_SEND_FAILED",
                      "Child " + IntegerToString(i+1) + " retcode " +
                      IntegerToString(trade.ResultRetcode()));
-         CloseAllChildren(symbol);
+         CloseAllChildren(symbol, command_id);
          return(false);
       }
       g_child_tickets[g_child_count] = trade.ResultDeal();
@@ -441,7 +441,7 @@ bool MoveRemainingSL(const string symbol, const string command_id,
 //+------------------------------------------------------------------+
 //| Close all children (used on partial execution failure rollback) |
 //+------------------------------------------------------------------+
-void CloseAllChildren(const string symbol)
+void CloseAllChildren(const string symbol, const string command_id)
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -450,6 +450,9 @@ void CloseAllChildren(const string symbol)
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      // CRITICAL: rollback belongs only to the command that partially opened.
+      // Never close another SignalGate command on the same symbol/magic.
+      if(StringFind(PositionGetString(POSITION_COMMENT), command_id) < 0) continue;
       trade.PositionClose(ticket);
    }
 }
