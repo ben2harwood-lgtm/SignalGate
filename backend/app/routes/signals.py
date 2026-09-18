@@ -101,12 +101,21 @@ def create_signal(
     db: Session = Depends(get_db),
     _provider: str = Depends(require_signal_provider),
 ) -> SignalOut:
-    signal = crud.create_signal(
-        db,
-        raw_text=payload.raw_text,
-        source=payload.source,
-        source_message_id=payload.source_message_id,
-    )
+    try:
+        signal = crud.create_signal(
+            db,
+            raw_text=payload.raw_text,
+            source=payload.source,
+            source_message_id=payload.source_message_id,
+        )
+    except crud.SignalReplayConflict as exc:
+        # Persist the conflict audit receipt, but never pretend the new content
+        # was accepted as the previously stored signal.
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     db.commit()
     return SignalOut.model_validate(signal)
 

@@ -245,6 +245,10 @@ def resolve_ea_user(
 
 # --- Signals --------------------------------------------------------------
 
+class SignalReplayConflict(ValueError):
+    """Same provider-source message id was reused with different content."""
+
+
 def create_signal(
     db: Session,
     raw_text: str,
@@ -265,6 +269,17 @@ def create_signal(
             )
         )
         if existing is not None:
+            if existing.raw_text != raw_text:
+                add_audit(
+                    db,
+                    "SIGNAL_REPLAY_CONFLICT",
+                    "signal",
+                    existing.id,
+                    {"source": source, "source_message_id": source_message_id},
+                )
+                raise SignalReplayConflict(
+                    "Source message id was already used with different signal content"
+                )
             add_audit(
                 db,
                 "SIGNAL_REPLAY_IGNORED",
@@ -314,6 +329,21 @@ def create_signal(
         )
         if existing is None:
             raise
+        if existing.raw_text != raw_text:
+            add_audit(
+                db,
+                "SIGNAL_REPLAY_CONFLICT",
+                "signal",
+                existing.id,
+                {
+                    "source": source,
+                    "source_message_id": source_message_id,
+                    "raced": True,
+                },
+            )
+            raise SignalReplayConflict(
+                "Source message id was already used with different signal content"
+            )
         add_audit(
             db,
             "SIGNAL_REPLAY_IGNORED",
