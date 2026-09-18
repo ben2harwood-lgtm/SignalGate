@@ -14,7 +14,10 @@ alembic -c alembic.ini current
 alembic -c alembic.ini check
 ```
 
-Only start the hosted application after the migration command succeeds.
+Hosted application startup independently checks the Alembic revision and fails
+closed unless the database is exactly at the single migration head. The
+migration command must still be run explicitly; application startup never
+applies schema changes.
 
 ## Adopting an existing pre-Alembic database
 

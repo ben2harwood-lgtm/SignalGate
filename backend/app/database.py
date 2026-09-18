@@ -1,6 +1,7 @@
 """Database engine, session factory and Base for SQLAlchemy models."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Generator
 
 from sqlalchemy import create_engine
@@ -41,15 +42,43 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def init_db() -> None:
-    """Initialise local demo schema; hosted schema is Alembic-managed.
+def _assert_hosted_schema_current() -> None:
+    """Fail closed unless the hosted database is exactly at Alembic head."""
+    # Alembic is a hosted-only dependency, so import lazily to keep the local
+    # SQLite demo lightweight.
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
 
-    In hosted mode we deliberately do not call create_all(). create_all() can
-    create missing tables but cannot safely evolve an existing PostgreSQL
-    schema, so a hosted release must run the versioned migration gate first.
+    config_path = Path(__file__).resolve().parents[1] / "alembic.ini"
+    config = Config(str(config_path))
+    script = ScriptDirectory.from_config(config)
+    heads = tuple(script.get_heads())
+    if len(heads) != 1:
+        raise RuntimeError(
+            f"Hosted database requires exactly one Alembic head; found {heads!r}"
+        )
+
+    with engine.connect() as connection:
+        current = MigrationContext.configure(connection).get_current_revision()
+
+    if current != heads[0]:
+        raise RuntimeError(
+            "Hosted database schema is not migration-current: "
+            f"current={current or 'none'}, expected={heads[0]}. "
+            "Run the reviewed Alembic migration gate before starting SignalGate."
+        )
+
+
+def init_db() -> None:
+    """Initialise local demo schema or verify hosted migration state.
+
+    Hosted mode never calls create_all(). It refuses to start unless PostgreSQL
+    is already at the single reviewed Alembic head.
     """
     from . import models  # noqa: F401
 
     if settings.require_license:
+        _assert_hosted_schema_current()
         return
     Base.metadata.create_all(bind=engine)
