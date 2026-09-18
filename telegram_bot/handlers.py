@@ -194,7 +194,11 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if decision == "YES"
         else f"/signals/{signal_id}/reject"
     )
-    result = await _backend_post(path, json={"telegram_user_id": str(user.id)})
+    result = await _backend_post(
+        path,
+        json={"telegram_user_id": str(user.id)},
+        headers=_registration_headers(),
+    )
     if result is None:
         await query.edit_message_text("Backend unreachable. Try again.")
         return
