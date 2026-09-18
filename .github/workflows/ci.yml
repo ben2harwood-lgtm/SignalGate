@@ -49,3 +49,14 @@ jobs:
         run: pip-audit -r backend/requirements.txt
       - name: Audit Telegram bot dependencies
         run: pip-audit -r telegram_bot/requirements.txt
+      - name: Audit hosted dependencies
+        working-directory: backend
+        run: pip-audit -r requirements-hosted.txt
+
+  container-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build hosted image
+        run: docker build --pull -t signalgate-ci .
