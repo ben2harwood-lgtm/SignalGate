@@ -1,152 +1,170 @@
 # SignalGate
 
-**Telegram-to-MetaTrader 5 one-tap DEMO trade execution system.**
+**Provider-agnostic signal execution infrastructure — currently in demo-only hardening.**
 
-SignalGate turns an admin's structured trade signal into a Telegram **trade
-card**. A registered tester taps **YES** or **NO**. On YES, the backend creates
-exactly one validated command, a MetaTrader 5 Expert Advisor (or a Python
-simulator) places a **demo** trade, manages take-profit stages and stop-loss
-movement, and reports every event back. Everything is logged and recorded in a
-performance ledger.
+SignalGate is being built for signal providers that want a controlled, auditable
+path from a provider signal to an authorised customer demo account without
+handing raw Telegram text to MetaTrader.
 
-> ⚠️ **DEMO ONLY.** v1 has no live-account support, by design. No money is at
-> risk. No profitability is claimed anywhere.
+> **Current release state:** demo-only. Do not represent this repository as a
+> production live-trading service. See [SIGNALGATE-STATUS.md](SIGNALGATE-STATUS.md)
+> and [Release Gates](docs/RELEASE_GATES.md).
 
-## What this is
+## Commercial proposition
 
-- A human-in-the-loop signal **approval** and **execution-tracking** system.
-- A deterministic boundary between free Telegram text and the trading terminal.
-- A forward-testing harness with a full audit trail and performance ledger.
+> **Your signals. Your customers. Your brand. SignalGate provides controlled
+> ingestion, validation, authorisation, execution transport, reconciliation and
+> audit.**
 
-## What works in v1
+SignalGate does **not** provide investment signals and makes no profitability
+claim.
 
-- Deterministic signal parser (XAUUSD / GOLD / XAU; BUY/SELL; SL + TP1–TP3).
-- FastAPI backend (SQLite) with idempotent approvals and commands.
-- Telegram bot: `/start`, `/status`, `/settings`, and admin `/testsignal`,
-  `/pause`, `/resume`, `/users`, `/lastsignals`, `/lastcommands`.
-- Inline YES/NO trade cards with precise outcome messages.
-- MT5 Expert Advisor (`SignalGateEA.mq5`): polls, validates, places demo
-  trades, split-ticket partial profits, SL staging, full event reporting.
-- Python EA **simulator** to run the whole flow without MetaTrader.
-- Performance ledger + audit logs across the full lifecycle.
-- Pytest suite (parser, approvals, commands, expiry, admin pause, ledger,
-  end-to-end simulator).
+## Current architecture
 
-## What does NOT exist in v1 (intentionally)
+Provider source → deterministic ingestion/validation → stored signal → required
+customer authorisation → tenant/account-bound command → MT5 EA or simulator →
+execution/management reports → ledger/audit.
 
-- ❌ Live trading / live accounts
-- ❌ Full auto-copying (every trade needs an explicit YES)
-- ❌ Trailing stops
-- ❌ Payments, public landing page, customer dashboard
-- ❌ AI / fuzzy signal parsing (deterministic only)
+The July prototype is intentionally human-in-the-loop: a trade requires explicit
+YES approval and the MT5 EA refuses real accounts.
 
-## Why raw Telegram text never reaches MetaTrader
+## Already implemented
 
-Free text is ambiguous and unsafe to trade on directly. SignalGate parses text
-**once**, deterministically, into structured fields and **rejects** anything
-uncertain (missing SL/TP, both directions, inconsistent SL vs TP, bad ordering,
-non-numeric values). Only structured, validated, **approved** command JSON is
-ever served to the EA. The EA has no idea the original Telegram text existed.
+- Deterministic signal parser for XAUUSD/GOLD/XAU and supported crypto aliases.
+- Signal storage, expiry and rejection reasons.
+- Per-user YES/NO approval with duplicate-decision protection.
+- Structured command output; raw provider text never reaches MT5.
+- Demo-only MT5 EA with hard stop, staged TP management and event reporting.
+- Python EA simulator that never connects to a broker.
+- Audit log and performance ledger.
+- Admin pause/resume.
+- Per-user hosted licence mechanism.
+- PostgreSQL-capable backend.
+- GitHub CI, Python compile checks and dependency vulnerability audit on the
+  hardening integration branch.
 
-## Why split-ticket mode for partial profits
+## Hardening work in progress
 
-The spec wants 50/25/25 partial closes, but most symbols have a 0.01 minimum
-lot **and** 0.01 lot step. You cannot partially close a single 0.01 lot
-position by 50% (that needs 0.005 lots). So in demo we open **three child
-positions** that emulate partials:
+The active integration branch is
+`codex/signalgate-hardening-2026-09-18`.
 
-| Child | Lot | Take-profit | On close |
-|-------|-----|-------------|----------|
-| TP1 | 0.02 | TP1 | move remaining SLs to **breakeven** |
-| TP2 | 0.01 | TP2 | move TP3 child SL to **TP1** |
-| TP3 | 0.01 | TP3 | full close → `FULLY_CLOSED` |
+Independent lanes add:
 
-Total demo exposure ≈ 0.04 lots, all sharing the same initial SL. This is
-clearly named `split_ticket_demo_partial_mode` and is the v1 default. A
-single-ticket fallback (one 0.01 lot, full close at the final TP) is also
-supported. This is **demo only** and documented, not hidden.
+- strong hosted credentials and fail-closed deployment validation;
+- command/account ownership checks and retry-safe execution reporting;
+- adversarial parser/input/replay controls;
+- provider packaging and release evidence.
 
-## Quick start
+PRs are not counted as complete until CI, adversarial tests, review and
+acceptance are all green.
 
-Full instructions: [`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md).
+## Not yet production-complete
+
+- True organisation/provider/feed multi-tenancy.
+- Provider dashboard/onboarding UI.
+- Production SSO/MFA/RBAC.
+- Versioned database migrations.
+- Production observability/SLOs and restore-tested disaster recovery.
+- Billing/subscription operations.
+- Independent penetration test.
+- Written UK regulatory-perimeter opinion for the final operating model.
+- Paying provider beta.
+- Live retail trading.
+
+Those are release blockers, not hidden limitations.
+
+## Safety model
+
+1. **Demo-only gate:** the EA refuses real accounts.
+2. **Human authorisation:** no command is created without the required decision.
+3. **Deterministic parser:** ambiguity fails closed.
+4. **Structured boundary:** MT5 receives only validated command fields.
+5. **Expiry:** stale signals do not create commands.
+6. **Idempotency:** duplicate decisions and retry paths must not create duplicate
+   execution state.
+7. **Pause:** new command creation can be stopped.
+8. **Audit:** signal, decision, command and lifecycle events are recorded.
+
+See [Safety Rules](docs/SAFETY_RULES.md) and
+[Threat Model](docs/THREAT_MODEL.md).
+
+## Provider Edition
+
+The target provider experience is described in
+[Provider Edition](docs/PROVIDER_EDITION.md) and
+[Provider Onboarding](docs/PROVIDER_ONBOARDING.md).
+
+The provider-facing sales demonstration deliberately sells control, isolation
+and evidence — not trading returns:
+[10-minute Provider Demo](docs/SALES_DEMO.md).
+
+## Regulatory gate
+
+The exact role of SignalGate, the provider and the broker must be reviewed
+against the intended instruments, customers and order path before any UK
+real-money launch. See [UK Regulatory Perimeter Gate](docs/REGULATORY_GATE.md).
+
+## Local demo quick start
+
+Full instructions: [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md).
 
 ```bash
-# 0. Configure
-cp .env.example .env   # set TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_IDS, EA_API_KEY
+cp .env.example .env
 
-# 1. Backend (Terminal 1)
 cd backend
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 python ../scripts/init_db.py
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
 
-# 2. Telegram bot (Terminal 2)
+In another terminal:
+
+```bash
 cd telegram_bot
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 python run_bot.py
+```
 
-# 3. EA simulator (Terminal 3 — no MetaTrader needed)
+Simulator, no broker and no trading:
+
+```bash
 python simulator/ea_simulator.py --user-id USER-000001 --api-key local-demo-ea-key
 ```
 
-One-command scripted demo (no Telegram):
+## Tests
 
 ```bash
-python simulator/run_demo_flow.py --admin-id <YOUR_ADMIN_ID> --api-key local-demo-ea-key
+cd backend
+python -m pytest -q
 ```
 
-## Install the MT5 EA
+CI also compiles Python sources and runs `pip-audit` against backend and bot
+dependencies.
 
-See [`mt5_ea/README_MT5_SETUP.md`](mt5_ea/README_MT5_SETUP.md). In short: copy
-`SignalGateEA.mq5` into `MQL5/Experts`, compile (F7), whitelist the backend URL
-under Tools → Options → Expert Advisors → WebRequest, enable Algo Trading, and
-attach it to a **demo** XAUUSD chart with your `UserID` and `EAApiKey`.
+## Evidence and operations
 
-## Run the tests
-
-```bash
-cd backend && source .venv/bin/activate && python -m pytest -q
-```
-
-## Documentation
-
+- [Canonical Status](SIGNALGATE-STATUS.md)
+- [Release Gates](docs/RELEASE_GATES.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Local setup](docs/LOCAL_SETUP.md)
-- [Demo script](docs/DEMO_SCRIPT.md)
-- [Testing plan](docs/TESTING_PLAN.md)
-- [Safety rules](docs/SAFETY_RULES.md)
-- [Performance ledger](docs/PERFORMANCE_LEDGER.md)
-- [Nick screenshot provider guide](docs/NICK_SCREENSHOT_PROVIDER_GUIDE.md)
-- [Copy-paste message to Nick](docs/MESSAGE_TO_NICK.md)
-- [Ben next-stage checklist](docs/BEN_NEXT_STAGE_CHECKLIST.md)
-- [MT5 setup](mt5_ea/README_MT5_SETUP.md)
+- [Safety Rules](docs/SAFETY_RULES.md)
+- [Threat Model](docs/THREAT_MODEL.md)
+- [Incident Runbooks](docs/INCIDENT_RUNBOOKS.md)
+- [Provider Edition](docs/PROVIDER_EDITION.md)
+- [Provider Onboarding](docs/PROVIDER_ONBOARDING.md)
+- [UK Regulatory Gate](docs/REGULATORY_GATE.md)
+- [Due-Diligence Index](docs/DUE_DILIGENCE_INDEX.md)
+- [Testing Plan](docs/TESTING_PLAN.md)
+- [Performance Ledger](docs/PERFORMANCE_LEDGER.md)
+- [MT5 Setup](mt5_ea/README_MT5_SETUP.md)
 
-## Known limitations
+## Acquisition discipline
 
-- **Auth is lightweight** (shared API key + admin-id header) — fine for local
-  use, not production.
-- **MQL5 has no JSON library**; the EA uses a small deterministic extractor for
-  the exact backend command shape (see MT5 README).
-- **Demo/live detection** depends on the broker reporting `ACCOUNT_TRADE_MODE`
-  correctly; keep `DemoOnlyMode = true` and only attach to demo accounts.
-- **R values are approximate** and marked provisional when entry price is
-  unknown. No profitability is claimed.
-- The bot broadcasts trade cards to the issuing admin chat in v1; wider
-  per-user broadcast requires storing each tester's chat id.
-
-## Next steps after v1
-
-- Persist per-user Telegram chat ids for true multi-tester broadcast.
-- Stronger auth (per-EA keys, signed requests).
-- Richer ledger reporting / export.
-- Optional (carefully gated) trailing stop and additional symbols.
-- Live trading would require a separate, deliberate, risk-reviewed design — out
-  of scope here.
-
-## Safety
-
-This is a demo, risk-controlled, execution-tracking and forward-testing tool.
-It is not financial advice and makes no profitability claims. See
-[`docs/SAFETY_RULES.md`](docs/SAFETY_RULES.md).
+From the first external provider, retain clean evidence for revenue, retention,
+support cost, uptime, incidents, security tests, regulatory analysis, customer
+concentration, IP ownership and operating runbooks. A future acquirer should be
+buying reproducible software and recurring provider relationships — not founder
+memory.
