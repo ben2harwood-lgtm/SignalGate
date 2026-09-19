@@ -23,6 +23,7 @@ class ProviderCreate(BaseModel):
 class FeedCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     source_namespace: str = Field(min_length=1, max_length=120)
+    paused: bool = False
 
 
 class ProviderCredentialCreate(BaseModel):
