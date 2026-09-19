@@ -10,7 +10,7 @@ This is an engineering inventory for privacy/legal review, not a final privacy p
 | Telegram username / first name | support/onboarding display | Telegram bot | personal data |
 | Provider organisation/name/contact | B2B tenant/support | provider/admin | business/contact data |
 | Provider API key | provider authentication | SignalGate | raw shown once; hash stored |
-| Customer EA licence | customer EA authentication | SignalGate | raw shown once after hashing lane; hash + last4 stored |
+| Customer EA licence | customer EA authentication | SignalGate | raw shown once at issue/rotation; SHA-256 hash + last4 stored |
 | Signal raw text | execution instruction/audit | provider | may contain provider-authored content; avoid unrelated personal data |
 | Parsed symbol/direction/levels | validation/execution/audit | SignalGate | trading instruction data |
 | Subscriber approval | authorisation evidence | subscriber via bot | decision/timestamp |
@@ -36,7 +36,7 @@ This is an engineering inventory for privacy/legal review, not a final privacy p
 ## Current minimisation controls
 
 - provider raw keys are not stored;
-- customer raw licences are being migrated to one-way hashes;
+- customer raw licences are one-time only; migration 20260919_0007 hashes existing values and erases the legacy plaintext column;
 - credentials are excluded from URLs and audit payloads;
 - request logging excludes query strings, headers and bodies;
 - provider queries are server-side tenant filtered;
@@ -59,3 +59,8 @@ Privacy/legal review must determine:
 ## Engineering release rule
 
 Do not invent retention periods merely to fill a policy. Until reviewed, preserve required audit/security evidence, minimise new collection, support deletion/export design, and keep demo/test data clearly separable from any future live account data.
+
+
+## Historical credential copies
+
+Encrypted database backups taken before migration `20260919_0007` may contain legacy plaintext customer licences. Privacy/security review should treat those as credential-bearing historical copies until expiry or secure destruction. Post-`0007` database state stores only the hash + last-four representation.
