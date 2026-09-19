@@ -22,10 +22,19 @@ from ..schemas import (
     ProviderOut,
     ProviderOverview,
     SignalOut,
+    SubscriptionAcceptanceOut,
     SubscriptionCreate,
+    SubscriptionInviteAccept,
+    SubscriptionInviteCreate,
+    SubscriptionInviteOut,
     SubscriptionOut,
 )
-from ..security import ProviderPrincipal, require_admin, require_provider_principal
+from ..security import (
+    ProviderPrincipal,
+    require_admin,
+    require_provider_principal,
+    require_registration,
+)
 
 router = APIRouter(tags=["providers"])
 
@@ -271,31 +280,131 @@ def provider_rotate_credential(
     )
 
 
-@router.post("/providers/me/subscriptions", response_model=SubscriptionOut)
-def provider_subscribe_user(
+@router.post("/providers/me/subscriptions", response_model=SubscriptionOut, deprecated=True)
+def provider_direct_subscription_disabled(
     payload: SubscriptionCreate,
     principal: ProviderPrincipal = Depends(require_provider_principal),
-    db: Session = Depends(get_db),
 ) -> SubscriptionOut:
+    del payload, principal
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Direct provider enrolment is disabled. Create a subscription invite and have the subscriber accept it.",
+    )
+
+
+@router.post("/providers/me/subscription-invites", response_model=SubscriptionInviteOut)
+def provider_create_subscription_invite(
+    payload: SubscriptionInviteCreate,
+    principal: ProviderPrincipal = Depends(require_provider_principal),
+    db: Session = Depends(get_db),
+) -> SubscriptionInviteOut:
     if principal is None:
         raise HTTPException(status_code=400, detail="Tenant principal required")
-    feed = crud.get_feed_for_provider(db, principal.provider_id, payload.feed_id)
-    if feed is None:
-        raise HTTPException(status_code=404, detail="Feed not found")
-    user = crud.get_user_by_telegram(db, payload.telegram_user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="Registered subscriber not found")
     provider = crud.get_provider(db, principal.provider_id)
+    feed = crud.get_feed_for_provider(db, principal.provider_id, payload.feed_id)
+    if provider is None or feed is None:
+        raise HTTPException(status_code=404, detail="Feed not found")
     try:
-        subscription, account = crud.subscribe_user_to_feed(db, provider, feed, user)
+        invite, raw_token = crud.create_subscription_invite(
+            db,
+            provider,
+            feed,
+            expires_minutes=payload.expires_minutes,
+        )
     except ValueError as exc:
         raise _bad_request(exc) from exc
     db.commit()
-    return SubscriptionOut(
+    return SubscriptionInviteOut(
+        invite_id=invite.id,
+        feed_id=invite.feed_id,
+        status=invite.status,
+        expires_at=invite.expires_at,
+        accepted_user_id=invite.accepted_user_id,
+        invite_token=raw_token,
+    )
+
+
+@router.get("/providers/me/subscription-invites", response_model=list[SubscriptionInviteOut])
+def provider_subscription_invites(
+    principal: ProviderPrincipal = Depends(require_provider_principal),
+    db: Session = Depends(get_db),
+) -> list[SubscriptionInviteOut]:
+    if principal is None:
+        return []
+    rows = crud.list_provider_subscription_invites(db, principal.provider_id)
+    return [
+        SubscriptionInviteOut(
+            invite_id=row.id,
+            feed_id=row.feed_id,
+            status=row.status,
+            expires_at=row.expires_at,
+            accepted_user_id=row.accepted_user_id,
+            invite_token=None,
+        )
+        for row in rows
+    ]
+
+
+@router.post(
+    "/providers/me/subscription-invites/{invite_id}/revoke",
+    response_model=SubscriptionInviteOut,
+)
+def provider_revoke_subscription_invite(
+    invite_id: str,
+    principal: ProviderPrincipal = Depends(require_provider_principal),
+    db: Session = Depends(get_db),
+) -> SubscriptionInviteOut:
+    if principal is None:
+        raise HTTPException(status_code=400, detail="Tenant principal required")
+    try:
+        invite = crud.revoke_subscription_invite(
+            db,
+            principal.provider_id,
+            invite_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    db.commit()
+    return SubscriptionInviteOut(
+        invite_id=invite.id,
+        feed_id=invite.feed_id,
+        status=invite.status,
+        expires_at=invite.expires_at,
+        accepted_user_id=invite.accepted_user_id,
+        invite_token=None,
+    )
+
+
+@router.post("/subscriptions/accept", response_model=SubscriptionAcceptanceOut)
+def subscriber_accept_subscription_invite(
+    payload: SubscriptionInviteAccept,
+    db: Session = Depends(get_db),
+    _bot: str = Depends(require_registration),
+) -> SubscriptionAcceptanceOut:
+    try:
+        _invite, subscription, account, provider, feed = crud.accept_subscription_invite(
+            db,
+            payload.invite_token,
+            payload.telegram_user_id,
+        )
+    except ValueError as exc:
+        # Expiry may intentionally mutate/audit the invite; preserve that receipt.
+        db.commit()
+        code = (
+            status.HTTP_410_GONE
+            if "expired" in str(exc).lower()
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+    db.commit()
+    return SubscriptionAcceptanceOut(
         subscription_id=subscription.id,
         account_id=account.id,
-        feed_id=subscription.feed_id,
-        user_id=subscription.user_id,
+        provider_id=provider.id,
+        provider_name=provider.name,
+        provider_display_name=provider.brand_display_name,
+        feed_id=feed.id,
+        feed_name=feed.name,
         status=subscription.status,
     )
 
