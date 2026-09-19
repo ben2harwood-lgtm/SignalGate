@@ -67,7 +67,7 @@ jobs:
     timeout-minutes: 10
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:16-alpine
         env:
           POSTGRES_DB: signalgate
           POSTGRES_USER: signalgate
@@ -92,6 +92,9 @@ jobs:
             backend/requirements.txt
             backend/requirements-hosted.txt
       - name: Install PostgreSQL client
+        # ubuntu-latest currently ships pg_dump 16; keep the smoke-test server on
+        # the same major so pg_dump/pg_restore exercise the scripts instead of
+        # failing on a client/server major-version mismatch.
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Install hosted dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
