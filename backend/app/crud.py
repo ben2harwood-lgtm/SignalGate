@@ -992,6 +992,17 @@ def recent_commands(db: Session, limit: int = 20) -> List[models.Command]:
     )
 
 
+def recent_ledger(db: Session, limit: int = 20) -> List[models.PerformanceLedger]:
+    """Most-recent performance rows, including losses and unattributed closes."""
+    return list(
+        db.scalars(
+            select(models.PerformanceLedger)
+            .order_by(models.PerformanceLedger.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
 def mark_command_received(db: Session, command: models.Command) -> None:
     add_audit(db, "COMMAND_RECEIVED_BY_EA", "command", command.id)
 
