@@ -160,9 +160,6 @@ def create_provider(
         slug=slug,
         status="ACTIVE",
         paused=False,
-        allowed_symbols_json=None,
-        expiry_minutes=settings.default_signal_expiry_minutes,
-        default_lot_size=settings.default_lot_size,
     )
     db.add(row)
     db.flush()
@@ -250,6 +247,9 @@ def create_feed(
         source_namespace=source_namespace,
         status="ACTIVE",
         paused=False,
+        allowed_symbols_json=None,
+        expiry_minutes=settings.default_signal_expiry_minutes,
+        default_lot_size=settings.default_lot_size,
     )
     db.add(row)
     db.flush()
