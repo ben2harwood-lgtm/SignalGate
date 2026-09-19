@@ -62,3 +62,8 @@ From customer #1, track the metrics an acquirer can diligence: MRR/ARR, provider
 ### Subscriber enrolment model
 
 Provider Edition uses subscriber-consent invites rather than provider-side user attachment. A provider creates a feed-specific, expiring one-time token; the subscriber accepts it from their own authenticated bot session. The token is stored only as a hash and is consumed on first acceptance. This keeps provider ownership, subscriber consent and delivery eligibility as separate auditable events.
+
+
+## Telegram signal source
+
+Hosted providers connect Telegram through a feed-bound one-time token rather than a shared provider credential. Generate the token in the Provider Portal, send `/connectprovider <token>` from the provider Telegram account, and verify the binding before submitting screenshots. See `docs/PROVIDER_TELEGRAM_SOURCE.md`.
