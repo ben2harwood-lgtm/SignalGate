@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from . import models
 from .config import get_settings
 from .models import utcnow
-from .parser import parse_signal
+from .parser import PAIR_CODES, parse_signal
 
 settings = get_settings()
 
@@ -186,6 +186,29 @@ def issue_provider_credential(
     return row, raw_key
 
 
+def rotate_provider_credential(
+    db: Session, provider: models.Provider, label: str = "rotated"
+) -> tuple[models.ProviderCredential, str]:
+    """Revoke all current provider keys and issue one replacement."""
+    credentials = db.scalars(
+        select(models.ProviderCredential).where(
+            models.ProviderCredential.provider_id == provider.id,
+            models.ProviderCredential.status == "ACTIVE",
+        )
+    ).all()
+    for credential in credentials:
+        credential.status = "REVOKED"
+    row, raw_key = issue_provider_credential(db, provider, label)
+    add_audit(
+        db,
+        "PROVIDER_CREDENTIALS_ROTATED",
+        "provider",
+        provider.id,
+        {"revoked_count": len(credentials), "new_credential_id": row.id},
+    )
+    return row, raw_key
+
+
 def get_provider(db: Session, provider_id: str) -> Optional[models.Provider]:
     return db.get(models.Provider, provider_id)
 
@@ -225,11 +248,68 @@ def create_feed(
         source_namespace=source_namespace,
         status="ACTIVE",
         paused=False,
+        allowed_symbols_json=None,
+        expiry_minutes=settings.default_signal_expiry_minutes,
+        default_lot_size=settings.default_lot_size,
     )
     db.add(row)
     db.flush()
     add_audit(db, "FEED_CREATED", "feed", row.id, {"provider_id": provider.id})
     return row
+
+
+def _normalise_feed_symbols(symbols: Optional[list[str]]) -> Optional[list[str]]:
+    if symbols is None:
+        return None
+    normalised: list[str] = []
+    for raw in symbols:
+        symbol = str(raw).strip().upper().replace("/", "").replace("-", "")
+        if len(symbol) != 6:
+            raise ValueError(f"Unsupported symbol policy value: {raw}")
+        base, quote = symbol[:3], symbol[3:]
+        if base not in PAIR_CODES or quote not in PAIR_CODES:
+            raise ValueError(f"Unsupported symbol policy value: {raw}")
+        if symbol not in normalised:
+            normalised.append(symbol)
+    if len(normalised) > 100:
+        raise ValueError("Feed policy supports at most 100 symbols")
+    return sorted(normalised)
+
+
+def feed_allowed_symbols(feed: models.Feed) -> Optional[set[str]]:
+    if not feed.allowed_symbols_json:
+        return settings.allowed_symbols
+    try:
+        values = json.loads(feed.allowed_symbols_json)
+    except (TypeError, json.JSONDecodeError):
+        raise ValueError("Feed allowed-symbol policy is invalid")
+    return set(_normalise_feed_symbols(values) or [])
+
+
+def update_feed_policy(
+    db: Session,
+    feed: models.Feed,
+    changes: dict,
+) -> models.Feed:
+    if "name" in changes and changes["name"] is not None:
+        feed.name = changes["name"]
+    if "allowed_symbols" in changes:
+        symbols = _normalise_feed_symbols(changes["allowed_symbols"])
+        feed.allowed_symbols_json = json.dumps(symbols) if symbols is not None else None
+    if "expiry_minutes" in changes and changes["expiry_minutes"] is not None:
+        feed.expiry_minutes = int(changes["expiry_minutes"])
+    if "default_lot_size" in changes and changes["default_lot_size"] is not None:
+        feed.default_lot_size = float(changes["default_lot_size"])
+    feed.updated_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "FEED_POLICY_UPDATED",
+        "feed",
+        feed.id,
+        {"fields": sorted(changes.keys()), "provider_id": feed.provider_id},
+    )
+    return feed
 
 
 def set_provider_paused(db: Session, provider: models.Provider, paused: bool) -> models.Provider:
@@ -769,6 +849,7 @@ def create_signal(
     """
     from . import ledger  # local import to avoid cycle
 
+    feed: Optional[models.Feed] = None
     if provider_id or feed_id:
         if not provider_id or not feed_id:
             raise ValueError("provider_id and feed_id must be supplied together")
@@ -813,10 +894,25 @@ def create_signal(
             )
             return existing
 
-    expiry_minutes = get_setting_int(
-        db, "default_signal_expiry_minutes", settings.default_signal_expiry_minutes
+    expiry_minutes = (
+        feed.expiry_minutes
+        if feed is not None and feed.expiry_minutes is not None
+        else get_setting_int(
+            db,
+            "default_signal_expiry_minutes",
+            settings.default_signal_expiry_minutes,
+        )
     )
-    parsed = parse_signal(raw_text, expiry_minutes=expiry_minutes)
+    allowed_symbols = (
+        feed_allowed_symbols(feed)
+        if feed is not None
+        else settings.allowed_symbols
+    )
+    parsed = parse_signal(
+        raw_text,
+        expiry_minutes=expiry_minutes,
+        allowed_symbols=allowed_symbols,
+    )
 
     signal = models.Signal(
         id=_next_id(db, models.Signal),
@@ -1127,8 +1223,24 @@ def _create_command(
     user: models.User,
 ) -> models.Command:
     """Create exactly one command from an approved valid signal."""
-    expiry_minutes = get_setting_int(
-        db, "default_signal_expiry_minutes", settings.default_signal_expiry_minutes
+    feed = (
+        get_feed_for_provider(db, signal.provider_id, signal.feed_id)
+        if signal.provider_id is not None and signal.feed_id is not None
+        else None
+    )
+    expiry_minutes = (
+        feed.expiry_minutes
+        if feed is not None and feed.expiry_minutes is not None
+        else get_setting_int(
+            db,
+            "default_signal_expiry_minutes",
+            settings.default_signal_expiry_minutes,
+        )
+    )
+    default_lot_size = (
+        feed.default_lot_size
+        if feed is not None and feed.default_lot_size is not None
+        else get_setting_float(db, "default_lot_size", settings.default_lot_size)
     )
     split_mode = (
         get_setting(db, "split_ticket_demo_partial_mode", "true") or "true"
@@ -1158,7 +1270,7 @@ def _create_command(
         tp1_close_percent=get_setting_int(db, "tp1_close_percent", 50),
         tp2_close_percent=get_setting_int(db, "tp2_close_percent", 25),
         tp3_close_percent=get_setting_int(db, "tp3_close_percent", 25),
-        lot_size=get_setting_float(db, "default_lot_size", settings.default_lot_size),
+        lot_size=default_lot_size,
         split_ticket_demo_partial_mode=split_mode,
         tp1_lot=get_setting_float(db, "tp1_lot", settings.tp1_lot),
         tp2_lot=get_setting_float(db, "tp2_lot", settings.tp2_lot),
