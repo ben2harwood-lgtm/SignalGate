@@ -29,6 +29,8 @@ _PREFIXES = {
     models.Organization: "ORG",
     models.Provider: "PRV",
     models.ProviderCredential: "PCR",
+    models.ProviderSourceInvite: "PSI",
+    models.ProviderSourceBinding: "PSB",
     models.Feed: "FED",
     models.SubscriptionInvite: "INV",
     models.Subscription: "SUB",
@@ -207,6 +209,257 @@ def rotate_provider_credential(
         {"revoked_count": len(credentials), "new_credential_id": row.id},
     )
     return row, raw_key
+
+
+def generate_provider_source_token() -> str:
+    return "sgs_" + secrets.token_urlsafe(24)
+
+
+def hash_provider_source_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def create_provider_source_invite(
+    db: Session,
+    provider: models.Provider,
+    feed: models.Feed,
+    expires_minutes: int = 60,
+) -> tuple[models.ProviderSourceInvite, str]:
+    if feed.provider_id != provider.id:
+        raise ValueError("Feed does not belong to provider")
+    if provider.status != "ACTIVE" or feed.status != "ACTIVE":
+        raise ValueError("Provider/feed is not active")
+    raw_token = generate_provider_source_token()
+    row = models.ProviderSourceInvite(
+        id=_next_id(db, models.ProviderSourceInvite),
+        provider_id=provider.id,
+        feed_id=feed.id,
+        token_hash=hash_provider_source_token(raw_token),
+        status="PENDING",
+        expires_at=utcnow() + dt.timedelta(minutes=expires_minutes),
+    )
+    db.add(row)
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_SOURCE_INVITE_ISSUED",
+        "provider_source_invite",
+        row.id,
+        {
+            "provider_id": provider.id,
+            "feed_id": feed.id,
+            "expires_at": row.expires_at,
+        },
+    )
+    return row, raw_token
+
+
+def list_provider_source_invites(
+    db: Session,
+    provider_id: str,
+    limit: int = 100,
+) -> List[models.ProviderSourceInvite]:
+    return list(
+        db.scalars(
+            select(models.ProviderSourceInvite)
+            .where(models.ProviderSourceInvite.provider_id == provider_id)
+            .order_by(models.ProviderSourceInvite.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def revoke_provider_source_invite(
+    db: Session,
+    provider_id: str,
+    invite_id: str,
+) -> models.ProviderSourceInvite:
+    invite = db.scalar(
+        select(models.ProviderSourceInvite).where(
+            models.ProviderSourceInvite.id == invite_id,
+            models.ProviderSourceInvite.provider_id == provider_id,
+        )
+    )
+    if invite is None:
+        raise ValueError("Source invite not found")
+    if invite.status == "ACCEPTED":
+        raise ValueError("Accepted source invite cannot be revoked")
+    invite.status = "REVOKED"
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_SOURCE_INVITE_REVOKED",
+        "provider_source_invite",
+        invite.id,
+        {"provider_id": provider_id, "feed_id": invite.feed_id},
+    )
+    return invite
+
+
+def connect_telegram_provider_source(
+    db: Session,
+    raw_token: str,
+    telegram_user_id: str,
+) -> tuple[
+    models.ProviderSourceInvite,
+    models.ProviderSourceBinding,
+    models.Provider,
+    models.Feed,
+]:
+    token_hash = hash_provider_source_token(raw_token)
+    invite = db.scalar(
+        select(models.ProviderSourceInvite).where(
+            models.ProviderSourceInvite.token_hash == token_hash
+        )
+    )
+    if invite is None or not secrets.compare_digest(token_hash, invite.token_hash):
+        raise ValueError("Source invite not found")
+    if invite.status != "PENDING":
+        raise ValueError("Source invite is no longer active")
+    if invite.expires_at <= utcnow():
+        invite.status = "EXPIRED"
+        db.flush()
+        add_audit(
+            db,
+            "PROVIDER_SOURCE_INVITE_EXPIRED",
+            "provider_source_invite",
+            invite.id,
+            {"provider_id": invite.provider_id, "feed_id": invite.feed_id},
+        )
+        raise ValueError("Source invite has expired")
+
+    provider = db.get(models.Provider, invite.provider_id)
+    feed = db.scalar(
+        select(models.Feed).where(
+            models.Feed.id == invite.feed_id,
+            models.Feed.provider_id == invite.provider_id,
+        )
+    )
+    if provider is None or feed is None:
+        raise ValueError("Invite provider/feed no longer exists")
+    if provider.status != "ACTIVE" or feed.status != "ACTIVE":
+        raise ValueError("Invite provider/feed is not active")
+
+    external_identity = str(telegram_user_id)
+    binding = db.scalar(
+        select(models.ProviderSourceBinding).where(
+            models.ProviderSourceBinding.source_type == "TELEGRAM",
+            models.ProviderSourceBinding.external_identity == external_identity,
+        )
+    )
+    previous = None
+    if binding is None:
+        binding = models.ProviderSourceBinding(
+            id=_next_id(db, models.ProviderSourceBinding),
+            provider_id=provider.id,
+            feed_id=feed.id,
+            source_type="TELEGRAM",
+            external_identity=external_identity,
+            status="ACTIVE",
+        )
+        db.add(binding)
+    else:
+        previous = {
+            "provider_id": binding.provider_id,
+            "feed_id": binding.feed_id,
+            "status": binding.status,
+        }
+        binding.provider_id = provider.id
+        binding.feed_id = feed.id
+        binding.status = "ACTIVE"
+        binding.updated_at = utcnow()
+
+    invite.status = "ACCEPTED"
+    invite.accepted_telegram_user_id = external_identity
+    invite.accepted_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_SOURCE_CONNECTED",
+        "provider_source_binding",
+        binding.id,
+        {
+            "provider_id": provider.id,
+            "feed_id": feed.id,
+            "source_type": "TELEGRAM",
+            "rebound_from": previous,
+            "invite_id": invite.id,
+        },
+    )
+    return invite, binding, provider, feed
+
+
+def get_telegram_provider_source(
+    db: Session,
+    telegram_user_id: str,
+) -> Optional[tuple[models.ProviderSourceBinding, models.Provider, models.Feed]]:
+    binding = db.scalar(
+        select(models.ProviderSourceBinding).where(
+            models.ProviderSourceBinding.source_type == "TELEGRAM",
+            models.ProviderSourceBinding.external_identity == str(telegram_user_id),
+            models.ProviderSourceBinding.status == "ACTIVE",
+        )
+    )
+    if binding is None:
+        return None
+    provider = db.get(models.Provider, binding.provider_id)
+    feed = db.scalar(
+        select(models.Feed).where(
+            models.Feed.id == binding.feed_id,
+            models.Feed.provider_id == binding.provider_id,
+        )
+    )
+    if (
+        provider is None
+        or feed is None
+        or provider.status != "ACTIVE"
+        or feed.status != "ACTIVE"
+    ):
+        return None
+    return binding, provider, feed
+
+
+def list_provider_source_bindings(
+    db: Session,
+    provider_id: str,
+) -> List[models.ProviderSourceBinding]:
+    return list(
+        db.scalars(
+            select(models.ProviderSourceBinding)
+            .where(models.ProviderSourceBinding.provider_id == provider_id)
+            .order_by(models.ProviderSourceBinding.updated_at.desc())
+        ).all()
+    )
+
+
+def revoke_provider_source_binding(
+    db: Session,
+    provider_id: str,
+    binding_id: str,
+) -> models.ProviderSourceBinding:
+    binding = db.scalar(
+        select(models.ProviderSourceBinding).where(
+            models.ProviderSourceBinding.id == binding_id,
+            models.ProviderSourceBinding.provider_id == provider_id,
+        )
+    )
+    if binding is None:
+        raise ValueError("Source binding not found")
+    binding.status = "REVOKED"
+    binding.updated_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_SOURCE_REVOKED",
+        "provider_source_binding",
+        binding.id,
+        {
+            "provider_id": provider_id,
+            "feed_id": binding.feed_id,
+            "source_type": binding.source_type,
+        },
+    )
+    return binding
 
 
 def get_provider(db: Session, provider_id: str) -> Optional[models.Provider]:
