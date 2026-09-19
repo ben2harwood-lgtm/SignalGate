@@ -139,7 +139,6 @@ class Settings:
         required = {
             "EA_API_KEY": self.ea_api_key,
             "ADMIN_API_KEY": self.admin_api_key,
-            "SIGNAL_PROVIDER_API_KEY": self.signal_provider_api_key,
             "REGISTRATION_API_KEY": self.registration_api_key,
         }
         for name, value in required.items():
