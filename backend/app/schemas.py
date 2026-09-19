@@ -110,6 +110,17 @@ class SubscriptionInviteAccept(BaseModel):
     telegram_user_id: str
 
 
+class SubscriptionAcceptanceOut(BaseModel):
+    subscription_id: str
+    account_id: str
+    provider_id: str
+    provider_name: str
+    provider_display_name: Optional[str] = None
+    feed_id: str
+    feed_name: str
+    status: str
+
+
 class SubscriptionCreate(BaseModel):
     feed_id: str
     telegram_user_id: str
