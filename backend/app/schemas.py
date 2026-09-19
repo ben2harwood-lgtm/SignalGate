@@ -98,8 +98,9 @@ class ProviderOverview(BaseModel):
     provider: ProviderOut
     feed_count: int
     active_subscribers: int
-    recent_signal_count: int
-    recent_command_count: int
+    active_accounts: int
+    signal_count: int
+    command_count: int
 
 
 # --- Users ----------------------------------------------------------------
