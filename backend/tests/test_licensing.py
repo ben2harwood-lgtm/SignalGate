@@ -100,9 +100,53 @@ def test_require_license_mode_rejects_userid_only(client):
         # valid license -> delivered
         poll2 = client.get(
             "/commands/pending",
-            params={"license_key": user["license_key"]},
-            headers=EA_HEADERS,
+            headers={**EA_HEADERS, "X-SG-License-Key": user["license_key"]},
         )
         assert poll2.json()["command"] is not None
     finally:
         crud.settings.require_license = False
+
+
+def test_hosted_mode_does_not_accept_license_in_query_string(client):
+    user = register_user(client, telegram_id="123")
+    sig = create_signal(client, VALID)
+    _approve(client, sig["id"], "123")
+
+    crud.settings.require_license = True
+    try:
+        query_only = client.get(
+            "/commands/pending",
+            params={"license_key": user["license_key"]},
+            headers=EA_HEADERS,
+        )
+        assert query_only.json()["command"] is None
+
+        header = client.get(
+            "/commands/pending",
+            headers={**EA_HEADERS, "X-SG-License-Key": user["license_key"]},
+        )
+        assert header.json()["command"] is not None
+    finally:
+        crud.settings.require_license = False
+
+
+def test_rotated_license_is_not_written_to_audit_payload(client):
+    from app import models
+    from sqlalchemy import select
+
+    register_user(client, telegram_id="123")
+    resp = client.post("/admin/users/123/issue_license", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    issued = resp.json()["license_key"]
+
+    db = SessionLocal()
+    try:
+        rows = list(
+            db.scalars(
+                select(models.AuditLog).where(models.AuditLog.event_type == "LICENSE_ISSUED")
+            ).all()
+        )
+        assert rows
+        assert all(issued not in (row.payload_json or "") for row in rows)
+    finally:
+        db.close()
