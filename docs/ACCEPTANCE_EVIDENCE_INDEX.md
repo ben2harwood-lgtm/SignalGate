@@ -6,7 +6,7 @@ Use this file as the control sheet for external/manual acceptance. The public re
 
 - Release branch target: `release/signalgate-demo-rc2-2026-09-19`
 - RC2 runtime/tooling candidate: `852a6bc9ca9f0651b34e87b63e86c65669130767`
-- Final runtime/tooling CI: run **#134** / GitHub run `35459129106` — **PENDING_FINAL**
+- Final runtime/tooling CI: run **#134** / GitHub run `35459129106` — **SUCCESS**
 - Prior RC1: `release/signalgate-demo-rc-2026-09-19` (historical; do not use for new acceptance work)
 - Operating mode: **demo-only**
 
@@ -14,7 +14,7 @@ Use this file as the control sheet for external/manual acceptance. The public re
 
 | Gate | Required receipt | Template / source | Status | Evidence reference |
 |---|---|---|---|---|
-| Candidate machine proof | Green full CI at candidate | `docs/RELEASE_CANDIDATE_2026-09-19.md` | Pending final freeze | CI #134 / GitHub run 35459129106 |
+| Candidate machine proof | Green full runtime/tooling CI | `docs/RELEASE_CANDIDATE_2026-09-19.md` | Complete; freeze CI still required | CI #134 / GitHub run 35459129106 |
 | MetaEditor compile | 0 errors / 0 warnings, versions + candidate SHA | `docs/evidence/MT5_ACCEPTANCE_RECEIPT_TEMPLATE.md` | Open | |
 | MT5 demo scenarios | Ten scenario results + matching backend/broker evidence | `docs/evidence/MT5_ACCEPTANCE_RECEIPT_TEMPLATE.md` | Open | |
 | Independent security review | Written scope/findings/retest | `docs/PENTEST_SCOPE.md`, `docs/evidence/SECURITY_REVIEW_RECEIPT_TEMPLATE.md` | Open | |
