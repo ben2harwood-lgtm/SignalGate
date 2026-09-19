@@ -104,9 +104,9 @@ class Settings:
     def validate_startup(self) -> None:
         """Fail closed when a hosted deployment is configured unsafely.
 
-        Local demo mode intentionally remains frictionless. Hosted mode is
-        identified by REQUIRE_LICENSE=true and requires HTTPS, PostgreSQL and
-        non-placeholder server secrets. SignalGate remains demo-only in this
+        Local demo mode intentionally remains frictionless. Hosted mode is identified by REQUIRE_LICENSE=true and requires HTTPS,
+        PostgreSQL and non-placeholder platform secrets. Provider secrets are
+        tenant-scoped database credentials, not one global provider key. SignalGate remains demo-only in this
         release; setting DEMO_ONLY_MODE=false is a hard startup error.
         """
         if not self.demo_only_mode:
@@ -133,7 +133,6 @@ class Settings:
         required = {
             "EA_API_KEY": self.ea_api_key,
             "ADMIN_API_KEY": self.admin_api_key,
-            "SIGNAL_PROVIDER_API_KEY": self.signal_provider_api_key,
             "REGISTRATION_API_KEY": self.registration_api_key,
         }
         for name, value in required.items():
