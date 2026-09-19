@@ -1,7 +1,7 @@
 """Signal creation, listing, and approve/reject decision endpoints."""
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
@@ -16,7 +16,12 @@ from ..schemas import (
     ExtractionResponse,
     SignalOut,
 )
-from ..security import require_admin, require_registration, require_signal_provider
+from ..security import (
+    ProviderPrincipal,
+    require_admin,
+    require_provider_principal,
+    require_registration,
+)
 from ..vision_extractor import get_extractor
 
 router = APIRouter(tags=["signals"])
@@ -27,7 +32,7 @@ MAX_SIGNAL_IMAGE_BYTES = 5 * 1024 * 1024
 def extract_signal(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _provider: str = Depends(require_signal_provider),
+    _provider: Optional[ProviderPrincipal] = Depends(require_provider_principal),
 ) -> ExtractionResponse:
     """Read a signal screenshot into structured fields for human confirmation.
 
