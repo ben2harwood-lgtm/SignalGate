@@ -117,3 +117,73 @@ jobs:
           alembic -c alembic.ini upgrade head
           alembic -c alembic.ini check
           python -c "from app.database import _assert_hosted_schema_current; _assert_hosted_schema_current()"
+
+
+  container-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build hosted image
+        run: docker build --pull -t signalgate-ci .
+
+  backup-restore-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: signalgate
+          POSTGRES_USER: signalgate
+          POSTGRES_PASSWORD: signalgate_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U signalgate -d signalgate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://signalgate:signalgate_ci_password@127.0.0.1:5432/signalgate
+      PGPASSWORD: signalgate_ci_password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-hosted.txt
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Install hosted dependencies
+        run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
+      - name: Initialise source database at migration head
+        working-directory: backend
+        run: alembic -c alembic.ini upgrade head
+      - name: Insert restore sentinel
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO settings (id, key, value, updated_at) VALUES ('SETTING-CI-RESTORE', 'restore_probe', 'survived', NOW());"
+      - name: Create checked backup
+        run: |
+          output="$(bash scripts/backup_postgres.sh)"
+          printf '%s\n' "$output"
+          file="$(printf '%s\n' "$output" | sed -n 's/^backup=//p')"
+          test -n "$file" && test -f "$file" && test -f "$file.sha256"
+          echo "BACKUP_FILE=$file" >> "$GITHUB_ENV"
+      - name: Create isolated restore database
+        run: psql -h 127.0.0.1 -U signalgate -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE signalgate_restore;"
+      - name: Restore checked backup
+        env:
+          RESTORE_DATABASE_URL: postgresql://signalgate:signalgate_ci_password@127.0.0.1:5432/signalgate_restore
+        run: bash scripts/restore_postgres.sh
+      - name: Verify restored data
+        env:
+          RESTORE_DATABASE_URL: postgresql://signalgate:signalgate_ci_password@127.0.0.1:5432/signalgate_restore
+        run: |
+          value="$(psql "$RESTORE_DATABASE_URL" -tA -v ON_ERROR_STOP=1 -c "SELECT value FROM settings WHERE key='restore_probe';")"
+          test "$value" = "survived"
+          count="$(psql "$RESTORE_DATABASE_URL" -tA -v ON_ERROR_STOP=1 -c "SELECT COUNT(*) FROM settings;")"
+          test "$count" -gt 0
