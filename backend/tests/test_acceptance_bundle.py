@@ -82,6 +82,7 @@ def test_bundle_rejects_unsafe_or_environment_paths(tmp_path, path):
             output_path=tmp_path / "x.zip",
             candidate_sha=SHA,
             profile="test",
+            verify_source=False,
             paths=(path,),
         )
 
@@ -93,6 +94,7 @@ def test_missing_allowlisted_file_fails_closed(tmp_path):
             output_path=tmp_path / "x.zip",
             candidate_sha=SHA,
             profile="test",
+            verify_source=False,
             paths=("missing.txt",),
         )
 
