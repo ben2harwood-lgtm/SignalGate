@@ -26,6 +26,12 @@ settings = get_settings()
 # --- ID generation --------------------------------------------------------
 
 _PREFIXES = {
+    models.Organization: "ORG",
+    models.Provider: "PRV",
+    models.ProviderCredential: "PCR",
+    models.Feed: "FED",
+    models.Subscription: "SUB",
+    models.TradingAccount: "ACC",
     models.User: "USER",
     models.Signal: "SIG",
     models.Approval: "APP",
@@ -110,6 +116,255 @@ def get_setting_float(db: Session, key: str, default: float) -> float:
         return float(raw) if raw is not None else default
     except (ValueError, TypeError):
         return default
+
+
+# --- Provider tenancy -----------------------------------------------------
+
+def generate_provider_api_key() -> str:
+    return "sgp_" + secrets.token_urlsafe(32)
+
+
+def hash_provider_api_key(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+def create_organization(db: Session, name: str, slug: str) -> models.Organization:
+    existing = db.scalar(select(models.Organization).where(models.Organization.slug == slug))
+    if existing is not None:
+        raise ValueError("Organization slug already exists")
+    row = models.Organization(id=_next_id(db, models.Organization), name=name, slug=slug, status="ACTIVE")
+    db.add(row)
+    db.flush()
+    add_audit(db, "ORGANIZATION_CREATED", "organization", row.id, {"slug": slug})
+    return row
+
+
+def create_provider(
+    db: Session, organization_id: str, name: str, slug: str
+) -> models.Provider:
+    org = db.get(models.Organization, organization_id)
+    if org is None or org.status != "ACTIVE":
+        raise ValueError("Active organization not found")
+    existing = db.scalar(
+        select(models.Provider).where(
+            models.Provider.organization_id == organization_id,
+            models.Provider.slug == slug,
+        )
+    )
+    if existing is not None:
+        raise ValueError("Provider slug already exists in organization")
+    row = models.Provider(
+        id=_next_id(db, models.Provider),
+        organization_id=organization_id,
+        name=name,
+        slug=slug,
+        status="ACTIVE",
+        paused=False,
+    )
+    db.add(row)
+    db.flush()
+    add_audit(db, "PROVIDER_CREATED", "provider", row.id, {"organization_id": organization_id})
+    return row
+
+
+def issue_provider_credential(
+    db: Session, provider: models.Provider, label: str = "default"
+) -> tuple[models.ProviderCredential, str]:
+    if provider.status != "ACTIVE":
+        raise ValueError("Provider is not active")
+    raw_key = generate_provider_api_key()
+    row = models.ProviderCredential(
+        id=_next_id(db, models.ProviderCredential),
+        provider_id=provider.id,
+        label=label,
+        key_hash=hash_provider_api_key(raw_key),
+        status="ACTIVE",
+    )
+    db.add(row)
+    db.flush()
+    add_audit(db, "PROVIDER_CREDENTIAL_ISSUED", "provider", provider.id, {"credential_id": row.id, "label": label})
+    return row, raw_key
+
+
+def get_provider(db: Session, provider_id: str) -> Optional[models.Provider]:
+    return db.get(models.Provider, provider_id)
+
+
+def get_feed(db: Session, feed_id: str) -> Optional[models.Feed]:
+    return db.get(models.Feed, feed_id)
+
+
+def get_feed_for_provider(
+    db: Session, provider_id: str, feed_id: str
+) -> Optional[models.Feed]:
+    return db.scalar(
+        select(models.Feed).where(
+            models.Feed.id == feed_id,
+            models.Feed.provider_id == provider_id,
+        )
+    )
+
+
+def create_feed(
+    db: Session, provider: models.Provider, name: str, source_namespace: str
+) -> models.Feed:
+    if provider.status != "ACTIVE":
+        raise ValueError("Provider is not active")
+    existing = db.scalar(
+        select(models.Feed).where(
+            models.Feed.provider_id == provider.id,
+            models.Feed.source_namespace == source_namespace,
+        )
+    )
+    if existing is not None:
+        raise ValueError("Feed source namespace already exists for provider")
+    row = models.Feed(
+        id=_next_id(db, models.Feed),
+        provider_id=provider.id,
+        name=name,
+        source_namespace=source_namespace,
+        status="ACTIVE",
+        paused=False,
+    )
+    db.add(row)
+    db.flush()
+    add_audit(db, "FEED_CREATED", "feed", row.id, {"provider_id": provider.id})
+    return row
+
+
+def set_provider_paused(db: Session, provider: models.Provider, paused: bool) -> models.Provider:
+    provider.paused = paused
+    provider.updated_at = utcnow()
+    db.flush()
+    add_audit(db, "PROVIDER_PAUSE_CHANGED", "provider", provider.id, {"paused": paused})
+    return provider
+
+
+def set_feed_paused(db: Session, feed: models.Feed, paused: bool) -> models.Feed:
+    feed.paused = paused
+    feed.updated_at = utcnow()
+    db.flush()
+    add_audit(db, "FEED_PAUSE_CHANGED", "feed", feed.id, {"paused": paused})
+    return feed
+
+
+def list_provider_feeds(db: Session, provider_id: str) -> List[models.Feed]:
+    return list(db.scalars(
+        select(models.Feed)
+        .where(models.Feed.provider_id == provider_id)
+        .order_by(models.Feed.created_at.asc())
+    ).all())
+
+
+def get_active_subscription(
+    db: Session, feed_id: str, user_id: str
+) -> Optional[models.Subscription]:
+    return db.scalar(
+        select(models.Subscription).where(
+            models.Subscription.feed_id == feed_id,
+            models.Subscription.user_id == user_id,
+            models.Subscription.status == "ACTIVE",
+        )
+    )
+
+
+def get_trading_account(
+    db: Session, provider_id: str, user_id: str
+) -> Optional[models.TradingAccount]:
+    return db.scalar(
+        select(models.TradingAccount).where(
+            models.TradingAccount.provider_id == provider_id,
+            models.TradingAccount.user_id == user_id,
+            models.TradingAccount.status == "ACTIVE",
+        )
+    )
+
+
+def subscribe_user_to_feed(
+    db: Session, provider: models.Provider, feed: models.Feed, user: models.User
+) -> tuple[models.Subscription, models.TradingAccount]:
+    if feed.provider_id != provider.id:
+        raise ValueError("Feed does not belong to provider")
+    if provider.status != "ACTIVE" or feed.status != "ACTIVE":
+        raise ValueError("Provider/feed is not active")
+    subscription = db.scalar(
+        select(models.Subscription).where(
+            models.Subscription.feed_id == feed.id,
+            models.Subscription.user_id == user.id,
+        )
+    )
+    if subscription is None:
+        subscription = models.Subscription(
+            id=_next_id(db, models.Subscription),
+            provider_id=provider.id,
+            feed_id=feed.id,
+            user_id=user.id,
+            status="ACTIVE",
+        )
+        db.add(subscription)
+    else:
+        subscription.provider_id = provider.id
+        subscription.status = "ACTIVE"
+        subscription.updated_at = utcnow()
+
+    account = db.scalar(
+        select(models.TradingAccount).where(
+            models.TradingAccount.provider_id == provider.id,
+            models.TradingAccount.user_id == user.id,
+        )
+    )
+    if account is None:
+        account = models.TradingAccount(
+            id=_next_id(db, models.TradingAccount),
+            provider_id=provider.id,
+            user_id=user.id,
+            label="Primary",
+            status="ACTIVE",
+        )
+        db.add(account)
+    else:
+        account.status = "ACTIVE"
+        account.updated_at = utcnow()
+
+    db.flush()
+    add_audit(db, "SUBSCRIPTION_ACTIVATED", "subscription", subscription.id, {
+        "provider_id": provider.id, "feed_id": feed.id, "user_id": user.id, "account_id": account.id
+    })
+    return subscription, account
+
+
+def list_active_users_for_feed(
+    db: Session, provider_id: str, feed_id: str
+) -> List[models.User]:
+    return list(db.scalars(
+        select(models.User)
+        .join(models.Subscription, models.Subscription.user_id == models.User.id)
+        .where(
+            models.Subscription.provider_id == provider_id,
+            models.Subscription.feed_id == feed_id,
+            models.Subscription.status == "ACTIVE",
+            models.User.status == "ACTIVE",
+        )
+        .order_by(models.User.created_at.asc())
+    ).all())
+
+
+def list_provider_signals(db: Session, provider_id: str, limit: int = 50) -> List[models.Signal]:
+    return list(db.scalars(
+        select(models.Signal)
+        .where(models.Signal.provider_id == provider_id)
+        .order_by(models.Signal.created_at.desc())
+        .limit(limit)
+    ).all())
+
+
+def list_provider_commands(db: Session, provider_id: str, limit: int = 50) -> List[models.Command]:
+    return list(db.scalars(
+        select(models.Command)
+        .where(models.Command.provider_id == provider_id)
+        .order_by(models.Command.created_at.desc())
+        .limit(limit)
+    ).all())
 
 
 # --- Users ----------------------------------------------------------------
@@ -263,9 +518,29 @@ def create_signal(
     raw_text: str,
     source: str = "TELEGRAM_ADMIN_TEST",
     source_message_id: Optional[str] = None,
+    provider_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
 ) -> models.Signal:
-    """Store + deterministically parse a signal. Always creates a ledger row."""
+    """Store + deterministically parse a signal. Always creates a ledger row.
+
+    Hosted provider signals are explicitly tenant-bound. The persisted source
+    namespace includes the feed id so the legacy replay uniqueness constraint
+    cannot collide across providers.
+    """
     from . import ledger  # local import to avoid cycle
+
+    if provider_id or feed_id:
+        if not provider_id or not feed_id:
+            raise ValueError("provider_id and feed_id must be supplied together")
+        provider = get_provider(db, provider_id)
+        feed = get_feed_for_provider(db, provider_id, feed_id)
+        if provider is None or provider.status != "ACTIVE":
+            raise ValueError("Active provider not found")
+        if feed is None or feed.status != "ACTIVE":
+            raise ValueError("Active provider-owned feed not found")
+        if provider.paused or feed.paused:
+            raise ValueError("Provider/feed is paused")
+        source = f"FEED:{feed.id}:{source}"
 
     # Deduplicate provider/webhook retries before parsing/broadcast. Returning
     # the original Signal means downstream per-user approval idempotency still
@@ -305,6 +580,8 @@ def create_signal(
 
     signal = models.Signal(
         id=_next_id(db, models.Signal),
+        provider_id=provider_id,
+        feed_id=feed_id,
         source=source,
         source_message_id=source_message_id,
         raw_text=raw_text,
@@ -367,7 +644,12 @@ def create_signal(
         "SIGNAL_CREATED",
         "signal",
         signal.id,
-        {"parser_status": parsed.parser_status, "error": parsed.parser_error},
+        {
+            "parser_status": parsed.parser_status,
+            "error": parsed.parser_error,
+            "provider_id": provider_id,
+            "feed_id": feed_id,
+        },
     )
 
     # Every signal gets a performance ledger row, valid or not.
@@ -463,6 +745,26 @@ def approve_signal(
             approval_id=existing.id,
             duplicate=True,
         )
+
+    # Tenant boundary: provider signals can only be approved by active
+    # subscribers, and provider/feed pause is a hard kill path.
+    if signal.provider_id is not None or signal.feed_id is not None:
+        if not signal.provider_id or not signal.feed_id:
+            return _decision_result("TENANT_INVALID", "Signal tenant ownership is incomplete.")
+        provider = get_provider(db, signal.provider_id)
+        feed = get_feed_for_provider(db, signal.provider_id, signal.feed_id)
+        if provider is None or feed is None:
+            return _decision_result("TENANT_INVALID", "Signal provider/feed no longer exists.")
+        if provider.status != "ACTIVE" or feed.status != "ACTIVE":
+            return _decision_result("TENANT_INACTIVE", "Provider/feed is inactive.")
+        if provider.paused:
+            return _decision_result("PROVIDER_PAUSED", "Provider is paused. No command created.")
+        if feed.paused:
+            return _decision_result("FEED_PAUSED", "Feed is paused. No command created.")
+        if get_active_subscription(db, signal.feed_id, user.id) is None:
+            return _decision_result("NOT_SUBSCRIBED", "User is not subscribed to this feed.")
+        if get_trading_account(db, signal.provider_id, user.id) is None:
+            return _decision_result("ACCOUNT_NOT_FOUND", "No active provider trading account exists.")
 
     # SAFETY: admin pause blocks command creation.
     if is_admin_paused(db):
@@ -592,8 +894,16 @@ def _create_command(
         get_setting(db, "split_ticket_demo_partial_mode", "true") or "true"
     ).lower() == "true"
 
+    account = (
+        get_trading_account(db, signal.provider_id, user.id)
+        if signal.provider_id is not None
+        else None
+    )
     command = models.Command(
         id=_next_id(db, models.Command),
+        provider_id=signal.provider_id,
+        feed_id=signal.feed_id,
+        account_id=account.id if account is not None else None,
         signal_id=signal.id,
         approval_id=approval.id,
         user_id=user.id,
