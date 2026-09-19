@@ -4,74 +4,88 @@
 
 ## Product position
 
-SignalGate is provider-agnostic controlled signal-execution infrastructure.
+SignalGate is provider-agnostic, human-authorised signal-execution infrastructure.
 
 > **Your signals. Your customers. Your brand. SignalGate provides the controlled path from validated signal to authorised execution, reconciliation and audit.**
 
-SignalGate does not supply investment signals and must not make profitability claims.
+SignalGate does not supply proprietary investment signals, does not promise profitability, and remains **demo-only**. The MT5 EA refuses real accounts.
 
 ## Canonical engineering spine
 
-- `main`: July demo baseline. Not a production release.
-- `codex/signalgate-hardening-2026-09-18`: September integration spine.
-- Integrated hardening head after G5 tenancy + operations baseline: `ae75b0e4c13ad90ffbe45c82ee83d36f7ec9f0eb`.
-- Versioned hosted migration chain: `20260918_0001` baseline -> `20260919_0002` execution safety -> `20260919_0003` replay identity -> `20260919_0004` provider tenancy.
-- Operations baseline: PR #19 integrated at `ae75b0e4c13ad90ffbe45c82ee83d36f7ec9f0eb`; hardening-branch push CI passed.
-- Provider/commercial package rebase: this branch/PR; documentation and demo-facing site only, not production UI.
+- `main`: July demo baseline; not the release candidate.
+- Integration spine: `codex/signalgate-hardening-2026-09-18`.
+- Runtime candidate before this status-only documentation refresh: `6235f136dac3e29d549dc942c998ae7bdacf4e1d`.
+- The hosted schema is versioned through ten Alembic revisions:
+  `20260918_0001` baseline -> `20260919_0002` execution safety -> `0003` replay identity -> `0004` provider tenancy -> `0005` provider branding -> `0006` feed policy -> `0007` customer-licence hashing -> `0008` subscription invites -> `0009` provider-source bindings -> `0010` audit hash chain.
+
+A named release-candidate branch is cut only after the candidate push CI and this status refresh are green.
 
 ## Integrated capability evidence
 
 | Capability | State | Evidence / remaining gate |
 |---|---|---|
-| CI + dependency audit | Integrated | GitHub Actions backend tests, compile and dependency audits |
-| Hosted fail-closed auth | Integrated | Separate admin/bot/EA credentials; provider-specific DB-backed hashed credentials |
-| Execution callback ownership | Integrated | EA reports bound to owning customer licence |
-| Retry-safe execution | Integrated | One execution per command, conflicting retries audited/rejected |
-| Retry-safe management lifecycle | Integrated | Deterministic idempotency keys + monotonic terminal state |
-| PostgreSQL command claim | Integrated | `FOR UPDATE SKIP LOCKED` in hosted path |
-| Versioned migrations | Integrated | Alembic baseline + safety + replay + tenancy migrations |
-| Adversarial ingestion | Integrated | Ambiguity, malformed values, payload bounds, replay/content-conflict tests |
-| Provider organisations/feeds | Integrated | Organisation/provider/feed persisted ownership |
-| Provider-specific credentials | Integrated | Raw provider key returned once; only SHA-256 hash stored |
-| Subscriber isolation | Integrated | Feed subscriptions + provider-filtered recipient/query paths |
-| Trading-account ownership | Integrated | Provider/user account IDs flow onto commands |
-| Provider/feed kill switches | Integrated | Approval path fails closed while paused |
-| Cross-tenant negative tests | Integrated | Provider A cannot read/broadcast Provider B feed/data |
-| Provider API | Integrated | Provisioning, credentials, feeds, subscriptions, pause, tenant-filtered history |
-| Container/readiness/backup baseline | Integrated | Non-root image, staging compose, readiness/liveness, checked backup + isolated restore smoke CI |
-| Provider dashboard UI | **Not built** | G7 blocker |
-| White-label runtime configuration | **Not built** | G7 blocker |
-| Demo tenant bootstrap | **Not built** | G7 blocker |
-| Broker timeout-after-success reconciliation | **Incomplete** | G3/G6 blocker |
-| Full fault-injection campaign | **Incomplete** | G3/G4 assurance blocker |
-| Central logs/metrics/tracing/alerts | **Not complete** | G6 blocker |
-| Defined SLO/error budget | **Not complete** | G6 blocker |
-| Independent penetration test | **Not done** | G8 |
-| UK regulatory perimeter opinion | **Not done** | G8 |
-| Provider beta | **Not started** | G9 |
-| Live retail trading | **Blocked** | Remains demo-only |
+| Dual-database CI | Integrated | Full backend suite runs on SQLite and PostgreSQL |
+| Build/security CI | Integrated | Python compile, Bandit medium/high scan, dependency audit, container build |
+| Migration assurance | Integrated | Empty upgrade, schema check, downgrade/re-upgrade, legacy licence erasure and audit-chain backfill proofs |
+| Hosted fail-closed auth | Integrated | HTTPS/PostgreSQL/strong-secret requirements; separated admin/bot/provider/customer credentials |
+| Customer EA credentials | Integrated | One-time raw value, hash + last-four storage; new licences use stronger four-group format |
+| Retry-safe execution lifecycle | Integrated | Owner-bound callbacks, idempotent execution/management reporting, monotonic terminal state |
+| Broker-truth execution handling | Integrated | MARKET-only execution, broker retcode checks, symbol suffix resolution, netting fallback |
+| Broker reconciliation | Integrated | Lost-callback recovery, restart/open-position gate, conflict fails closed |
+| Adversarial ingestion | Integrated | Ambiguity/value/payload/replay controls plus deterministic hostile/fuzz corpus |
+| Provider multi-tenancy | Integrated | Organisation/provider/feed/subscriber/trading-account ownership and cross-tenant negative tests |
+| Subscriber consent | Integrated | Hashed, expiring, one-use feed invites; direct provider attachment removed |
+| Provider Telegram source | Integrated | Feed-bound one-time source binding, revocation and source/feed isolation |
+| Provider Edition portal | Integrated | Feed policy, branding, credential rotation, pause, subscribers, history/reconciliation and demo bootstrap |
+| Provider evidence export | Integrated | Authenticated tenant-scoped JSON export; credentials/hashes/raw signal text excluded; isolation/privacy tests |
+| Audit integrity | Integrated | Tamper-evident SHA-256 hash chain, verifier and historical backfill proof |
+| Observability baseline | Integrated | Request correlation/structured logs, protected aggregate metrics, SLO/alert targets |
+| Recovery baseline | Integrated | Fail-closed encrypted PostgreSQL backup, checksum and isolated restore smoke |
+| Commercial/pilot package | Integrated | Provider provisioning CLI, beta acceptance, controlled-pilot plan, security overview, dependency/licence inventory workflow and due-diligence map |
+| External assurance preparation | Integrated | Pentest scope, privacy/data map and UK regulatory-counsel architecture brief |
+
+## Remaining release gates
+
+These are **not software features to paper over**. They require external or deployed-environment evidence.
+
+1. **MT5 compiler/demo receipt** — compile the exact candidate `SignalGateEA.mq5` in target MetaEditor with 0 errors / 0 warnings and retain the compiler log/screenshot.
+2. **MT5 demo scenario evidence** — run the scenarios in `docs/MT5_ACCEPTANCE.md`, including fill, rejection, suffix, LIMIT refusal, stop-out/manual-close attribution, netting fallback, lost-callback recovery, restart blocking and reconciliation conflict.
+3. **Central production telemetry** — connect a real log/metrics backend, alert routing, retention and on-call ownership; then accumulate measured SLO history.
+4. **Production-like recovery drill** — retain scheduled restore evidence and measured RTO/RPO, beyond CI smoke.
+5. **Independent security assurance** — application/security review and penetration test; remediate critical/high findings.
+6. **UK regulatory/legal review** — written advice for the intended operating model, order path and financial-promotion boundaries.
+7. **Privacy/contract review** — controller/processor roles, retention/deletion/export duties, subprocessor/transfer terms and provider/pilot agreements.
+8. **Controlled provider pilot** — onboard the first real provider in demo-account mode, measure onboarding/support/reliability, triage incidents and retain operating evidence.
+9. **Commercial operating evidence** — paying-provider contracts, recurring revenue/retention/support-cost history and a maintained data room.
+10. **Real-money retail trading** — remains blocked.
 
 ## Gate view
 
-- **G0 Baseline truth:** PASS for September integration branch.
-- **G1 Build integrity:** PASS on integrated safety/tenancy work; rerun after each subsequent merge.
-- **G2 Identity/access:** machine-green and integrated; external security review remains later G8 evidence.
-- **G3 Execution safety:** core retry/ownership/state controls integrated; **not fully passed** until MT5 compile/demo receipts and broader fault/reconciliation evidence exist.
-- **G4 Adversarial ingestion:** core parser/replay controls integrated; broader fuzz/fault campaign still useful assurance.
-- **G5 Provider multi-tenancy:** machine-green and integrated; continue cross-tenant red-team for every provider-scoped change.
-- **G6 Production operations:** baseline integrated and machine-green: container/readiness/backup-restore smoke evidence exists. Central observability, SLOs and an exercised operational recovery drill remain open.
-- **G7 Provider Edition:** backend API and commercial package exist; **provider dashboard, runtime white-label configuration and demo-tenant UX remain open**.
-- **G8 External assurance:** not passed.
-- **G9 Controlled provider beta:** not started.
-- **G10 Commercially saleable:** not yet; depends on provider beta/customers and complete data room.
+- **G0 Baseline truth:** PASS for the September integration spine.
+- **G1 Build integrity:** PASS only at a candidate SHA with green integration CI; rerun after every merge.
+- **G2 Identity/access:** machine-green and integrated; external assurance remains part of G8.
+- **G3 Execution safety:** core software controls are integrated and machine-tested; **not externally accepted** until real MetaEditor compile + demo execution receipts exist.
+- **G4 Adversarial ingestion:** automated parser/replay/fuzz scope is integrated and green; independent security testing can still reveal issues.
+- **G5 Provider multi-tenancy:** machine-green and integrated; every future provider-scoped change must retain cross-tenant negative coverage.
+- **G6 Production operations:** strong baseline is integrated; **not fully passed** until central telemetry/alerts, measured SLO history and production-like recovery evidence exist.
+- **G7 Provider Edition:** substantially integrated, including portal, onboarding/provisioning, consent, Telegram source, pilot package and evidence export.
+- **G8 External assurance:** **NOT PASSED**.
+- **G9 Controlled provider beta:** **NOT STARTED**.
+- **G10 Commercially saleable operating business:** **NOT PASSED**; software packaging is ahead of customer/operating evidence.
+
+## Release interpretation
+
+- **Substantially built/hardened/packaged software:** yes; broad feature building is no longer the priority.
+- **Controlled demo-account provider pilot:** technically close, subject to the remaining candidate/MT5/external-assurance gates.
+- **UK retail real-money launch:** no; explicitly blocked.
 
 ## Non-negotiable release rules
 
-1. Machine-green is necessary but not equivalent to production acceptance.
+1. Machine-green is necessary but is not production acceptance.
 2. No branch enables real-money retail trading.
-3. No schema-changing work lands without a reviewed Alembic migration and PostgreSQL smoke evidence.
-4. No provider-scoped operation may rely on an ID/header alone as a credential.
-5. No cross-tenant query/broadcast/execute path is acceptable.
+3. No schema-changing work lands without an Alembic migration and PostgreSQL proof.
+4. No provider-scoped operation may rely on an identifier/header alone as authority.
+5. No cross-tenant read/write/broadcast/execute path is acceptable.
 6. No broker timeout may trigger a blind resend without authoritative reconciliation.
-7. Marketing must describe current demonstrated capability, not target-state capability.
-
+7. Marketing must describe demonstrated capability, not target-state capability.
+8. External evidence must never be represented as complete until the actual receipt/report exists.
