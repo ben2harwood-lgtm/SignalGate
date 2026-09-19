@@ -8,6 +8,11 @@ from sqlalchemy.orm import Session
 from .. import crud, models
 from ..config import get_settings
 from ..database import get_db
+from ..schemas import (
+    ProviderCredentialIssue,
+    ProviderFeedCreate,
+    ProviderOrganizationCreate,
+)
 from ..security import require_admin
 
 router = APIRouter(tags=["admin"], prefix="/admin")
@@ -100,6 +105,89 @@ def deactivate_user(
     return {"user_id": user.id, "status": user.status}
 
 
+@router.post("/provider_organizations")
+def create_provider_organization(
+    payload: ProviderOrganizationCreate,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    org = crud.create_provider_organization(db, payload.name)
+    db.commit()
+    return {"organization_id": org.id, "name": org.name, "status": org.status}
+
+
+@router.get("/provider_organizations")
+def list_provider_organizations(
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    organizations = list(
+        db.scalars(
+            select(models.ProviderOrganization).order_by(
+                models.ProviderOrganization.created_at.asc()
+            )
+        ).all()
+    )
+    return {
+        "organizations": [
+            {"organization_id": org.id, "name": org.name, "status": org.status}
+            for org in organizations
+        ]
+    }
+
+
+@router.post("/provider_organizations/{organization_id}/feeds")
+def create_provider_feed(
+    organization_id: str,
+    payload: ProviderFeedCreate,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    try:
+        feed = crud.create_provider_feed(
+            db,
+            organization_id=organization_id,
+            name=payload.name,
+            source_namespace=payload.source_namespace,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    db.commit()
+    return {
+        "feed_id": feed.id,
+        "organization_id": feed.organization_id,
+        "name": feed.name,
+        "source_namespace": feed.source_namespace,
+        "paused": feed.paused,
+    }
+
+
+@router.post("/provider_organizations/{organization_id}/credentials")
+def issue_provider_credential(
+    organization_id: str,
+    payload: ProviderCredentialIssue,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    try:
+        credential, secret = crud.issue_provider_credential(
+            db, organization_id=organization_id, role=payload.role
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    db.commit()
+    # Secret is deliberately returned once and is never stored in plaintext.
+    return {
+        "credential_id": credential.id,
+        "organization_id": credential.organization_id,
+        "role": credential.role,
+        "api_key": secret,
+        "key_prefix": credential.key_prefix,
+    }
+
+
 @router.get("/status")
 def status(
     db: Session = Depends(get_db), _admin: str = Depends(require_admin)
@@ -116,6 +204,9 @@ def status(
         "admin_paused": crud.is_admin_paused(db),
         "settings": all_settings,
         "counts": {
+            "provider_organizations": count(models.ProviderOrganization),
+            "provider_feeds": count(models.ProviderFeed),
+            "feed_subscriptions": count(models.FeedSubscription),
             "users": count(models.User),
             "signals": count(models.Signal),
             "approvals": count(models.Approval),
