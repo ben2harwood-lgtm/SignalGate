@@ -186,3 +186,12 @@ def test_license_rotation_invalidates_old_key_and_persists_no_plaintext(client):
         assert crud.resolve_ea_user(db, license_key=new_key).id == user.id
     finally:
         db.close()
+
+
+def test_new_customer_license_has_stronger_entropy_format(client):
+    user = register_user(client, telegram_id="903")
+    key = user["license_key"]
+    assert key.startswith("SG-")
+    groups = key.split("-")[1:]
+    assert len(groups) == 4
+    assert all(len(group) == 4 for group in groups)

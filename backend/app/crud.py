@@ -1255,9 +1255,13 @@ def list_users(db: Session) -> List[models.User]:
 # none of this is required and the demo keeps working via the user_id path.
 
 def generate_license_key() -> str:
-    """Generate a human-readable, hard-to-guess one-time customer licence."""
+    """Generate a human-readable one-time customer licence (~80 bits entropy).
+
+    Existing shorter licences remain valid because authentication hashes the
+    presented value; only newly issued/rotated keys use the stronger format.
+    """
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-    groups = ["".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(3)]
+    groups = ["".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(4)]
     return "SG-" + "-".join(groups)
 
 
