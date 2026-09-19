@@ -26,6 +26,10 @@ settings = get_settings()
 # --- ID generation --------------------------------------------------------
 
 _PREFIXES = {
+    models.ProviderOrganization: "ORG",
+    models.ProviderFeed: "FEED",
+    models.ProviderCredential: "PKEY",
+    models.FeedSubscription: "SUB",
     models.User: "USER",
     models.Signal: "SIG",
     models.Approval: "APP",
@@ -110,6 +114,254 @@ def get_setting_float(db: Session, key: str, default: float) -> float:
         return float(raw) if raw is not None else default
     except (ValueError, TypeError):
         return default
+
+
+# --- Provider tenancy ------------------------------------------------------
+
+def _provider_key_hash(secret: str) -> str:
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+def create_provider_organization(db: Session, name: str) -> models.ProviderOrganization:
+    org = models.ProviderOrganization(
+        id=_next_id(db, models.ProviderOrganization),
+        name=name.strip(),
+        status="ACTIVE",
+    )
+    db.add(org)
+    db.flush()
+    add_audit(db, "PROVIDER_ORG_CREATED", "provider_organization", org.id)
+    return org
+
+
+def create_provider_feed(
+    db: Session,
+    organization_id: str,
+    name: str,
+    source_namespace: str,
+) -> models.ProviderFeed:
+    org = db.get(models.ProviderOrganization, organization_id)
+    if org is None or org.status != "ACTIVE":
+        raise ValueError("Provider organization is missing or inactive")
+    namespace = source_namespace.strip()
+    if not namespace:
+        raise ValueError("source_namespace is required")
+    existing = db.scalar(
+        select(models.ProviderFeed).where(models.ProviderFeed.source_namespace == namespace)
+    )
+    if existing is not None:
+        raise ValueError("source_namespace is already assigned to a feed")
+    feed = models.ProviderFeed(
+        id=_next_id(db, models.ProviderFeed),
+        organization_id=organization_id,
+        name=name.strip(),
+        source_namespace=namespace,
+        status="ACTIVE",
+        paused=False,
+    )
+    db.add(feed)
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_FEED_CREATED",
+        "provider_feed",
+        feed.id,
+        {"organization_id": organization_id},
+    )
+    return feed
+
+
+def issue_provider_credential(
+    db: Session,
+    organization_id: str,
+    role: str = "OPERATOR",
+) -> tuple[models.ProviderCredential, str]:
+    org = db.get(models.ProviderOrganization, organization_id)
+    if org is None or org.status != "ACTIVE":
+        raise ValueError("Provider organization is missing or inactive")
+    normalized_role = role.strip().upper()
+    if normalized_role not in {"OPERATOR", "VIEWER"}:
+        raise ValueError("Provider credential role must be OPERATOR or VIEWER")
+    for _ in range(10):
+        secret = "SGP_" + secrets.token_urlsafe(32)
+        digest = _provider_key_hash(secret)
+        if db.scalar(
+            select(models.ProviderCredential).where(
+                models.ProviderCredential.key_hash == digest
+            )
+        ) is None:
+            break
+    else:
+        raise RuntimeError("Could not generate a unique provider credential")
+    credential = models.ProviderCredential(
+        id=_next_id(db, models.ProviderCredential),
+        organization_id=organization_id,
+        key_hash=digest,
+        key_prefix=secret[:12],
+        role=normalized_role,
+        status="ACTIVE",
+    )
+    db.add(credential)
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_CREDENTIAL_ISSUED",
+        "provider_credential",
+        credential.id,
+        {"organization_id": organization_id, "role": normalized_role},
+    )
+    return credential, secret
+
+
+def resolve_provider_credential(
+    db: Session, secret: str
+) -> Optional[models.ProviderCredential]:
+    if not secret:
+        return None
+    digest = _provider_key_hash(secret)
+    credential = db.scalar(
+        select(models.ProviderCredential).where(
+            models.ProviderCredential.key_hash == digest,
+            models.ProviderCredential.status == "ACTIVE",
+        )
+    )
+    if credential is None or not secrets.compare_digest(credential.key_hash, digest):
+        return None
+    org = db.get(models.ProviderOrganization, credential.organization_id)
+    if org is None or org.status != "ACTIVE":
+        return None
+    credential.last_used_at = utcnow()
+    db.flush()
+    return credential
+
+
+def list_provider_feeds(db: Session, organization_id: str) -> List[models.ProviderFeed]:
+    return list(
+        db.scalars(
+            select(models.ProviderFeed)
+            .where(models.ProviderFeed.organization_id == organization_id)
+            .order_by(models.ProviderFeed.created_at.asc())
+        ).all()
+    )
+
+
+def get_provider_feed(
+    db: Session, organization_id: str, feed_id: str
+) -> Optional[models.ProviderFeed]:
+    return db.scalar(
+        select(models.ProviderFeed).where(
+            models.ProviderFeed.id == feed_id,
+            models.ProviderFeed.organization_id == organization_id,
+        )
+    )
+
+
+def get_provider_feed_by_source(
+    db: Session, organization_id: str, source_namespace: str
+) -> Optional[models.ProviderFeed]:
+    return db.scalar(
+        select(models.ProviderFeed).where(
+            models.ProviderFeed.organization_id == organization_id,
+            models.ProviderFeed.source_namespace == source_namespace,
+        )
+    )
+
+
+def set_provider_feed_paused(
+    db: Session, feed: models.ProviderFeed, paused: bool
+) -> models.ProviderFeed:
+    feed.paused = paused
+    feed.updated_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_FEED_PAUSED" if paused else "PROVIDER_FEED_RESUMED",
+        "provider_feed",
+        feed.id,
+        {"organization_id": feed.organization_id},
+    )
+    return feed
+
+
+def subscribe_user_to_feed(
+    db: Session, feed: models.ProviderFeed, user: models.User
+) -> models.FeedSubscription:
+    existing = db.scalar(
+        select(models.FeedSubscription).where(
+            models.FeedSubscription.feed_id == feed.id,
+            models.FeedSubscription.user_id == user.id,
+        )
+    )
+    if existing is not None:
+        existing.status = "ACTIVE"
+        existing.updated_at = utcnow()
+        db.flush()
+        return existing
+    subscription = models.FeedSubscription(
+        id=_next_id(db, models.FeedSubscription),
+        feed_id=feed.id,
+        user_id=user.id,
+        status="ACTIVE",
+    )
+    db.add(subscription)
+    db.flush()
+    add_audit(
+        db,
+        "FEED_SUBSCRIPTION_ACTIVATED",
+        "feed_subscription",
+        subscription.id,
+        {"feed_id": feed.id, "user_id": user.id},
+    )
+    return subscription
+
+
+def set_feed_subscription_status(
+    db: Session, feed: models.ProviderFeed, user: models.User, status: str
+) -> Optional[models.FeedSubscription]:
+    subscription = db.scalar(
+        select(models.FeedSubscription).where(
+            models.FeedSubscription.feed_id == feed.id,
+            models.FeedSubscription.user_id == user.id,
+        )
+    )
+    if subscription is None:
+        return None
+    subscription.status = status
+    subscription.updated_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "FEED_SUBSCRIPTION_STATUS_CHANGED",
+        "feed_subscription",
+        subscription.id,
+        {"feed_id": feed.id, "user_id": user.id, "status": status},
+    )
+    return subscription
+
+
+def is_user_subscribed_to_feed(db: Session, feed_id: str, user_id: str) -> bool:
+    return db.scalar(
+        select(models.FeedSubscription.id).where(
+            models.FeedSubscription.feed_id == feed_id,
+            models.FeedSubscription.user_id == user_id,
+            models.FeedSubscription.status == "ACTIVE",
+        )
+    ) is not None
+
+
+def list_active_feed_users(db: Session, feed_id: str) -> List[models.User]:
+    return list(
+        db.scalars(
+            select(models.User)
+            .join(models.FeedSubscription, models.FeedSubscription.user_id == models.User.id)
+            .where(
+                models.FeedSubscription.feed_id == feed_id,
+                models.FeedSubscription.status == "ACTIVE",
+                models.User.status == "ACTIVE",
+            )
+            .order_by(models.User.created_at.asc())
+        ).all()
+    )
 
 
 # --- Users ----------------------------------------------------------------
@@ -263,6 +515,7 @@ def create_signal(
     raw_text: str,
     source: str = "TELEGRAM_ADMIN_TEST",
     source_message_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
 ) -> models.Signal:
     """Store + deterministically parse a signal. Always creates a ledger row."""
     from . import ledger  # local import to avoid cycle
@@ -305,6 +558,7 @@ def create_signal(
 
     signal = models.Signal(
         id=_next_id(db, models.Signal),
+        feed_id=feed_id,
         source=source,
         source_message_id=source_message_id,
         raw_text=raw_text,
@@ -449,11 +703,18 @@ def approve_signal(
     if existing is not None:
         cmd = _command_for_approval(db, existing.id)
         if existing.decision == "YES":
+            if cmd is None:
+                return _decision_result(
+                    "ALREADY_BLOCKED",
+                    "Earlier approval was blocked; no command was created.",
+                    approval_id=existing.id,
+                    duplicate=True,
+                )
             return _decision_result(
                 "ALREADY_APPROVED",
                 "Already approved. No duplicate command created.",
                 approval_id=existing.id,
-                command_id=cmd.id if cmd else None,
+                command_id=cmd.id,
                 duplicate=True,
             )
         # First decision was NO -> first decision wins for v1.
@@ -463,6 +724,41 @@ def approve_signal(
             approval_id=existing.id,
             duplicate=True,
         )
+
+    # TENANCY: tenant-bound signals may only create commands for active
+    # subscribers of their owning feed, and provider pause is fail-closed.
+    if signal.feed_id is not None:
+        feed = db.get(models.ProviderFeed, signal.feed_id)
+        if feed is None or feed.status != "ACTIVE":
+            approval = _record_approval(db, signal, user, "YES", "BLOCKED")
+            add_audit(db, "APPROVAL_BLOCKED_FEED_INACTIVE", "approval", approval.id)
+            return _decision_result(
+                "FEED_INACTIVE",
+                "Provider feed is inactive. No command created.",
+                approval_id=approval.id,
+            )
+        if feed.paused:
+            approval = _record_approval(db, signal, user, "YES", "BLOCKED")
+            add_audit(db, "APPROVAL_BLOCKED_FEED_PAUSED", "approval", approval.id)
+            return _decision_result(
+                "FEED_PAUSED",
+                "Provider feed is paused. No command created.",
+                approval_id=approval.id,
+            )
+        if not is_user_subscribed_to_feed(db, feed.id, user.id):
+            approval = _record_approval(db, signal, user, "YES", "BLOCKED")
+            add_audit(
+                db,
+                "APPROVAL_BLOCKED_NOT_SUBSCRIBED",
+                "approval",
+                approval.id,
+                {"feed_id": feed.id, "user_id": user.id},
+            )
+            return _decision_result(
+                "NOT_SUBSCRIBED",
+                "User is not subscribed to this provider feed.",
+                approval_id=approval.id,
+            )
 
     # SAFETY: admin pause blocks command creation.
     if is_admin_paused(db):
