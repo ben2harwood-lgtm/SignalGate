@@ -91,6 +91,43 @@ class DemoTenantOut(BaseModel):
     license_key: Optional[str] = None
 
 
+class ProviderSourceInviteCreate(BaseModel):
+    feed_id: str
+    expires_minutes: int = Field(default=60, ge=5, le=1440)
+
+
+class ProviderSourceInviteOut(BaseModel):
+    invite_id: str
+    feed_id: str
+    status: str
+    expires_at: dt.datetime
+    accepted_telegram_user_id: Optional[str] = None
+    connection_token: Optional[str] = None
+
+
+class ProviderSourceConnect(BaseModel):
+    connection_token: str = Field(min_length=20, max_length=200)
+    telegram_user_id: str
+
+
+class ProviderSourceBindingOut(BaseModel):
+    binding_id: str
+    provider_id: str
+    provider_name: str
+    provider_display_name: Optional[str] = None
+    feed_id: str
+    feed_name: str
+    expiry_minutes: Optional[int] = None
+    source_type: str
+    status: str
+
+
+class ProviderSourceSignalCreate(BaseModel):
+    telegram_user_id: str
+    raw_text: str = Field(min_length=1, max_length=4000)
+    source_message_id: Optional[str] = Field(default=None, max_length=200)
+
+
 class SubscriptionInviteCreate(BaseModel):
     feed_id: str
     expires_minutes: int = Field(default=1440, ge=5, le=10080)
