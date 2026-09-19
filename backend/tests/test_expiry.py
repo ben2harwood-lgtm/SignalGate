@@ -15,7 +15,7 @@ def _expire_signal(signal_id):
     db = SessionLocal()
     try:
         sig = db.get(models.Signal, signal_id)
-        sig.expires_at = dt.datetime.utcnow() - dt.timedelta(minutes=1)
+        sig.expires_at = dt.datetime.now(dt.UTC).replace(tzinfo=None) - dt.timedelta(minutes=1)
         db.commit()
     finally:
         db.close()
@@ -25,7 +25,7 @@ def _expire_command(command_id):
     db = SessionLocal()
     try:
         cmd = db.get(models.Command, command_id)
-        cmd.expires_at = dt.datetime.utcnow() - dt.timedelta(minutes=1)
+        cmd.expires_at = dt.datetime.now(dt.UTC).replace(tzinfo=None) - dt.timedelta(minutes=1)
         db.commit()
     finally:
         db.close()
