@@ -83,3 +83,17 @@ At minimum show:
 ## Remaining production work
 
 The current repository provides structured log events, correlation IDs and a protected metrics surface. A deployed environment still needs a central log/metrics backend, alert routing, retention rules, on-call ownership and measured SLO history before G6 is fully accepted.
+
+
+## Release evidence to retain
+
+For each candidate deployment retain:
+
+- candidate git SHA;
+- a redacted sample structured request log showing correlation id/path/status/latency;
+- an authenticated `/admin/metrics` snapshot;
+- readiness result;
+- alert-route test receipt once alerting is connected;
+- any non-zero reconciliation/execution/replay conflict counters with disposition.
+
+A zero conflict count is evidence for that observation window only; it is not a guarantee that future conflicts cannot occur.
