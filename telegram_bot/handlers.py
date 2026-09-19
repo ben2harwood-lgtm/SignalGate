@@ -95,8 +95,9 @@ async def _provider_source_status(
 async def _can_submit_provider_signal(update: Update) -> bool:
     if await _provider_source_status(update.effective_user.id):
         return True
-    # Local-demo backwards compatibility only; hosted backend rejects these
-    # legacy shared-provider credentials.
+    if config.require_license:
+        return False
+    # Local-demo backwards compatibility only.
     return config.is_signal_provider(update.effective_user.id)
 
 
@@ -318,7 +319,15 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def provider_invite(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Self-enrol a screenshot provider with a shared invite code."""
+    """Self-enrol a screenshot provider with a shared invite code (local demo only)."""
+    if config.require_license:
+        await update.message.reply_text(
+            "Legacy /provider enrolment is disabled in hosted Provider Edition. "
+            "Generate a feed-bound source token in the Provider Portal and use "
+            "/connectprovider TOKEN."
+        )
+        return
+
     user = update.effective_user
     if config.is_signal_provider(user.id):
         await update.message.reply_text(
@@ -441,9 +450,9 @@ async def _create_and_broadcast(
         except (TypeError, ValueError):
             expiry = 5
     else:
-        # Local-demo legacy path for configured admin/screenshot-provider ids.
-        # Hosted mode rejects this shared-credential route.
-        if not config.is_signal_provider(user_id):
+        # Local-demo legacy path only. Hosted mode requires the persisted,
+        # feed-bound Telegram provider source above.
+        if config.require_license or not config.is_signal_provider(user_id):
             return (
                 "Provider source is not connected. Generate a token in the "
                 "Provider Portal and send /connectprovider TOKEN."

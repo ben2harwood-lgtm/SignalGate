@@ -21,6 +21,12 @@ class BotConfig:
         self.admin_api_key: str = os.getenv("ADMIN_API_KEY", "")
         self.signal_provider_api_key: str = os.getenv("SIGNAL_PROVIDER_API_KEY", "")
         self.registration_api_key: str = os.getenv("REGISTRATION_API_KEY", "")
+        self.require_license: bool = os.getenv("REQUIRE_LICENSE", "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         admin_raw: str = os.getenv("ADMIN_TELEGRAM_IDS", "")
         self.admin_ids: List[str] = [x.strip() for x in admin_raw.split(",") if x.strip()]
         provider_raw: str = os.getenv("SIGNAL_PROVIDER_TELEGRAM_IDS", "")
@@ -34,6 +40,13 @@ class BotConfig:
         return str(telegram_user_id) in self.admin_ids
 
     def is_signal_provider(self, telegram_user_id: int | str) -> bool:
+        """Return legacy local-demo provider status.
+
+        Hosted Provider Edition never treats configured/local ids as provider
+        authority; it requires a persisted feed-bound source binding.
+        """
+        if self.require_license:
+            return False
         user_id = str(telegram_user_id)
         return (
             user_id in self.admin_ids
