@@ -235,6 +235,21 @@ class ExecutionRequest(BaseModel):
     error_message: Optional[str] = None
 
 
+class BrokerPositionReconcileRequest(BaseModel):
+    broker_tickets: List[str] = Field(min_length=1, max_length=20)
+    executed_symbol: str = Field(min_length=1, max_length=80)
+    executed_direction: Literal["BUY", "SELL"]
+    executed_price: float = Field(gt=0)
+    lot_size: float = Field(gt=0)
+    stop_loss: Optional[float] = Field(default=None, gt=0)
+
+
+class BrokerPositionReconcileResponse(BaseModel):
+    status: Literal["matched", "recovered"]
+    execution_id: str
+    command_status: str
+
+
 class ManagementEventRequest(BaseModel):
     broker_ticket: Optional[str] = None
     event_type: Literal[
