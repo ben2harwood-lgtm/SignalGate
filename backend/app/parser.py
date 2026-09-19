@@ -13,14 +13,22 @@ from typing import Optional
 
 MAX_SIGNAL_TEXT_CHARS = 4000
 
+FIAT_CODES = {
+    "USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF",
+    "SEK", "NOK", "DKK", "SGD", "HKD", "MXN", "ZAR", "TRY",
+    "PLN", "CZK", "HUF", "CNH",
+}
+METAL_CODES = {"XAU", "XAG", "XPT", "XPD"}
+CRYPTO_CODES = {"BTC", "ETH", "LTC", "XRP", "BCH", "SOL", "ADA", "DOT", "BNB"}
+PAIR_CODES = FIAT_CODES | METAL_CODES | CRYPTO_CODES
+
 SYMBOL_ALIASES = {
     "GOLD": "XAUUSD",
     "XAU": "XAUUSD",
-    "XAUUSD": "XAUUSD",
+    "SILVER": "XAGUSD",
+    "XAG": "XAGUSD",
     "BTC": "BTCUSD",
-    "BTCUSD": "BTCUSD",
     "ETH": "ETHUSD",
-    "ETHUSD": "ETHUSD",
 }
 BUY_WORDS = {"BUY", "LONG"}
 SELL_WORDS = {"SELL", "SHORT"}
@@ -70,10 +78,27 @@ def _positive(value: Optional[float]) -> bool:
     return value is not None and value > 0
 
 
+def _detect_symbols(upper: str) -> set[str]:
+    """Return every recognised canonical pair without guessing."""
+    joined = re.sub(r"\b([A-Z]{3})[/\-]([A-Z]{3})\b", r"\1\2", upper)
+    found: set[str] = set()
+    for token in re.findall(r"[A-Z]{3,6}", joined):
+        alias = SYMBOL_ALIASES.get(token)
+        if alias:
+            found.add(alias)
+            continue
+        if len(token) == 6:
+            base, quote = token[:3], token[3:]
+            if base in PAIR_CODES and quote in PAIR_CODES:
+                found.add(base + quote)
+    return found
+
+
 def parse_signal(
     raw_text: str,
     expiry_minutes: int = 5,
     now: Optional[dt.datetime] = None,
+    allowed_symbols: Optional[set[str]] = None,
 ) -> ParseResult:
     now = now or dt.datetime.utcnow()
     result = ParseResult(raw_text=raw_text)
@@ -87,16 +112,27 @@ def parse_signal(
     upper = upper.replace("STOP LOSS", "SL").replace("STOPLOSS", "SL")
     upper = upper.replace("TAKE PROFIT", "TP").replace("TAKEPROFIT", "TP")
 
-    canonical_symbols = {
-        SYMBOL_ALIASES[token]
-        for token in re.findall(r"[A-Z]{3,6}", upper)
-        if token in SYMBOL_ALIASES
-    }
+    # Reject numeric formats that the bounded decimal regex could otherwise
+    # truncate into a completely different price.
+    if re.search(r"\d,\d", upper):
+        return _reject(
+            result,
+            "Numbers must not contain commas; use a plain decimal point",
+        )
+    if re.search(r"\d[E][-+]?\d", upper):
+        return _reject(result, "Scientific notation is not allowed in prices")
+
+    canonical_symbols = _detect_symbols(upper)
     if not canonical_symbols:
-        return _reject(result, "No recognised symbol")
+        return _reject(
+            result,
+            "No recognised symbol (supported: forex pairs, metals and selected crypto)",
+        )
     if len(canonical_symbols) != 1:
         return _reject(result, "Multiple recognised symbols present (ambiguous)")
     result.symbol = next(iter(canonical_symbols))
+    if allowed_symbols is not None and result.symbol not in allowed_symbols:
+        return _reject(result, f"Symbol {result.symbol} is not enabled for this deployment")
 
     words = set(re.findall(r"[A-Z]+", upper))
     has_buy = bool(words & BUY_WORDS)
