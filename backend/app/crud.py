@@ -637,6 +637,7 @@ def bootstrap_demo_tenant(db: Session) -> dict:
             first_name="Demo Subscriber",
         )
     subscription, account = subscribe_user_to_feed(db, provider, feed, user)
+    customer_license = issue_license(db, user)
     credential, raw_key = issue_provider_credential(db, provider, "demo-bootstrap")
     db.flush()
     add_audit(
@@ -658,6 +659,7 @@ def bootstrap_demo_tenant(db: Session) -> dict:
         "user": user,
         "account": account,
         "provider_api_key": raw_key,
+        "license_key": customer_license,
     }
 
 
@@ -685,6 +687,7 @@ def register_user(
         add_audit(db, "USER_UPDATED", "user", user.id)
         return user
 
+    raw_license = generate_license_key()
     user = models.User(
         id=_next_id(db, models.User),
         telegram_user_id=str(telegram_user_id),
@@ -692,11 +695,21 @@ def register_user(
         first_name=first_name,
         status="ACTIVE",
         fixed_lot_size=settings.default_lot_size,
-        license_key=generate_license_key(),
+        legacy_license_key=None,
+        license_key_hash=hash_license_key(raw_license),
+        license_key_last4=raw_license[-4:],
     )
+    # Transient one-time response value; never mapped/persisted.
+    user._issued_license_key = raw_license
     db.add(user)
     db.flush()
-    add_audit(db, "USER_REGISTERED", "user", user.id)
+    add_audit(
+        db,
+        "USER_REGISTERED",
+        "user",
+        user.id,
+        {"license_key_last4": user.license_key_last4},
+    )
     return user
 
 
@@ -731,30 +744,52 @@ def list_users(db: Session) -> List[models.User]:
 # none of this is required and the demo keeps working via the user_id path.
 
 def generate_license_key() -> str:
-    """Generate a human-readable, hard-to-guess license key, e.g. SG-AB12-CD34-EF56."""
-    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no ambiguous 0/O/1/I
+    """Generate a human-readable, hard-to-guess one-time customer licence."""
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     groups = ["".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(3)]
     return "SG-" + "-".join(groups)
+
+
+def hash_license_key(license_key: str) -> str:
+    return hashlib.sha256(license_key.encode("utf-8")).hexdigest()
 
 
 def get_user_by_license(db: Session, license_key: str) -> Optional[models.User]:
     if not license_key:
         return None
-    return db.scalar(
-        select(models.User).where(models.User.license_key == license_key)
+    candidate_hash = hash_license_key(license_key)
+    user = db.scalar(
+        select(models.User).where(models.User.license_key_hash == candidate_hash)
     )
+    if user is None or not user.license_key_hash:
+        return None
+    if not secrets.compare_digest(candidate_hash, user.license_key_hash):
+        return None
+    return user
 
 
 def issue_license(db: Session, user: models.User) -> str:
-    """Assign a fresh unique license key to a user and return it."""
-    # Loop guards against the astronomically unlikely collision.
+    """Rotate a customer licence. Raw value is returned once and never stored."""
     for _ in range(10):
         key = generate_license_key()
-        if get_user_by_license(db, key) is None:
-            user.license_key = key
+        key_hash = hash_license_key(key)
+        existing = db.scalar(
+            select(models.User).where(models.User.license_key_hash == key_hash)
+        )
+        if existing is None:
+            user.legacy_license_key = None
+            user.license_key_hash = key_hash
+            user.license_key_last4 = key[-4:]
             user.updated_at = utcnow()
+            user._issued_license_key = key
             db.flush()
-            add_audit(db, "LICENSE_ISSUED", "user", user.id, {"rotated": True})
+            add_audit(
+                db,
+                "LICENSE_ISSUED",
+                "user",
+                user.id,
+                {"rotated": True, "license_key_last4": user.license_key_last4},
+            )
             return key
     raise RuntimeError("Could not generate a unique license key")
 
