@@ -15,6 +15,7 @@ SignalGate does not supply proprietary investment signals, does not promise prof
 - `main`: July demo baseline; not the release candidate.
 - Integration spine: `codex/signalgate-hardening-2026-09-18`.
 - Runtime candidate before this status-only documentation refresh: `6235f136dac3e29d549dc942c998ae7bdacf4e1d`.
+- Integrated candidate CI: GitHub Actions `SignalGate CI` run **#115** (`35457806582`) — **SUCCESS** at that exact runtime SHA.
 - The hosted schema is versioned through ten Alembic revisions:
   `20260918_0001` baseline -> `20260919_0002` execution safety -> `0003` replay identity -> `0004` provider tenancy -> `0005` provider branding -> `0006` feed policy -> `0007` customer-licence hashing -> `0008` subscription invites -> `0009` provider-source bindings -> `0010` audit hash chain.
 
