@@ -91,6 +91,25 @@ class DemoTenantOut(BaseModel):
     license_key: Optional[str] = None
 
 
+class SubscriptionInviteCreate(BaseModel):
+    feed_id: str
+    expires_minutes: int = Field(default=1440, ge=5, le=10080)
+
+
+class SubscriptionInviteOut(BaseModel):
+    invite_id: str
+    feed_id: str
+    status: str
+    expires_at: dt.datetime
+    accepted_user_id: Optional[str] = None
+    invite_token: Optional[str] = None
+
+
+class SubscriptionInviteAccept(BaseModel):
+    invite_token: str = Field(min_length=20, max_length=200)
+    telegram_user_id: str
+
+
 class SubscriptionCreate(BaseModel):
     feed_id: str
     telegram_user_id: str
