@@ -100,7 +100,7 @@ def parse_signal(
     now: Optional[dt.datetime] = None,
     allowed_symbols: Optional[set[str]] = None,
 ) -> ParseResult:
-    now = now or dt.datetime.utcnow()
+    now = now or dt.datetime.now(dt.UTC).replace(tzinfo=None)
     result = ParseResult(raw_text=raw_text)
 
     if not raw_text or not raw_text.strip():
