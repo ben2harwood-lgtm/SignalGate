@@ -57,3 +57,8 @@ Final prices are a commercial decision after beta evidence establishes onboardin
 ## Acquisition thesis
 
 From customer #1, track the metrics an acquirer can diligence: MRR/ARR, providers, active connected accounts, retention/churn, gross margin, onboarding time, support hours, signals processed, commands executed, reconciliation exceptions, uptime, incidents and customer concentration.
+
+
+### Subscriber enrolment model
+
+Provider Edition uses subscriber-consent invites rather than provider-side user attachment. A provider creates a feed-specific, expiring one-time token; the subscriber accepts it from their own authenticated bot session. The token is stored only as a hash and is consumed on first acceptance. This keeps provider ownership, subscriber consent and delivery eligibility as separate auditable events.
