@@ -191,7 +191,7 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
     assert signal["provider_id"] == provider.id
     assert signal["feed_id"] == feed.id
     assert signal["parser_status"] == "VALID"
-    assert signal["source"] == f"TELEGRAM_BINDING:{binding['binding_id']}"
+    assert signal["source"] == f"FEED:{feed.id}:TELEGRAM_BINDING:{binding['binding_id']}"
 
     blocked = client.post(
         "/provider-sources/telegram/signals",
@@ -384,5 +384,5 @@ def test_portal_and_bot_are_wired_to_tenant_source_routes(client):
     handler_source = (root / "telegram_bot" / "handlers.py").read_text(encoding="utf-8")
     assert 'CommandHandler("connectprovider", handlers.connect_provider_source)' in bot_source
     assert '"/provider-sources/telegram/signals"' in handler_source
-    assert '"/provider-sources/telegram/extract"' in handler_source
+    assert "/provider-sources/telegram/extract" in handler_source
     assert '"/provider-sources/telegram/recipients"' in handler_source
