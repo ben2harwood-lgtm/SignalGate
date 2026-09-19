@@ -17,7 +17,7 @@ SignalGate does not supply proprietary investment signals, does not promise prof
 - Prior frozen RC1: `release/signalgate-demo-rc-2026-09-19` at `9499f4e7140b887d0a3c1d136bde8398dd276c9d`. Preserve it as historical evidence.
 - **RC2 runtime/tooling candidate:** `852a6bc9ca9f0651b34e87b63e86c65669130767`.
 - RC2 release branch target: `release/signalgate-demo-rc2-2026-09-19`.
-- RC2 combined candidate CI: GitHub Actions `SignalGate CI` run **#134** (`35459129106`) — **PENDING_FINAL** at the exact runtime/tooling SHA above.
+- RC2 combined candidate CI: GitHub Actions `SignalGate CI` run **#134** (`35459129106`) — **SUCCESS** at the exact runtime/tooling SHA above.
 - The hosted schema is versioned through ten Alembic revisions:
   `20260918_0001` baseline -> `20260919_0002` execution safety -> `0003` replay identity -> `0004` provider tenancy -> `0005` provider branding -> `0006` feed policy -> `0007` customer-licence hashing -> `0008` subscription invites -> `0009` provider-source bindings -> `0010` audit hash chain.
 
@@ -35,7 +35,7 @@ RC2 does not broaden the trading mode. It improves readiness and evidence qualit
 - project-owned Python/Starlette deprecation noise reduced from thousands of repeated warnings to two upstream framework warnings;
 - hosted deployment documentation aligned with Alembic, tenant auth and encrypted backup/restore;
 - first-provider provisioning explicitly creates the initial feed paused;
-- automated suite expanded to **170 tests** on both SQLite and PostgreSQL on the safe-provisioning lane.
+- final combined RC2 runtime/tooling suite passes **172 tests on SQLite and 172 tests on PostgreSQL**, with only two upstream framework warnings.
 
 ## Integrated capability evidence
 
