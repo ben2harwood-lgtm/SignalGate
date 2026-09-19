@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from . import models
 from .config import get_settings
 from .models import utcnow
-from .parser import parse_signal
+from .parser import PAIR_CODES, parse_signal
 
 settings = get_settings()
 
@@ -160,6 +160,9 @@ def create_provider(
         slug=slug,
         status="ACTIVE",
         paused=False,
+        allowed_symbols_json=None,
+        expiry_minutes=settings.default_signal_expiry_minutes,
+        default_lot_size=settings.default_lot_size,
     )
     db.add(row)
     db.flush()
@@ -183,6 +186,28 @@ def issue_provider_credential(
     db.add(row)
     db.flush()
     add_audit(db, "PROVIDER_CREDENTIAL_ISSUED", "provider", provider.id, {"credential_id": row.id, "label": label})
+    return row, raw_key
+
+
+def rotate_provider_credential(
+    db: Session, provider: models.Provider, label: str = "rotated"
+) -> tuple[models.ProviderCredential, str]:
+    credentials = db.scalars(
+        select(models.ProviderCredential).where(
+            models.ProviderCredential.provider_id == provider.id,
+            models.ProviderCredential.status == "ACTIVE",
+        )
+    ).all()
+    for credential in credentials:
+        credential.status = "REVOKED"
+    row, raw_key = issue_provider_credential(db, provider, label)
+    add_audit(
+        db,
+        "PROVIDER_CREDENTIALS_ROTATED",
+        "provider",
+        provider.id,
+        {"revoked_count": len(credentials), "new_credential_id": row.id},
+    )
     return row, raw_key
 
 
@@ -230,6 +255,60 @@ def create_feed(
     db.flush()
     add_audit(db, "FEED_CREATED", "feed", row.id, {"provider_id": provider.id})
     return row
+
+
+def _normalise_feed_symbols(symbols: Optional[list[str]]) -> Optional[list[str]]:
+    if symbols is None:
+        return None
+    normalised: list[str] = []
+    for raw in symbols:
+        symbol = str(raw).strip().upper().replace("/", "").replace("-", "")
+        if len(symbol) != 6:
+            raise ValueError(f"Unsupported symbol policy value: {raw}")
+        base, quote = symbol[:3], symbol[3:]
+        if base not in PAIR_CODES or quote not in PAIR_CODES:
+            raise ValueError(f"Unsupported symbol policy value: {raw}")
+        if symbol not in normalised:
+            normalised.append(symbol)
+    if len(normalised) > 100:
+        raise ValueError("Feed policy supports at most 100 symbols")
+    return sorted(normalised)
+
+
+def feed_allowed_symbols(feed: models.Feed) -> Optional[set[str]]:
+    if not feed.allowed_symbols_json:
+        return settings.allowed_symbols
+    try:
+        values = json.loads(feed.allowed_symbols_json)
+    except (TypeError, json.JSONDecodeError):
+        raise ValueError("Feed allowed-symbol policy is invalid")
+    return set(_normalise_feed_symbols(values) or [])
+
+
+def update_feed_policy(
+    db: Session,
+    feed: models.Feed,
+    changes: dict,
+) -> models.Feed:
+    if "name" in changes and changes["name"] is not None:
+        feed.name = changes["name"]
+    if "allowed_symbols" in changes:
+        symbols = _normalise_feed_symbols(changes["allowed_symbols"])
+        feed.allowed_symbols_json = json.dumps(symbols) if symbols is not None else None
+    if "expiry_minutes" in changes and changes["expiry_minutes"] is not None:
+        feed.expiry_minutes = int(changes["expiry_minutes"])
+    if "default_lot_size" in changes and changes["default_lot_size"] is not None:
+        feed.default_lot_size = float(changes["default_lot_size"])
+    feed.updated_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "FEED_POLICY_UPDATED",
+        "feed",
+        feed.id,
+        {"fields": sorted(changes.keys()), "provider_id": feed.provider_id},
+    )
+    return feed
 
 
 def set_provider_paused(db: Session, provider: models.Provider, paused: bool) -> models.Provider:
@@ -365,6 +444,221 @@ def list_provider_commands(db: Session, provider_id: str, limit: int = 50) -> Li
         .order_by(models.Command.created_at.desc())
         .limit(limit)
     ).all())
+
+
+def update_provider_branding(
+    db: Session,
+    provider: models.Provider,
+    changes: dict,
+) -> models.Provider:
+    """Update bounded provider-owned branding fields only."""
+    if "display_name" in changes:
+        provider.brand_display_name = changes["display_name"] or None
+    if "logo_url" in changes:
+        logo_url = changes["logo_url"] or None
+        if logo_url and not logo_url.lower().startswith(("https://", "http://")):
+            raise ValueError("logo_url must be http(s)")
+        provider.brand_logo_url = logo_url
+    if "primary_color" in changes:
+        provider.brand_primary_color = changes["primary_color"] or None
+    if "support_contact" in changes:
+        provider.support_contact = changes["support_contact"] or None
+    provider.updated_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_BRANDING_UPDATED",
+        "provider",
+        provider.id,
+        {"fields": sorted(changes.keys())},
+    )
+    return provider
+
+
+def provider_overview(db: Session, provider_id: str) -> dict:
+    """Tenant-scoped operational counts for the Provider Edition dashboard."""
+    feed_count = db.scalar(
+        select(func.count()).select_from(models.Feed).where(
+            models.Feed.provider_id == provider_id
+        )
+    ) or 0
+    active_subscribers = db.scalar(
+        select(func.count()).select_from(models.Subscription).where(
+            models.Subscription.provider_id == provider_id,
+            models.Subscription.status == "ACTIVE",
+        )
+    ) or 0
+    active_accounts = db.scalar(
+        select(func.count()).select_from(models.TradingAccount).where(
+            models.TradingAccount.provider_id == provider_id,
+            models.TradingAccount.status == "ACTIVE",
+        )
+    ) or 0
+    signal_count = db.scalar(
+        select(func.count()).select_from(models.Signal).where(
+            models.Signal.provider_id == provider_id
+        )
+    ) or 0
+    command_count = db.scalar(
+        select(func.count()).select_from(models.Command).where(
+            models.Command.provider_id == provider_id
+        )
+    ) or 0
+    return {
+        "feed_count": int(feed_count),
+        "active_subscribers": int(active_subscribers),
+        "active_accounts": int(active_accounts),
+        "signal_count": int(signal_count),
+        "command_count": int(command_count),
+    }
+
+
+def _reconciliation_state(
+    command: models.Command,
+    execution: Optional[models.Execution],
+) -> str:
+    if command.status == "PENDING":
+        return "PENDING"
+    if command.status == "SENT_TO_EA":
+        return "AWAITING_EXECUTION_REPORT"
+    if execution is None:
+        return "REVIEW_REQUIRED"
+    if execution.status == "FAILED" and command.status == "FAILED":
+        return "RECONCILED_FAILED"
+    if execution.status == "SUCCESS" and command.status == "FULLY_CLOSED":
+        return "RECONCILED_CLOSED"
+    if execution.status == "SUCCESS" and command.status in {
+        "EXECUTED_OPEN",
+        "PARTIAL_TP1_DONE",
+        "PARTIAL_TP2_DONE",
+    }:
+        return "OPEN_OR_MANAGED"
+    return "REVIEW_REQUIRED"
+
+
+def provider_history(db: Session, provider_id: str, limit: int = 50) -> list[dict]:
+    rows: list[dict] = []
+    for command in list_provider_commands(db, provider_id, limit=limit):
+        execution = db.scalar(
+            select(models.Execution).where(models.Execution.command_id == command.id)
+        )
+        events = list(
+            db.scalars(
+                select(models.TradeManagementEvent)
+                .where(models.TradeManagementEvent.command_id == command.id)
+                .order_by(models.TradeManagementEvent.created_at.asc())
+            ).all()
+        )
+        ledger = db.scalar(
+            select(models.PerformanceLedger).where(
+                models.PerformanceLedger.command_id == command.id
+            )
+        )
+        signal = db.get(models.Signal, command.signal_id)
+        rows.append({
+            "command_id": command.id,
+            "signal_id": command.signal_id,
+            "feed_id": command.feed_id,
+            "account_id": command.account_id,
+            "user_id": command.user_id,
+            "symbol": command.symbol,
+            "direction": command.direction,
+            "command_status": command.status,
+            "created_at": command.created_at,
+            "processed_at": command.processed_at,
+            "reconciliation_state": _reconciliation_state(command, execution),
+            "signal": {
+                "parser_status": signal.parser_status if signal else None,
+                "source": signal.source if signal else None,
+                "created_at": signal.created_at if signal else None,
+            },
+            "execution": (
+                {
+                    "status": execution.status,
+                    "broker_ticket": execution.broker_ticket,
+                    "executed_symbol": execution.executed_symbol,
+                    "executed_price": execution.executed_price,
+                    "lot_size": execution.lot_size,
+                    "slippage": execution.slippage,
+                    "created_at": execution.created_at,
+                } if execution else None
+            ),
+            "management_events": [
+                {
+                    "event_type": event.event_type,
+                    "stage": event.stage,
+                    "result": event.result,
+                    "price": event.price,
+                    "created_at": event.created_at,
+                } for event in events
+            ],
+            "ledger": (
+                {
+                    "result_status": ledger.result_status,
+                    "r_result": ledger.r_result,
+                    "final_notes": ledger.final_notes,
+                } if ledger else None
+            ),
+        })
+    return rows
+
+
+def bootstrap_demo_tenant(db: Session) -> dict:
+    """Idempotently provision a provider/feed/subscriber demo bundle."""
+    org = db.scalar(
+        select(models.Organization).where(models.Organization.slug == "signalgate-demo")
+    )
+    if org is None:
+        org = create_organization(db, "SignalGate Demo", "signalgate-demo")
+    provider = db.scalar(
+        select(models.Provider).where(
+            models.Provider.organization_id == org.id,
+            models.Provider.slug == "demo-provider",
+        )
+    )
+    if provider is None:
+        provider = create_provider(db, org.id, "Demo Signal Provider", "demo-provider")
+        provider.brand_display_name = "Demo Signal Provider"
+        provider.brand_primary_color = "#111827"
+    feed = db.scalar(
+        select(models.Feed).where(
+            models.Feed.provider_id == provider.id,
+            models.Feed.source_namespace == "DEMO_FEED",
+        )
+    )
+    if feed is None:
+        feed = create_feed(db, provider, "Demo Feed", "DEMO_FEED")
+    user = get_user_by_telegram(db, "demo-subscriber")
+    if user is None:
+        user = register_user(
+            db,
+            telegram_user_id="demo-subscriber",
+            telegram_username="demo_subscriber",
+            first_name="Demo Subscriber",
+        )
+    subscription, account = subscribe_user_to_feed(db, provider, feed, user)
+    credential, raw_key = issue_provider_credential(db, provider, "demo-bootstrap")
+    db.flush()
+    add_audit(
+        db,
+        "DEMO_TENANT_BOOTSTRAPPED",
+        "provider",
+        provider.id,
+        {
+            "feed_id": feed.id,
+            "user_id": user.id,
+            "account_id": account.id,
+            "subscription_id": subscription.id,
+            "credential_id": credential.id,
+        },
+    )
+    return {
+        "provider": provider,
+        "feed": feed,
+        "user": user,
+        "account": account,
+        "provider_api_key": raw_key,
+    }
 
 
 # --- Users ----------------------------------------------------------------
@@ -529,6 +823,7 @@ def create_signal(
     """
     from . import ledger  # local import to avoid cycle
 
+    feed: Optional[models.Feed] = None
     if provider_id or feed_id:
         if not provider_id or not feed_id:
             raise ValueError("provider_id and feed_id must be supplied together")
@@ -573,13 +868,24 @@ def create_signal(
             )
             return existing
 
-    expiry_minutes = get_setting_int(
-        db, "default_signal_expiry_minutes", settings.default_signal_expiry_minutes
+    expiry_minutes = (
+        feed.expiry_minutes
+        if feed is not None and feed.expiry_minutes is not None
+        else get_setting_int(
+            db,
+            "default_signal_expiry_minutes",
+            settings.default_signal_expiry_minutes,
+        )
+    )
+    allowed_symbols = (
+        feed_allowed_symbols(feed)
+        if feed is not None
+        else settings.allowed_symbols
     )
     parsed = parse_signal(
         raw_text,
         expiry_minutes=expiry_minutes,
-        allowed_symbols=settings.allowed_symbols,
+        allowed_symbols=allowed_symbols,
     )
 
     signal = models.Signal(
@@ -891,8 +1197,24 @@ def _create_command(
     user: models.User,
 ) -> models.Command:
     """Create exactly one command from an approved valid signal."""
-    expiry_minutes = get_setting_int(
-        db, "default_signal_expiry_minutes", settings.default_signal_expiry_minutes
+    feed = (
+        get_feed_for_provider(db, signal.provider_id, signal.feed_id)
+        if signal.provider_id is not None and signal.feed_id is not None
+        else None
+    )
+    expiry_minutes = (
+        feed.expiry_minutes
+        if feed is not None and feed.expiry_minutes is not None
+        else get_setting_int(
+            db,
+            "default_signal_expiry_minutes",
+            settings.default_signal_expiry_minutes,
+        )
+    )
+    default_lot_size = (
+        feed.default_lot_size
+        if feed is not None and feed.default_lot_size is not None
+        else get_setting_float(db, "default_lot_size", settings.default_lot_size)
     )
     split_mode = (
         get_setting(db, "split_ticket_demo_partial_mode", "true") or "true"
@@ -922,7 +1244,7 @@ def _create_command(
         tp1_close_percent=get_setting_int(db, "tp1_close_percent", 50),
         tp2_close_percent=get_setting_int(db, "tp2_close_percent", 25),
         tp3_close_percent=get_setting_int(db, "tp3_close_percent", 25),
-        lot_size=get_setting_float(db, "default_lot_size", settings.default_lot_size),
+        lot_size=default_lot_size,
         split_ticket_demo_partial_mode=split_mode,
         tp1_lot=get_setting_float(db, "tp1_lot", settings.tp1_lot),
         tp2_lot=get_setting_float(db, "tp2_lot", settings.tp2_lot),
