@@ -1,19 +1,25 @@
 """Provider Edition tenancy and provisioning endpoints."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from .. import crud
 from ..database import get_db
 from ..schemas import (
+    DemoTenantOut,
     FeedCreate,
     FeedOut,
     OrganizationCreate,
+    ProviderBrandingUpdate,
     ProviderCreate,
     ProviderCredentialCreate,
     ProviderCredentialOut,
     ProviderOut,
+    ProviderOverview,
     SignalOut,
     SubscriptionCreate,
     SubscriptionOut,
@@ -25,6 +31,12 @@ router = APIRouter(tags=["providers"])
 
 def _bad_request(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get("/provider-portal", response_class=HTMLResponse, include_in_schema=False)
+def provider_portal() -> HTMLResponse:
+    path = Path(__file__).resolve().parents[1] / "provider_portal.html"
+    return HTMLResponse(path.read_text(encoding="utf-8"))
 
 
 @router.post("/admin/organizations")
@@ -96,6 +108,23 @@ def admin_create_feed(
     return FeedOut.model_validate(feed)
 
 
+@router.post("/admin/demo-tenant", response_model=DemoTenantOut)
+def admin_demo_tenant(
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+) -> DemoTenantOut:
+    bundle = crud.bootstrap_demo_tenant(db)
+    db.commit()
+    return DemoTenantOut(
+        provider_id=bundle["provider"].id,
+        provider_api_key=bundle["provider_api_key"],
+        feed_id=bundle["feed"].id,
+        user_id=bundle["user"].id,
+        telegram_user_id=bundle["user"].telegram_user_id,
+        license_key=bundle["user"].license_key,
+    )
+
+
 @router.get("/providers/me", response_model=ProviderOut)
 def provider_me(
     principal: ProviderPrincipal = Depends(require_provider_principal),
@@ -107,6 +136,60 @@ def provider_me(
     if provider is None:
         raise HTTPException(status_code=404, detail="Provider not found")
     return ProviderOut.model_validate(provider)
+
+
+@router.get("/providers/me/overview", response_model=ProviderOverview)
+def provider_overview(
+    principal: ProviderPrincipal = Depends(require_provider_principal),
+    db: Session = Depends(get_db),
+) -> ProviderOverview:
+    if principal is None:
+        raise HTTPException(status_code=400, detail="Tenant principal required")
+    provider = crud.get_provider(db, principal.provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    counts = crud.provider_overview(db, principal.provider_id)
+    return ProviderOverview(provider=ProviderOut.model_validate(provider), **counts)
+
+
+@router.put("/providers/me/branding", response_model=ProviderOut)
+def provider_branding(
+    payload: ProviderBrandingUpdate,
+    principal: ProviderPrincipal = Depends(require_provider_principal),
+    db: Session = Depends(get_db),
+) -> ProviderOut:
+    if principal is None:
+        raise HTTPException(status_code=400, detail="Tenant principal required")
+    provider = crud.get_provider(db, principal.provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    try:
+        provider = crud.update_provider_branding(
+            db,
+            provider,
+            payload.model_dump(exclude_unset=True),
+        )
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+    db.commit()
+    return ProviderOut.model_validate(provider)
+
+
+@router.get("/providers/me/history")
+def provider_history(
+    limit: int = 50,
+    principal: ProviderPrincipal = Depends(require_provider_principal),
+    db: Session = Depends(get_db),
+) -> dict:
+    if principal is None:
+        return {"history": []}
+    return {
+        "history": crud.provider_history(
+            db,
+            principal.provider_id,
+            limit=max(1, min(limit, 200)),
+        )
+    }
 
 
 @router.get("/providers/me/feeds", response_model=list[FeedOut])
