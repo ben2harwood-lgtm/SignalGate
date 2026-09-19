@@ -1,4 +1,4 @@
-# SignalGate Codex Handoff
+> **Historical handoff — non-authoritative.** This file records an earlier prototype state. For current release truth use `SIGNALGATE-STATUS.md`, `docs/RELEASE_CANDIDATE_2026-09-19.md`, and the current runbooks. Do not follow legacy `/provider`, shared-secret, sequential-user-id or July test-count instructions as current Provider Edition behaviour.\n\n# SignalGate Codex Handoff
 
 Date: 2026-06-30
 Workspace: `/Users/benharwood/Desktop/signalgate`
