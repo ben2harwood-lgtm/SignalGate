@@ -25,6 +25,11 @@ SYMBOL_ALIASES = {
 BUY_WORDS = {"BUY", "LONG"}
 SELL_WORDS = {"SELL", "SHORT"}
 
+# Detect common FX pairs even when they are not supported instruments. Silently
+# ignoring "EURUSD" beside "XAUUSD" would turn ambiguous provider text into a
+# valid gold order, which violates the parser's fail-closed contract.
+_CURRENCY_CODES = {"USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD"}
+
 
 @dataclass
 class ParseResult:
@@ -87,11 +92,25 @@ def parse_signal(
     upper = upper.replace("STOP LOSS", "SL").replace("STOPLOSS", "SL")
     upper = upper.replace("TAKE PROFIT", "TP").replace("TAKEPROFIT", "TP")
 
+    symbol_tokens = re.findall(r"\b[A-Z]{3,6}\b", upper)
     canonical_symbols = {
-        SYMBOL_ALIASES[token]
-        for token in re.findall(r"[A-Z]{3,6}", upper)
-        if token in SYMBOL_ALIASES
+        SYMBOL_ALIASES[token] for token in symbol_tokens if token in SYMBOL_ALIASES
     }
+    unsupported_fx_pairs = {
+        token
+        for token in symbol_tokens
+        if len(token) == 6
+        and token not in SYMBOL_ALIASES
+        and token[:3] in _CURRENCY_CODES
+        and token[3:] in _CURRENCY_CODES
+    }
+    if unsupported_fx_pairs:
+        if canonical_symbols:
+            return _reject(
+                result,
+                "Multiple/unsupported instrument symbols present (ambiguous)",
+            )
+        return _reject(result, "Unsupported instrument symbol")
     if not canonical_symbols:
         return _reject(result, "No recognised symbol")
     if len(canonical_symbols) != 1:
