@@ -40,7 +40,7 @@ def test_harness_requires_zero_errors_and_zero_warnings():
     assert "/compile:" in text
     assert "/include:" in text
     assert "'/log'" in text
-    assert r"result\s+(\d+)\s+errors?,\s+(\d+)\s+warnings?" in text
+    assert r"result\s*:?\s*(\d+)\s+errors?,\s+(\d+)\s+warnings?" in text
     assert "$result.Errors -eq 0 -and $result.Warnings -eq 0" in text
     assert "exit 2" in text
 
