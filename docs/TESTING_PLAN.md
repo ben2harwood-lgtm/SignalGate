@@ -1,69 +1,140 @@
-# Testing Plan
+# SignalGate Testing Plan
 
-Automated tests live in `backend/tests/` and run with `pytest`. They use an
-isolated temp SQLite database and FastAPI's `TestClient` (no network, no MT5).
+SignalGate release evidence is deliberately split into **automated repository proof** and **external/manual acceptance proof**. A green GitHub Actions run is necessary but does not substitute for MetaEditor, broker-demo, penetration-test or legal receipts.
 
-```bash
-cd backend && source .venv/bin/activate && python -m pytest -q
-```
+## Automated release-candidate matrix
 
-## Coverage
+The `SignalGate CI` workflow runs on every pull request and on pushes to the hardening integration branch.
 
-### Parser (`test_parser.py`) — 12 tests
-The 10 required cases plus multi-line format and expiry:
-1. `XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363` → valid
-2. `GOLD BUY SL 2343 TP1 2353 TP2 2358` → valid
-3. `XAU SELL SL 2355 TP1 2345 TP2 2340` → valid
-4. `BUY XAUUSD TP1 2353` → rejected (missing SL)
-5. Random text → rejected
-6. Both BUY and SELL → rejected
-7. BUY with SL above TP → rejected
-8. SELL with SL below TP → rejected
-9. BUY with TP2 < TP1 → rejected
-10. SELL with TP2 > TP1 → rejected
-11. Multi-line `Entry: Market / SL: / TP1:` → valid
-12. Expiry timestamp set on valid signal
+### 1. Backend suite — SQLite
 
-### Approvals (`test_approvals.py`)
-- YES creates exactly one command
-- Duplicate YES creates no second command
-- NO creates no command
-- Reject after approve is blocked (first decision wins)
-- Approve after reject is blocked (first decision wins)
-- Approving an unregistered user is rejected
-- Approving a parser-rejected signal creates no command
+Runs the complete `backend/tests/` suite against the isolated test database and then compiles Python sources.
 
-### Commands (`test_commands.py`)
-- Pending command returned exactly once (then `SENT_TO_EA`, not re-served)
-- Pending requires the EA API key (401 otherwise)
-- Execution success updates status + records execution
-- Execution failure recorded
-- Management events update status and are counted
+Coverage includes:
 
-### Expiry (`test_expiry.py`)
-- Expired signal cannot be approved
-- Expired command not returned to the EA
+- deterministic parsing and signal expiry;
+- approval/rejection and duplicate-decision safety;
+- command claim/report lifecycle and idempotency;
+- admin/provider/feed pause controls;
+- ledger/audit behaviour;
+- hosted authentication and secret handling;
+- customer licence issue/rotation/hashing;
+- provider organisations, feeds, subscriptions and account isolation;
+- subscriber consent invites;
+- provider Telegram source binding/revocation;
+- Provider Edition portal behaviour;
+- provider-scoped evidence export privacy/isolation;
+- observability and health/readiness;
+- migration/backup helper behaviour;
+- audit-chain integrity and tamper detection;
+- adversarial ingestion/replay cases;
+- MT5 source-level fail-closed invariants;
+- simulator end-to-end behaviour.
 
-### Admin pause (`test_admin_pause.py`)
-- Pause blocks command creation
-- Resume restores approvals
-- Admin endpoints require admin header (403 otherwise)
+### 2. Backend suite — PostgreSQL
 
-### Ledger (`test_ledger.py`)
-- Every signal creates a ledger row
-- Parser-rejected signal → ledger `REJECTED`
-- User rejection updates ledger
-- Command creation updates ledger (`APPROVED_NOT_EXECUTED`)
-- Execution + TP events update ledger and compute an approximate R
+Runs the same backend suite against PostgreSQL so locking, constraints, tenancy and database-specific behaviour are exercised on the hosted engine.
 
-### Simulator end-to-end (`test_simulator.py`)
-- Create → approve → simulator polls → execution + all management events
-  recorded → command ends `FULLY_CLOSED`
-- Simulator local idempotency (no double processing)
+### 3. Static security
 
-## Manual / MT5 checks (not automated)
+Bandit scans application, Telegram bot, simulator and scripts for medium/high findings. Test fixtures are excluded from the scan.
 
-- Compile `SignalGateEA.mq5` in MetaEditor (0 errors).
-- WebRequest whitelist + demo account guard.
-- Live-account refusal (`DEMO_ONLY_VIOLATION`) — verify the EA won't init on a
-  real account.
+### 4. Dependency vulnerability audit
+
+`pip-audit` runs against:
+
+- backend dependencies;
+- hosted backend dependencies;
+- Telegram bot dependencies.
+
+Any accepted exception must be explicit and time-bounded.
+
+### 5. PostgreSQL migration smoke
+
+CI proves the versioned migration chain by:
+
+- upgrading an empty database to head;
+- running `alembic check`;
+- proving hosted startup accepts the current schema;
+- downgrading to the pre-licence-hashing revision, inserting a legacy plaintext customer licence, upgrading and proving plaintext is erased and the hash/last-four are correct;
+- downgrading before the audit-hash-chain revision, inserting historical audit rows, upgrading and proving the chain is backfilled and verifies;
+- checking the historical baseline shape;
+- downgrading to base and proving hosted startup rejects the stale schema;
+- re-upgrading to head and rechecking schema agreement.
+
+### 6. Container build
+
+Builds the hosted container from the repository Dockerfile.
+
+### 7. Encrypted backup/restore smoke
+
+CI:
+
+1. creates an ephemeral `age` key;
+2. initialises PostgreSQL at migration head;
+3. inserts a restore sentinel;
+4. creates an encrypted backup and checksum;
+5. proves no plaintext dump remains;
+6. restores into a separate database;
+7. verifies restored data.
+
+This is a CI recovery baseline, not a substitute for a scheduled production-like restore drill with measured RTO/RPO.
+
+## Adversarial/regression focus
+
+Every provider-scoped or execution-boundary change must preserve negative coverage for:
+
+- cross-tenant reads/writes/broadcasts/execution;
+- wrong/revoked credentials;
+- replayed source messages;
+- conflicting parser fields and impossible levels;
+- oversized/invalid payloads;
+- duplicate decisions and callback retries;
+- lifecycle regression after terminal state;
+- reconciliation conflicts;
+- credential/raw-signal leakage from provider exports;
+- audit-chain tampering.
+
+The deterministic parser fuzz/hostile corpus remains part of the automated assurance layer.
+
+## MT5 acceptance — external/manual
+
+Source-level tests are **not** a MetaEditor compiler receipt.
+
+Before MT5 execution is release-accepted, compile the exact candidate `mt5_ea/SignalGateEA.mq5` in the target MetaEditor and retain:
+
+- MetaEditor/build version;
+- broker/demo terminal version;
+- candidate commit SHA;
+- 0 compile errors;
+- 0 compile warnings;
+- screenshot or exported compiler log.
+
+Then run and retain receipts for the scenarios in `docs/MT5_ACCEPTANCE.md`, including:
+
+1. normal MARKET fill;
+2. broker symbol suffix;
+3. LIMIT refusal with no broker order;
+4. broker rejection / market closed;
+5. stop-loss close correctly attributed;
+6. manual/unknown close not fabricated as TP;
+7. netting-account fallback;
+8. lost callback recovered from broker truth;
+9. EA restart with an open SignalGate position blocks new polling until reconciled/flat;
+10. conflicting broker snapshot fails closed.
+
+## External assurance
+
+Repository CI cannot close these gates:
+
+- independent application/security review;
+- penetration test and remediation evidence;
+- deployed central telemetry/alert routing and measured SLO history;
+- scheduled production-like recovery drill;
+- UK regulatory-perimeter/financial-promotion advice;
+- privacy/contract review;
+- real-provider demo pilot operating evidence.
+
+## Release rule
+
+A release candidate is accepted only when the candidate SHA, CI run, external receipts and any exceptions are recorded together. **Demo-only remains the enforced operating mode; no automated test result authorises real-money retail trading.**
