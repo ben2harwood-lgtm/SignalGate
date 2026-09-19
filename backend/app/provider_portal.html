@@ -50,6 +50,7 @@ code{font-size:12px}.error{background:#fef3f2;color:#b42318;padding:10px;border-
         <div class="row" style="margin-top:12px">
           <button id="providerPause">Pause provider</button>
           <button id="rotateKey" class="secondary">Rotate API key</button>
+          <button id="downloadEvidence" class="secondary">Download evidence</button>
           <button id="disconnect" class="secondary">Disconnect</button>
         </div>
       </div>
@@ -213,6 +214,17 @@ function renderHistory(rows){
 }
 $("connectBtn").onclick=connect;
 $("disconnect").onclick=()=>location.reload();
+$("downloadEvidence").onclick=async()=>{try{
+  const response=await fetch("/providers/me/export",{headers:{"X-Provider-Id":providerId,"X-Provider-API-Key":apiKey}});
+  if(!response.ok){let body={};try{body=await response.json()}catch{};throw new Error(body.detail||("HTTP "+response.status))}
+  const blob=await response.blob();
+  const disposition=response.headers.get("Content-Disposition")||"";
+  const match=disposition.match(/filename="([^"]+)"/);
+  const filename=match?match[1]:"signalgate-provider-evidence.json";
+  const url=URL.createObjectURL(blob);
+  const link=document.createElement("a");link.href=url;link.download=filename;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
+  notice("Provider evidence export downloaded.");
+}catch(err){notice(err.message,"error")}};
 $("providerPause").onclick=async()=>{try{await api("/providers/me/pause?paused="+(!provider.paused),{method:"POST"});await refresh()}catch(err){notice(err.message,"error")}};
 $("rotateKey").onclick=async()=>{if(!confirm("Rotate this provider API key? The current key will stop working immediately."))return;try{const r=await api("/providers/me/credentials/rotate",{method:"POST"});apiKey=r.api_key;$("providerKey").value=apiKey;notice("API key rotated. Copy the new key now; SignalGate will not show it again.");await refresh()}catch(err){notice(err.message,"error")}};
 $("saveBrand").onclick=async()=>{try{provider=await api("/providers/me/branding",{method:"PUT",body:JSON.stringify({display_name:$("brandName").value.trim()||null,logo_url:$("brandLogoUrl").value.trim()||null,primary_color:$("brandColor").value.trim()||null,support_contact:$("supportContact").value.trim()||null})});applyBrand();notice("Branding saved.")}catch(err){notice(err.message,"error")}};
