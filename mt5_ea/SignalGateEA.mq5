@@ -64,6 +64,7 @@ bool    g_tp2_done            = false;
 bool    g_tp3_done            = false;
 double  g_effective_sl        = 0.0;
 bool    g_split_mode          = true;
+int     g_last_http_code      = 0;
 
 //+------------------------------------------------------------------+
 //| OnInit                                                            |
@@ -250,8 +251,14 @@ void ProcessCommand(const string command_id, const string json)
       return;
    }
 
-   // Acknowledge receipt before execution.
-   AckReceived(command_id);
+   // Acknowledge receipt before execution. Fail closed if the backend no
+   // longer accepts this EA/customer/command or cannot be reached.
+   if(!AckReceived(command_id))
+   {
+      Print("Command acknowledgement failed; refusing broker execution for ",
+            command_id, " HTTP=", g_last_http_code);
+      return;
+   }
 
    // --- Execute ------------------------------------------------------
    bool ok = false;
@@ -287,7 +294,8 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
    tps[0]  = tp1;    tps[1]  = tp2;    tps[2]  = tp3;
 
    g_child_count = 0;
-   double exec_price = 0.0;
+   double executed_lot = 0.0;
+   double weighted_exec_price = 0.0;
 
    for(int i = 0; i < 3; i++)
    {
@@ -316,21 +324,35 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
          CloseAllChildren(symbol, command_id);
          return(false);
       }
+
+      double filled_volume = trade.ResultVolume();
+      double filled_price = trade.ResultPrice();
+      if(filled_volume <= 0.0 || filled_price <= 0.0)
+      {
+         ReportError(command_id, "ORDER_SEND_FAILED",
+                     "Broker reported non-positive fill volume/price");
+         CloseAllChildren(symbol, command_id);
+         return(false);
+      }
+
       g_child_tickets[g_child_count] = trade.ResultDeal();
       g_child_pos_ids[g_child_count] = PositionIdOfDeal(trade.ResultDeal());
-      exec_price = trade.ResultPrice();
+      executed_lot += filled_volume;
+      weighted_exec_price += filled_price * filled_volume;
       g_child_count++;
    }
    g_open_time = TimeCurrent();
 
-   if(g_child_count == 0)
+   if(g_child_count == 0 || executed_lot <= 0.0)
    {
       ReportError(command_id, "INVALID_TAKE_PROFIT", "No valid TP levels to open");
       return(false);
    }
 
+   double exec_price = weighted_exec_price / executed_lot;
    g_active_entry = exec_price;
-   ReportExecutionSuccess(command_id, symbol, direction, exec_price, sl, tp1, tp2, tp3);
+   ReportExecutionSuccess(command_id, symbol, direction, exec_price,
+                          executed_lot, sl, tp1, tp2, tp3);
    ReportManagementEvent(command_id, "OPENED", "OPENED", "OPEN", "SUCCESS",
                          exec_price, 0,0,0,0);
    return(true);
@@ -366,6 +388,14 @@ bool ExecuteSingleTicket(const string command_id, const string symbol,
       return(false);
    }
 
+   double executed_lot = trade.ResultVolume();
+   if(executed_lot <= 0.0 || trade.ResultPrice() <= 0.0)
+   {
+      ReportError(command_id, "ORDER_SEND_FAILED",
+                  "Broker reported non-positive fill volume/price");
+      return(false);
+   }
+
    g_child_tickets[0] = trade.ResultDeal();
    g_child_pos_ids[0] = PositionIdOfDeal(trade.ResultDeal());
    g_child_count = 1;
@@ -373,7 +403,7 @@ bool ExecuteSingleTicket(const string command_id, const string symbol,
    g_active_entry = trade.ResultPrice();
 
    ReportExecutionSuccess(command_id, symbol, direction, g_active_entry,
-                          sl, tp1, tp2, tp3);
+                          executed_lot, sl, tp1, tp2, tp3);
    ReportManagementEvent(command_id, "OPENED", "OPENED", "OPEN", "SUCCESS",
                          g_active_entry, 0,0,0,0);
    return(true);
@@ -458,13 +488,28 @@ string ResolveBrokerSymbol(const string requested)
 {
    if(requested == "") return("");
    if(SymbolSelect(requested, true)) return(requested);
+
+   string matched = "";
+   int matches = 0;
    int total = SymbolsTotal(false);
    for(int i = 0; i < total; i++)
    {
       string name = SymbolName(i, false);
-      if(StringFind(name, requested) == 0 && SymbolSelect(name, true))
-         return(name);
+      if(StringFind(name, requested) != 0)
+         continue;
+      matched = name;
+      matches++;
    }
+
+   if(matches != 1)
+   {
+      if(matches > 1)
+         Print("Ambiguous broker symbol suffix match for ", requested,
+               ": ", matches, " matches; refusing to guess.");
+      return("");
+   }
+   if(SymbolSelect(matched, true))
+      return(matched);
    return("");
 }
 
@@ -544,7 +589,7 @@ int CountOpenChildren(const string symbol, const string command_id)
       if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
       string comment = PositionGetString(POSITION_COMMENT);
-      if(StringFind(comment, command_id) >= 0)
+      if(comment == "SG:" + command_id)
          count++;
    }
    return(count);
@@ -564,7 +609,7 @@ bool MoveRemainingSL(const string symbol, const string command_id,
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
-      if(StringFind(PositionGetString(POSITION_COMMENT), command_id) < 0) continue;
+      if(PositionGetString(POSITION_COMMENT) != "SG:" + command_id) continue;
 
       double tp = PositionGetDouble(POSITION_TP);
       if(!trade.PositionModify(ticket, new_sl, tp))
@@ -587,7 +632,7 @@ void CloseAllChildren(const string symbol, const string command_id)
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
       // CRITICAL: rollback belongs only to the command that partially opened.
       // Never close another SignalGate command on the same symbol/magic.
-      if(StringFind(PositionGetString(POSITION_COMMENT), command_id) < 0) continue;
+      if(PositionGetString(POSITION_COMMENT) != "SG:" + command_id) continue;
       trade.PositionClose(ticket);
    }
 }
@@ -600,13 +645,23 @@ bool NormalizeLot(const string symbol, double &lot)
    double minlot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
    double maxlot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
    double step   = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-   if(step <= 0.0) step = 0.01;
+   if(minlot <= 0.0 || maxlot <= 0.0 || step <= 0.0)
+      return(false);
 
-   if(lot < minlot) lot = minlot;
-   if(lot > maxlot) lot = maxlot;
-   // Round to nearest step.
-   lot = MathRound(lot / step) * step;
-   return(lot >= minlot && lot <= maxlot);
+   // Safety: never silently increase requested exposure to broker minimum/max.
+   if(lot < minlot || lot > maxlot)
+      return(false);
+
+   double requested = lot;
+   double steps = MathFloor((lot / step) + 1e-9);
+   lot = NormalizeDouble(steps * step, 8);
+   if(lot < minlot || lot > maxlot || lot <= 0.0)
+      return(false);
+
+   if(lot < requested)
+      Print("Lot normalized down from ", DoubleToString(requested, 8),
+            " to ", DoubleToString(lot, 8), " for broker volume step.");
+   return(true);
 }
 
 //+------------------------------------------------------------------+
@@ -635,10 +690,16 @@ string HttpGet(const string url)
 
    ResetLastError();
    int code = WebRequest("GET", url, headers, timeout, post, result, result_headers);
+   g_last_http_code = code;
    if(code == -1)
    {
       Print("WEBREQUEST_FAILED GET ", url, " err=", GetLastError(),
             " (allow URL in Tools>Options>Expert Advisors>WebRequest)");
+      return("");
+   }
+   if(code < 200 || code >= 300)
+   {
+      Print("HTTP GET rejected ", url, " status=", code);
       return("");
    }
    return(CharArrayToString(result));
@@ -660,9 +721,15 @@ string HttpPost(const string url, const string body)
 
    ResetLastError();
    int code = WebRequest("POST", url, headers, timeout, post, result, result_headers);
+   g_last_http_code = code;
    if(code == -1)
    {
       Print("WEBREQUEST_FAILED POST ", url, " err=", GetLastError());
+      return("");
+   }
+   if(code < 200 || code >= 300)
+   {
+      Print("HTTP POST rejected ", url, " status=", code);
       return("");
    }
    return(CharArrayToString(result));
@@ -677,10 +744,11 @@ string PollPendingCommand()
    return(HttpGet(url));
 }
 
-void AckReceived(const string command_id)
+bool AckReceived(const string command_id)
 {
    string url = BackendURL + "/commands/" + command_id + "/received";
    HttpPost(url, "{\"note\":\"EA received\"}");
+   return(g_last_http_code >= 200 && g_last_http_code < 300);
 }
 
 void SendHeartbeat()
@@ -774,8 +842,9 @@ int ReconcileOpenPositions()
 
 void ReportExecutionSuccess(const string command_id, const string symbol,
                             const int direction, const double exec_price,
-                            const double sl, const double tp1,
-                            const double tp2, const double tp3)
+                            const double executed_lot, const double sl,
+                            const double tp1, const double tp2,
+                            const double tp3)
 {
    string child_json = "[";
    for(int i = 0; i < g_child_count; i++)
@@ -785,10 +854,7 @@ void ReportExecutionSuccess(const string command_id, const string symbol,
    }
    child_json += "]";
 
-   double total_lot = 0.0;
-   if(SplitTicketDemoPartialMode) total_lot = TP1Lot + TP2Lot + TP3Lot;
-   else total_lot = SingleTicketFixedLot;
-
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
    double spread = (double)SymbolInfoInteger(symbol, SYMBOL_SPREAD);
 
    string body = "{";
@@ -797,12 +863,12 @@ void ReportExecutionSuccess(const string command_id, const string symbol,
    body += "\"child_tickets_json\":" + JsonEscapeString(child_json) + ",";
    body += "\"executed_symbol\":\"" + symbol + "\",";
    body += "\"executed_direction\":\"" + (direction==+1?"BUY":"SELL") + "\",";
-   body += "\"executed_price\":" + DoubleToString(exec_price, _Digits) + ",";
-   body += "\"lot_size\":" + DoubleToString(total_lot, 2) + ",";
-   body += "\"initial_stop_loss\":" + DoubleToString(sl, _Digits) + ",";
-   body += "\"tp1\":" + DoubleToString(tp1, _Digits) + ",";
-   body += "\"tp2\":" + (tp2>0?DoubleToString(tp2,_Digits):"null") + ",";
-   body += "\"tp3\":" + (tp3>0?DoubleToString(tp3,_Digits):"null") + ",";
+   body += "\"executed_price\":" + DoubleToString(exec_price, digits) + ",";
+   body += "\"lot_size\":" + DoubleToString(executed_lot, 8) + ",";
+   body += "\"initial_stop_loss\":" + DoubleToString(sl, digits) + ",";
+   body += "\"tp1\":" + DoubleToString(tp1, digits) + ",";
+   body += "\"tp2\":" + (tp2>0?DoubleToString(tp2,digits):"null") + ",";
+   body += "\"tp3\":" + (tp3>0?DoubleToString(tp3,digits):"null") + ",";
    body += "\"spread_at_execution\":" + DoubleToString(spread, 0) + ",";
    body += "\"slippage\":0";
    body += "}";
