@@ -254,6 +254,10 @@ def resolve_ea_user(
 
 # --- Signals --------------------------------------------------------------
 
+class SignalReplayConflict(ValueError):
+    """Same provider-source message id was reused with different content."""
+
+
 def create_signal(
     db: Session,
     raw_text: str,
@@ -262,6 +266,37 @@ def create_signal(
 ) -> models.Signal:
     """Store + deterministically parse a signal. Always creates a ledger row."""
     from . import ledger  # local import to avoid cycle
+
+    # Deduplicate provider/webhook retries before parsing/broadcast. Returning
+    # the original Signal means downstream per-user approval idempotency still
+    # guarantees at most one command for that source message.
+    if source_message_id:
+        existing = db.scalar(
+            select(models.Signal).where(
+                models.Signal.source == source,
+                models.Signal.source_message_id == source_message_id,
+            )
+        )
+        if existing is not None:
+            if existing.raw_text != raw_text:
+                add_audit(
+                    db,
+                    "SIGNAL_REPLAY_CONFLICT",
+                    "signal",
+                    existing.id,
+                    {"source": source, "source_message_id": source_message_id},
+                )
+                raise SignalReplayConflict(
+                    "Source message id was already used with different signal content"
+                )
+            add_audit(
+                db,
+                "SIGNAL_REPLAY_IGNORED",
+                "signal",
+                existing.id,
+                {"source": source, "source_message_id": source_message_id},
+            )
+            return existing
 
     expiry_minutes = get_setting_int(
         db, "default_signal_expiry_minutes", settings.default_signal_expiry_minutes
@@ -287,7 +322,45 @@ def create_signal(
         status="VALID" if parsed.is_valid else "REJECTED",
     )
     db.add(signal)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        if not source_message_id:
+            raise
+        # Another worker may have inserted the same provider message after our
+        # pre-check. Let the database uniqueness constraint arbitrate the race.
+        db.rollback()
+        existing = db.scalar(
+            select(models.Signal).where(
+                models.Signal.source == source,
+                models.Signal.source_message_id == source_message_id,
+            )
+        )
+        if existing is None:
+            raise
+        if existing.raw_text != raw_text:
+            add_audit(
+                db,
+                "SIGNAL_REPLAY_CONFLICT",
+                "signal",
+                existing.id,
+                {
+                    "source": source,
+                    "source_message_id": source_message_id,
+                    "raced": True,
+                },
+            )
+            raise SignalReplayConflict(
+                "Source message id was already used with different signal content"
+            )
+        add_audit(
+            db,
+            "SIGNAL_REPLAY_IGNORED",
+            "signal",
+            existing.id,
+            {"source": source, "source_message_id": source_message_id, "raced": True},
+        )
+        return existing
 
     add_audit(
         db,

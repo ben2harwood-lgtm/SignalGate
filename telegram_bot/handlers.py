@@ -253,9 +253,20 @@ async def _create_and_broadcast(
     human-readable status string. The backend's deterministic parser still has
     the final say on validity.
     """
+    # Replay identity must be scoped to the originating Telegram chat. Telegram
+    # message ids are chat-scoped, not globally unique across providers.
+    if update.effective_chat is None or update.effective_message is None:
+        return "Cannot identify Telegram source message. Nothing was sent."
+    chat_id = update.effective_chat.id
+    message_id = str(update.effective_message.message_id)
+
     signal = await _backend_post(
         "/signals/create",
-        json={"raw_text": raw_text},
+        json={
+            "raw_text": raw_text,
+            "source": f"TELEGRAM_CHAT:{chat_id}",
+            "source_message_id": message_id,
+        },
         headers=_signal_provider_headers(update.effective_user.id),
     )
     if signal is None:

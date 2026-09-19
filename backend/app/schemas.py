@@ -4,7 +4,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # --- Users ----------------------------------------------------------------
@@ -30,9 +30,9 @@ class UserOut(BaseModel):
 # --- Signals --------------------------------------------------------------
 
 class CreateSignalRequest(BaseModel):
-    raw_text: str
-    source: str = "TELEGRAM_ADMIN_TEST"
-    source_message_id: Optional[str] = None
+    raw_text: str = Field(min_length=1, max_length=4000)
+    source: str = Field(default="TELEGRAM_ADMIN_TEST", min_length=1, max_length=100)
+    source_message_id: Optional[str] = Field(default=None, max_length=200)
 
 
 class SignalOut(BaseModel):

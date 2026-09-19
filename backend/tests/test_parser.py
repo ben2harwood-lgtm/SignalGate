@@ -85,3 +85,42 @@ def test_expiry_is_set_for_valid():
     r = parse_signal("XAUUSD BUY SL 2343 TP1 2353", expiry_minutes=5)
     assert r.is_valid
     assert r.expires_at is not None
+
+
+def test_multiple_recognised_symbols_rejected():
+    r = parse_signal("XAUUSD BTCUSD BUY SL 2343 TP1 2353")
+    assert not r.is_valid
+    assert "symbols" in (r.parser_error or "").lower()
+
+
+def test_conflicting_stop_losses_rejected():
+    r = parse_signal("XAUUSD BUY SL 2343 SL 2000 TP1 2353")
+    assert not r.is_valid
+    assert "conflicting stop" in (r.parser_error or "").lower()
+
+
+def test_conflicting_tp1_values_rejected():
+    r = parse_signal("XAUUSD BUY SL 2343 TP1 2353 TP1 2400")
+    assert not r.is_valid
+    assert "conflicting tp1" in (r.parser_error or "").lower()
+
+
+def test_repeated_identical_value_is_tolerated():
+    r = parse_signal("XAUUSD BUY SL 2343 SL 2343 TP1 2353 TP1 2353")
+    assert r.is_valid
+
+
+def test_non_positive_prices_rejected():
+    assert not parse_signal("XAUUSD BUY SL -1 TP1 2353").is_valid
+    assert not parse_signal("XAUUSD SELL SL 2355 TP1 0").is_valid
+
+
+def test_limit_entry_must_be_between_sl_and_tp1():
+    assert not parse_signal("XAUUSD BUY ENTRY 2400 SL 2343 TP1 2353").is_valid
+    assert not parse_signal("XAUUSD SELL ENTRY 2300 SL 2355 TP1 2345").is_valid
+
+
+def test_oversized_signal_text_rejected():
+    r = parse_signal("XAUUSD BUY SL 2343 TP1 2353 " + ("X" * 5000))
+    assert not r.is_valid
+    assert "maximum length" in (r.parser_error or "").lower()
