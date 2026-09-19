@@ -289,7 +289,7 @@ async def _create_and_broadcast(
     card = format_trade_card(signal, expiry)
     keyboard = trade_card_keyboard(signal["id"])
 
-    recipients = await _active_recipients(update)
+    recipients = await _active_recipients(update, signal["id"])
     sent = 0
     for chat_id in recipients:
         try:
@@ -463,7 +463,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(result)
 
 
-async def _active_recipients(update: Update) -> List[str]:
+async def _active_recipients(update: Update, signal_id: str) -> List[str]:
     """Best-effort recipient list.
 
     The backend tracks registered testers by telegram id. In a private Telegram
@@ -472,7 +472,7 @@ async def _active_recipients(update: Update) -> List[str]:
     """
     recipients = {str(update.effective_chat.id)}
     data = await _backend_get(
-        "/signals/recipients",
+        f"/signals/recipients?signal_id={signal_id}",
         headers=_signal_provider_headers(update.effective_user.id),
     )
     if data and data.get("recipients"):
