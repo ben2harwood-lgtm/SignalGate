@@ -1,6 +1,6 @@
 # SignalGate External Acceptance Handoff
 
-Use this sequence after the machine-green release candidate. Do not skip a gate by relabelling repository evidence as external evidence.
+Use this sequence after the machine-green release candidate. Do not skip a gate by relabelling repository evidence as external evidence. Track every receipt in `docs/ACCEPTANCE_EVIDENCE_INDEX.md` and use the blank templates in `docs/evidence/`.
 
 ## 1. Freeze the candidate
 
@@ -9,6 +9,7 @@ Record:
 - named RC branch;
 - exact candidate SHA;
 - `docs/RELEASE_CANDIDATE_2026-09-19.md`;
+- `docs/evidence/SECURITY_REVIEW_RECEIPT_TEMPLATE.md`;
 - green GitHub Actions run;
 - any accepted exception.
 
@@ -19,6 +20,7 @@ Do not change runtime code during an acceptance run. A runtime change creates a 
 Primary instructions:
 
 - `docs/MT5_ACCEPTANCE.md`
+- `docs/evidence/MT5_ACCEPTANCE_RECEIPT_TEMPLATE.md`
 - `mt5_ea/README_MT5_SETUP.md`
 
 Retain:
@@ -55,6 +57,7 @@ Provide counsel:
 - `docs/REGULATORY_COUNSEL_BRIEF.md`;
 - `docs/REGULATORY_GATE.md`;
 - current architecture and data-flow documentation;
+- `docs/evidence/REGULATORY_PRIVACY_RECEIPT_TEMPLATE.md`;
 - exact click-to-approve user journey;
 - provider-facing commercial copy;
 - intended customer/instrument/jurisdiction model.
@@ -87,6 +90,8 @@ Use:
 - `docs/BETA_ACCEPTANCE.md`;
 - `docs/CONTROLLED_PROVIDER_PILOT.md`;
 - `docs/PROVIDER_ONBOARDING.md`;
+- `docs/FIRST_PROVIDER_RUNBOOK.md`;
+- `docs/evidence/PILOT_OPERATIONS_LOG_TEMPLATE.md`;
 - `scripts/provision_provider.py`;
 - Provider Portal;
 - provider evidence export.
