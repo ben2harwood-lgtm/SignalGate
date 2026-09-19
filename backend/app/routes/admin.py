@@ -47,7 +47,7 @@ def resume(
 def list_users(
     db: Session = Depends(get_db), _admin: str = Depends(require_admin)
 ) -> dict:
-    """List all customers with their status and license key."""
+    """List customers without exposing raw EA licence credentials."""
     users = crud.list_users(db)
     return {
         "users": [
@@ -56,7 +56,8 @@ def list_users(
                 "telegram_user_id": u.telegram_user_id,
                 "telegram_username": u.telegram_username,
                 "status": u.status,
-                "license_key": u.license_key,
+                "license_key_last4": u.license_key_last4,
+                "license_configured": bool(u.license_key_hash),
             }
             for u in users
         ]

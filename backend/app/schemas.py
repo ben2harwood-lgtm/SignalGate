@@ -131,6 +131,7 @@ class UserOut(BaseModel):
     status: str
     fixed_lot_size: float
     license_key: Optional[str] = None
+    license_key_last4: Optional[str] = None
 
 
 # --- Signals --------------------------------------------------------------

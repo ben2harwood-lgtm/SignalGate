@@ -99,10 +99,16 @@ class User(Base):
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
     risk_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     fixed_lot_size: Mapped[float] = mapped_column(Float, default=0.01)
-    # Per-customer license key (hosted model). Unique when set; many users may
-    # have NULL locally (both SQLite and Postgres permit multiple NULLs here).
-    license_key: Mapped[Optional[str]] = mapped_column(
-        String, nullable=True, unique=True, index=True
+    # Legacy plaintext column retained only for migration compatibility.
+    # New/rotated credentials are never stored here.
+    legacy_license_key: Mapped[Optional[str]] = mapped_column(
+        "license_key", String, nullable=True, unique=True, index=True
+    )
+    license_key_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, unique=True, index=True
+    )
+    license_key_last4: Mapped[Optional[str]] = mapped_column(
+        String(4), nullable=True
     )
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(

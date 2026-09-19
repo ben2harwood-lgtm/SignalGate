@@ -91,7 +91,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "SL/TP details, and wait for you to Confirm before anything is sent."
         )
     else:
-        await _backend_post(
+        registration = await _backend_post(
             "/register_user",
             json={
                 "telegram_user_id": str(user.id),
@@ -100,9 +100,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             },
             headers=_registration_headers(),
         )
-        await update.message.reply_text(
-            "SignalGate demo tester registered.\nDemo mode only. No live trades."
-        )
+        if registration is None:
+            await update.message.reply_text(
+                "SignalGate backend is unreachable. Registration was not confirmed."
+            )
+            return
+        license_key = registration.get("license_key")
+        message = "SignalGate demo tester registered.\nDemo mode only. No live trades."
+        if license_key:
+            message += (
+                "\n\nYour one-time EA licence is:\n"
+                f"{license_key}\n"
+                "Keep it private. SignalGate cannot display this key again; "
+                "if it is lost, an admin must rotate it."
+            )
+        await update.message.reply_text(message)
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
