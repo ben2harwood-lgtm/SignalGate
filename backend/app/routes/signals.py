@@ -104,21 +104,32 @@ def extract_signal(
 def create_signal(
     payload: CreateSignalRequest,
     db: Session = Depends(get_db),
-    _provider: str = Depends(require_signal_provider),
+    principal: Optional[ProviderPrincipal] = Depends(require_provider_principal),
 ) -> SignalOut:
+    if principal is not None and not payload.feed_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Hosted provider signal creation requires feed_id",
+        )
     try:
         signal = crud.create_signal(
             db,
             raw_text=payload.raw_text,
             source=payload.source,
             source_message_id=payload.source_message_id,
+            provider_id=principal.provider_id if principal is not None else None,
+            feed_id=payload.feed_id if principal is not None else None,
         )
     except crud.SignalReplayConflict as exc:
-        # Persist the conflict audit receipt, but never pretend the new content
-        # was accepted as the previously stored signal.
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
     db.commit()
@@ -127,15 +138,23 @@ def create_signal(
 
 @router.get("/signals/recipients")
 def signal_recipients(
+    feed_id: Optional[str] = None,
     db: Session = Depends(get_db),
-    _provider: str = Depends(require_signal_provider),
+    principal: Optional[ProviderPrincipal] = Depends(require_provider_principal),
 ) -> dict:
-    """Return active Telegram recipients for trade-card broadcast.
-
-    This endpoint is for the bot, not a dashboard. It keeps screenshot providers
-    out of admin endpoints while still letting a confirmed signal reach testers.
-    """
-    users = crud.list_active_users(db)
+    """Return only recipients belonging to the authenticated provider feed."""
+    if principal is not None:
+        if not feed_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="feed_id is required for provider recipient lookup",
+            )
+        feed = crud.get_feed_for_provider(db, principal.provider_id, feed_id)
+        if feed is None:
+            raise HTTPException(status_code=404, detail="Feed not found")
+        users = crud.list_active_users_for_feed(db, principal.provider_id, feed_id)
+    else:
+        users = crud.list_active_users(db)
     return {
         "recipients": [
             {
