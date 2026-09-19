@@ -6,14 +6,18 @@ for approved, structured commands and places **demo trades only**.
 > ⚠️ **Demo only.** The EA refuses to run on a live account. v1 has no live
 > trading support by design. Use a broker **demo** account.
 
-## 1. Install the EA
+## 1. Compile the exact candidate EA
+
+For release acceptance, prefer the automated evidence harness in `docs/MT5_ACCEPTANCE.md` rather than manually compiling an untracked copy. It binds the compiler receipt to the exact frozen candidate SHA and requires **0 errors / 0 warnings**.
+
+For a normal manual install:
 
 1. Open **MetaEditor** (from MT5: Tools → MetaQuotes Language Editor).
 2. In the Navigator, right-click **Experts** → **Open Folder** (this is
    `.../MQL5/Experts`).
-3. Copy `SignalGateEA.mq5` into that `Experts` folder.
+3. Copy the candidate `SignalGateEA.mq5` into that `Experts` folder.
 4. Back in MetaEditor, open `SignalGateEA.mq5` and press **Compile** (F7).
-   It should compile with 0 errors. A compiled `SignalGateEA.ex5` appears.
+5. Do not treat the compile as release evidence unless the candidate SHA/source hash and compiler log are retained.
 
 ## 2. Allow the backend URL for WebRequest
 
@@ -34,11 +38,12 @@ URL is whitelisted:
 1. Open a **XAUUSD** chart on your **demo** account.
 2. Drag **SignalGateEA** from Navigator → Experts onto the chart.
 3. In the inputs dialog set at minimum:
-   - `BackendURL` = `http://127.0.0.1:8000`
-   - `UserID` = your SignalGate user id (e.g. `USER-000001`)
-   - `EAApiKey` = the `EA_API_KEY` from your backend `.env`
-   - `DemoOnlyMode` = `true` (leave as-is)
-   - `SplitTicketDemoPartialMode` = `true` (default for v1)
+   - `BackendURL` = the exact backend URL you whitelisted;
+   - `LicenseKey` = **your one-time customer EA licence** in hosted Provider Edition;
+   - `EAApiKey` = the server's EA service credential supplied through the approved onboarding channel;
+   - `UserID` = local-demo compatibility only; hosted ownership is resolved from `LicenseKey`;
+   - `DemoOnlyMode` = `true` (leave as-is);
+   - `SplitTicketDemoPartialMode` = `true` on a hedging demo account (the EA safely falls back on non-hedging/netting accounts).
 4. Click OK. A smiley face in the top-right of the chart means it is running.
 
 ## 5. Inputs reference
@@ -46,9 +51,9 @@ URL is whitelisted:
 | Input | Default | Meaning |
 |-------|---------|---------|
 | `BackendURL` | `http://127.0.0.1:8000` | SignalGate backend base URL |
-| `UserID` | `USER-000001` | SignalGate user id to poll commands for |
-| `LicenseKey` | `local-demo` | Optional license key (passthrough) |
-| `EAApiKey` | `local-demo-ea-key` | Must match backend `EA_API_KEY` |
+| `UserID` | `USER-000001` | Local-demo compatibility id. Hosted mode does not trust this as customer identity. |
+| `LicenseKey` | `local-demo` | **Required customer identity credential in hosted mode.** Sent as `X-SG-License-Key`; keep private. |
+| `EAApiKey` | `local-demo-ea-key` | EA service credential. Hosted calls require this in addition to the customer licence. |
 | `PollIntervalSeconds` | `2` | How often to poll/manage |
 | `SingleTicketFixedLot` | `0.01` | Lot for single-ticket fallback mode |
 | `SplitTicketDemoPartialMode` | `true` | Open 3 child tickets for 50/25/25 |
@@ -102,7 +107,15 @@ Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
 `ORDER_SEND_FAILED`, `DUPLICATE_COMMAND`, `DEMO_ONLY_VIOLATION`,
 `WEBREQUEST_FAILED`, `JSON_PARSE_FAILED`.
 
-## 9. Testing without MetaTrader
+## 9. Hosted Provider Edition identity
+
+In hosted mode the EA sends the customer licence in the `X-SG-License-Key` header on command polling and callbacks. The backend resolves the customer from that licence and re-checks command ownership before execution/reconciliation reports are accepted.
+
+The `UserID` query parameter remains only for backwards-compatible local-demo operation; it is not an authentication boundary in hosted mode.
+
+Never put the customer licence in a URL, screenshot, issue, shared log or public evidence bundle.
+
+## 10. Testing without MetaTrader
 
 If you don't have MT5 installed, use the Python **EA simulator** instead — it
 exercises the identical backend endpoints. See the root `README.md`.
