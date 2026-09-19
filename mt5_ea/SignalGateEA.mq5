@@ -737,7 +737,7 @@ int ReconcileOpenPositions()
          double volume = PositionGetDouble(POSITION_VOLUME);
          double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
          if(tickets != "") tickets += ",";
-         tickets += """ + IntegerToString((long)ticket) + """;
+         tickets += "\\\"" + IntegerToString((long)ticket) + "\\\"";
          total_volume += volume;
          weighted_price += open_price * volume;
          if(symbol == "") symbol = PositionGetString(POSITION_SYMBOL);
@@ -756,13 +756,13 @@ int ReconcileOpenPositions()
       double avg_price = weighted_price / total_volume;
       int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
       string body = "{";
-      body += ""broker_tickets":[" + tickets + "],";
-      body += ""executed_symbol":" + JsonEscapeString(symbol) + ",";
-      body += ""executed_direction":" + JsonEscapeString(direction) + ",";
-      body += ""executed_price":" + DoubleToString(avg_price, digits) + ",";
-      body += ""lot_size":" + DoubleToString(total_volume, 8);
+      body += "\\\"broker_tickets\\":[" + tickets + "],";
+      body += "\\\"executed_symbol\\":" + JsonEscapeString(symbol) + ",";
+      body += "\\\"executed_direction\\":" + JsonEscapeString(direction) + ",";
+      body += "\\\"executed_price\\":" + DoubleToString(avg_price, digits) + ",";
+      body += "\\\"lot_size\\":" + DoubleToString(total_volume, 8);
       if(current_sl > 0.0)
-         body += ","stop_loss":" + DoubleToString(current_sl, digits);
+         body += ",\\\"stop_loss\\":" + DoubleToString(current_sl, digits);
       body += "}";
       HttpPost(
          BackendURL + "/commands/" + cid + "/reconcile_open_position",
