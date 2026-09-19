@@ -28,6 +28,68 @@ def utcnow() -> dt.datetime:
     return dt.datetime.utcnow()
 
 
+class ProviderOrganization(Base):
+    __tablename__ = "provider_organizations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow
+    )
+
+
+class ProviderFeed(Base):
+    __tablename__ = "provider_feeds"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("provider_organizations.id"), index=True
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    # Server-owned namespace for replay identity. It is globally unique so
+    # (source, source_message_id) cannot collide across provider tenants.
+    source_namespace: Mapped[str] = mapped_column(String, unique=True, index=True)
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow
+    )
+
+
+class ProviderCredential(Base):
+    __tablename__ = "provider_credentials"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("provider_organizations.id"), index=True
+    )
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    key_prefix: Mapped[str] = mapped_column(String(12), nullable=False)
+    role: Mapped[str] = mapped_column(String, default="OPERATOR")
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    last_used_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class FeedSubscription(Base):
+    __tablename__ = "feed_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("feed_id", "user_id", name="uq_feed_subscription"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    feed_id: Mapped[str] = mapped_column(ForeignKey("provider_feeds.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow
+    )
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -56,6 +118,9 @@ class Signal(Base):
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    feed_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("provider_feeds.id"), nullable=True, index=True
+    )
     source: Mapped[str] = mapped_column(String, default="TELEGRAM_ADMIN_TEST")
     source_message_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     raw_text: Mapped[str] = mapped_column(Text)
