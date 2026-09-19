@@ -24,5 +24,15 @@ def register_user(
         telegram_username=payload.telegram_username,
         first_name=payload.first_name,
     )
+    issued = getattr(user, "_issued_license_key", None)
     db.commit()
-    return UserOut.model_validate(user)
+    return UserOut(
+        id=user.id,
+        telegram_user_id=user.telegram_user_id,
+        telegram_username=user.telegram_username,
+        first_name=user.first_name,
+        status=user.status,
+        fixed_lot_size=user.fixed_lot_size,
+        license_key=issued,
+        license_key_last4=user.license_key_last4,
+    )
