@@ -8,11 +8,13 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
+from .config import get_settings
 from .database import SessionLocal, init_db
 from .routes import admin, commands, ea, health, signals, users
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("signalgate")
+settings = get_settings()
 
 # Default settings seeded on first run.
 DEFAULT_SETTINGS = {
@@ -48,6 +50,7 @@ def seed_settings() -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    settings.validate_startup()
     init_db()
     seed_settings()
     logger.info("SignalGate backend ready (demo-only mode).")
