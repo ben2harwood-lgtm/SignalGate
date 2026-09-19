@@ -2,7 +2,7 @@
 
 SignalGate is now a **provider-agnostic, tenant-scoped, demo-only** platform. This guide routes each role to the correct current workflow instead of reproducing historical prototype instructions.
 
-> **Do not use real-money accounts.** The frozen demo release candidate is `release/signalgate-demo-rc-2026-09-19`.
+> **Do not use real-money accounts.** The frozen demo release candidate is `release/signalgate-demo-rc2-2026-09-19`.
 
 ## 1. Choose your path
 
