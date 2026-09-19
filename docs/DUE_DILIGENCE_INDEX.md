@@ -70,3 +70,13 @@ Maintain these folders from the first paying provider.
 - active connected demo/live accounts, clearly separated.
 
 A buyer should be able to understand how SignalGate works, how safe it is, who owns it and how it earns money without relying on verbal founder knowledge.
+
+
+## Repository evidence map
+
+- `docs/SECURITY_OVERVIEW.md` — current security-control summary and known gaps.
+- `docs/BETA_ACCEPTANCE.md` — controlled provider beta entry/exit gates.
+- `docs/DEPENDENCY_INVENTORY.md` — dependency/licence inventory procedure.
+- `scripts/generate_dependency_inventory.py` — machine-readable package evidence.
+- `scripts/provision_provider.py` — repeatable provider provisioning workflow.
+- `SIGNALGATE-STATUS.md` — canonical release-readiness ledger.

@@ -14,8 +14,8 @@ SignalGate is infrastructure for signal providers. It is not the signal provider
 2. Create one or more feeds/strategies.
 3. Connect a supported source (initially Telegram; API/webhook next).
 4. Configure symbols, expiry, execution/risk policy and allowed brokers/accounts.
-5. Invite/import subscribers.
-6. Subscribers connect demo accounts and authorise the permitted workflow.
+5. Generate feed-specific subscriber invites.
+6. Subscribers accept the one-time invite from their own authenticated bot session, then connect/use their demo-account workflow.
 7. Provider sends a signal.
 8. SignalGate normalises and validates it.
 9. Required user authorisation is collected.

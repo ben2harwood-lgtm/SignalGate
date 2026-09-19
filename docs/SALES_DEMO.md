@@ -20,13 +20,13 @@ Demonstrate that a wrong tenant/licence cannot report that command.
 
 ## 7–8 — retry/failure
 Replay the execution callback and show it is ignored rather than duplicated.
-Show the implemented platform-admin pause. Provider-scoped pause is a G7 target and must not be presented as implemented until that control and its isolation tests exist.
+Show both platform-admin pause and provider/feed-scoped pause. Demonstrate that a paused provider/feed cannot create a new command, and that another provider remains unaffected.
 
 ## 8–9 — evidence
 Open the signal → approval → command → execution → management/audit timeline.
 
 ## 9–10 — provider operation
-Show the target Provider Edition dashboard/demo tenant:
+Show the implemented Provider Edition portal/demo tenant:
 - feed health;
 - subscriber/account status;
 - signal history;
@@ -40,3 +40,11 @@ Show the target Provider Edition dashboard/demo tenant:
 - credentials in URLs/screenshots;
 - cross-provider shared data;
 - unverified "waiting customers" claims.
+
+
+## Subscriber consent demonstration
+
+Generate a feed invite in the Provider Portal. Show that the provider cannot
+directly attach a Telegram id. In a separate subscriber bot chat, accept the
+invite with `/join <token>`; only then should the subscriber appear in the
+provider feed and become eligible for trade cards.

@@ -25,15 +25,17 @@ Provider source → deterministic ingestion/validation → stored signal → req
 customer authorisation → account-bound command → MT5 EA or simulator →
 execution/management reports → ledger/audit.
 
-Full organisation/provider/feed tenancy is **not** part of the current demo
-architecture; it is a separate production release gate.
+The September hardening spine now includes organisation/provider/feed/subscriber/
+trading-account tenancy, provider-scoped credentials and pause controls, a
+Provider Edition portal, versioned PostgreSQL migrations, broker reconciliation,
+observability baselines and encrypted backup/restore evidence.
 
-The July prototype is intentionally human-in-the-loop: a trade requires explicit
-YES approval and the MT5 EA refuses real accounts.
+The product is still intentionally human-in-the-loop and demo-only: a trade
+requires explicit YES approval and the MT5 EA refuses real accounts.
 
 ## Already implemented
 
-- Deterministic signal parser for XAUUSD/GOLD/XAU and supported crypto aliases.
+- Deterministic fail-closed parser for supported forex pairs, metals and selected crypto, with deployment/feed allowlists.
 - Signal storage, expiry and rejection reasons.
 - Per-user YES/NO approval with duplicate-decision protection.
 - Structured command output; raw provider text never reaches MT5.
@@ -41,7 +43,12 @@ YES approval and the MT5 EA refuses real accounts.
 - Python EA simulator that never connects to a broker.
 - Audit log and performance ledger.
 - Admin pause/resume.
-- Per-user hosted licence mechanism.
+- One-time customer EA licences stored only as hashes + last-four metadata.
+- Organisation/provider/feed/subscriber/account tenancy with provider-specific hashed credentials.
+- Provider Portal: feed policy, branding, key rotation, pause controls, history/reconciliation and demo bootstrap.
+- Explicit one-time subscriber consent invites; providers cannot silently attach subscribers.
+- Tenant-bound Telegram provider-source binding/revocation and feed-policy enforcement.
+- Tamper-evident audit hash chain with verification and migration backfill proof.
 - PostgreSQL-capable backend.
 - GitHub CI, Python compile checks and dependency vulnerability audit on the
   hardening integration branch.
@@ -53,27 +60,23 @@ YES approval and the MT5 EA refuses real accounts.
 The active integration branch is
 `codex/signalgate-hardening-2026-09-18`.
 
-Independent lanes add:
+Integrated hardening now includes retry-safe execution/reporting, adversarial
+parser/replay controls, tenant isolation, the Provider Edition portal, broker
+reconciliation, readiness/operational metrics and encrypted backup/restore CI.
 
-- command/account ownership checks and retry-safe execution reporting;
-- adversarial parser/input/replay controls;
-- provider packaging and release evidence;
-- deployment/readiness/backup tooling.
-
-PRs are not counted as complete until CI, adversarial tests, independent review
-and acceptance are all green. Machine-green is necessary, not sufficient.
+Machine-green is necessary, not sufficient: MT5 still requires a real MetaEditor
+compile/demo receipt, and G8 external security/regulatory reviews are not complete.
 
 ## Not yet production-complete
 
-- True organisation/provider/feed multi-tenancy.
-- Provider dashboard/onboarding UI.
-- Production SSO/MFA/RBAC.
-- Versioned database migrations.
-- Production observability/SLOs and restore-tested disaster recovery.
+- Production SSO/MFA/RBAC where target enterprise customers require it.
+- Central telemetry backend, alert routing and measured SLO history.
+- Production-like scheduled restore drill with recorded RTO/RPO.
 - Billing/subscription operations.
-- Independent penetration test.
-- Written UK regulatory-perimeter opinion for the final operating model.
-- Paying provider beta.
+- Actual MetaEditor 0-error/0-warning compile + demo scenario receipts.
+- Independent penetration test/remediation.
+- Written UK regulatory-perimeter / financial-promotion opinion for the final operating model.
+- Controlled paying provider beta and operating-history evidence.
 - Live retail trading.
 
 Those are release blockers, not hidden limitations.
@@ -100,7 +103,8 @@ The target provider experience is described in
 [Provider Onboarding](docs/PROVIDER_ONBOARDING.md).
 
 The provider-facing sales demonstration deliberately sells control and evidence
-— not trading returns. Full cross-tenant isolation remains a production gate:
+— not trading returns. Cross-tenant isolation is implemented and regression-tested;
+external assurance remains a later gate:
 [10-minute Provider Demo](docs/SALES_DEMO.md).
 
 ## Regulatory gate
@@ -147,8 +151,10 @@ cd backend
 python -m pytest -q
 ```
 
-CI also compiles Python sources and runs `pip-audit` against backend and bot
-dependencies.
+CI runs the backend suite on SQLite and PostgreSQL, compiles Python sources, runs
+Bandit medium/high static-security scanning, audits dependencies, checks the full
+Alembic migration chain, builds the hosted container, and proves encrypted
+backup/restore on an isolated PostgreSQL database.
 
 ## Evidence and operations
 
