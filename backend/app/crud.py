@@ -576,7 +576,11 @@ def create_signal(
     expiry_minutes = get_setting_int(
         db, "default_signal_expiry_minutes", settings.default_signal_expiry_minutes
     )
-    parsed = parse_signal(raw_text, expiry_minutes=expiry_minutes)
+    parsed = parse_signal(
+        raw_text,
+        expiry_minutes=expiry_minutes,
+        allowed_symbols=settings.allowed_symbols,
+    )
 
     signal = models.Signal(
         id=_next_id(db, models.Signal),
@@ -983,6 +987,17 @@ def recent_commands(db: Session, limit: int = 20) -> List[models.Command]:
         db.scalars(
             select(models.Command)
             .order_by(models.Command.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def recent_ledger(db: Session, limit: int = 20) -> List[models.PerformanceLedger]:
+    """Most-recent performance rows, including losses and unattributed closes."""
+    return list(
+        db.scalars(
+            select(models.PerformanceLedger)
+            .order_by(models.PerformanceLedger.created_at.desc())
             .limit(limit)
         ).all()
     )

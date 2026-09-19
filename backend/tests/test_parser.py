@@ -124,3 +124,49 @@ def test_oversized_signal_text_rejected():
     r = parse_signal("XAUUSD BUY SL 2343 TP1 2353 " + ("X" * 5000))
     assert not r.is_valid
     assert "maximum length" in (r.parser_error or "").lower()
+
+
+def test_forex_major_pairs_and_crosses_valid():
+    eur = parse_signal("EURUSD BUY SL 1.0800 TP1 1.0900 TP2 1.0950")
+    gbpjpy = parse_signal("GBPJPY SELL SL 191.00 TP1 189.00 TP2 188.00")
+    assert eur.is_valid and eur.symbol == "EURUSD"
+    assert gbpjpy.is_valid and gbpjpy.symbol == "GBPJPY"
+
+
+def test_forex_separator_forms_are_canonicalised():
+    assert parse_signal("EUR/USD BUY SL 1.08 TP1 1.09").symbol == "EURUSD"
+    assert parse_signal("GBP-JPY SELL SL 191 TP1 189").symbol == "GBPJPY"
+
+
+def test_index_like_symbol_stays_rejected():
+    r = parse_signal("US30 BUY SL 38000 TP1 39000")
+    assert not r.is_valid
+
+
+def test_allowed_symbols_restricts_deployment():
+    allowed = {"EURUSD", "GBPUSD"}
+    assert parse_signal(
+        "EURUSD BUY SL 1.08 TP1 1.09",
+        allowed_symbols=allowed,
+    ).is_valid
+    blocked = parse_signal(
+        "GBPJPY SELL SL 191 TP1 189",
+        allowed_symbols=allowed,
+    )
+    assert not blocked.is_valid
+    assert "not enabled" in (blocked.parser_error or "").lower()
+
+
+def test_comma_and_scientific_prices_fail_closed():
+    comma = parse_signal("XAUUSD BUY SL 2,343 TP1 2353")
+    sci = parse_signal("XAUUSD BUY SL 2e3 TP1 2353")
+    assert not comma.is_valid
+    assert "comma" in (comma.parser_error or "").lower()
+    assert not sci.is_valid
+    assert "scientific" in (sci.parser_error or "").lower()
+
+
+def test_multiple_forex_symbols_are_ambiguous():
+    r = parse_signal("EURUSD GBPUSD BUY SL 1.08 TP1 1.09")
+    assert not r.is_valid
+    assert "multiple" in (r.parser_error or "").lower()

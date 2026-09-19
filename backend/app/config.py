@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
 
 from dotenv import load_dotenv
 
@@ -78,6 +78,12 @@ class Settings:
         self.admin_api_key: str = os.getenv("ADMIN_API_KEY", "")
         self.signal_provider_api_key: str = os.getenv("SIGNAL_PROVIDER_API_KEY", "")
         self.registration_api_key: str = os.getenv("REGISTRATION_API_KEY", "")
+
+        symbols_raw = os.getenv("ALLOWED_SYMBOLS", "")
+        self.allowed_symbols: Optional[set[str]] = (
+            {s.strip().upper() for s in symbols_raw.split(",") if s.strip()}
+            or None
+        )
 
         # HOSTED MULTI-CUSTOMER: when true, an EA must present a valid, ACTIVE
         # customer license_key to receive commands; the local user_id fallback

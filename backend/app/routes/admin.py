@@ -100,6 +100,41 @@ def deactivate_user(
     return {"user_id": user.id, "status": user.status}
 
 
+@router.get("/ledger")
+def ledger(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    """Read-only performance evidence. Wins, losses and uncertain outcomes remain visible."""
+    rows = crud.recent_ledger(db, limit=max(1, min(limit, 200)))
+    return {
+        "count": len(rows),
+        "ledger": [
+            {
+                "id": row.id,
+                "signal_id": row.signal_id,
+                "command_id": row.command_id,
+                "symbol": row.symbol,
+                "direction": row.direction,
+                "entry_price": row.entry_price,
+                "initial_stop_loss": row.initial_stop_loss,
+                "tp1": row.tp1,
+                "tp2": row.tp2,
+                "tp3": row.tp3,
+                "result_status": row.result_status,
+                "r_result": row.r_result,
+                "slippage": row.slippage,
+                "spread_at_execution": row.spread_at_execution,
+                "final_notes": row.final_notes,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in rows
+        ],
+    }
+
+
 @router.get("/status")
 def status(
     db: Session = Depends(get_db), _admin: str = Depends(require_admin)
