@@ -367,6 +367,246 @@ def list_provider_commands(db: Session, provider_id: str, limit: int = 50) -> Li
     ).all())
 
 
+def update_provider_branding(
+    db: Session,
+    provider: models.Provider,
+    changes: dict,
+) -> models.Provider:
+    """Update bounded provider-owned branding fields only."""
+    if "display_name" in changes:
+        provider.brand_display_name = changes["display_name"] or None
+    if "logo_url" in changes:
+        logo_url = changes["logo_url"] or None
+        if logo_url and not logo_url.lower().startswith(("https://", "http://")):
+            raise ValueError("logo_url must be http(s)")
+        provider.brand_logo_url = logo_url
+    if "primary_color" in changes:
+        provider.brand_primary_color = changes["primary_color"] or None
+    if "support_contact" in changes:
+        provider.support_contact = changes["support_contact"] or None
+    provider.updated_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_BRANDING_UPDATED",
+        "provider",
+        provider.id,
+        {"fields": sorted(changes.keys())},
+    )
+    return provider
+
+
+def provider_overview(db: Session, provider_id: str) -> dict:
+    """Tenant-scoped operational counts for the Provider Edition dashboard."""
+    feed_count = db.scalar(
+        select(func.count()).select_from(models.Feed).where(
+            models.Feed.provider_id == provider_id
+        )
+    ) or 0
+    active_subscribers = db.scalar(
+        select(func.count()).select_from(models.Subscription).where(
+            models.Subscription.provider_id == provider_id,
+            models.Subscription.status == "ACTIVE",
+        )
+    ) or 0
+    active_accounts = db.scalar(
+        select(func.count()).select_from(models.TradingAccount).where(
+            models.TradingAccount.provider_id == provider_id,
+            models.TradingAccount.status == "ACTIVE",
+        )
+    ) or 0
+    recent_signal_count = db.scalar(
+        select(func.count()).select_from(models.Signal).where(
+            models.Signal.provider_id == provider_id
+        )
+    ) or 0
+    recent_command_count = db.scalar(
+        select(func.count()).select_from(models.Command).where(
+            models.Command.provider_id == provider_id
+        )
+    ) or 0
+    return {
+        "feed_count": int(feed_count),
+        "active_subscribers": int(active_subscribers),
+        "active_accounts": int(active_accounts),
+        "signal_count": int(recent_signal_count),
+        "command_count": int(recent_command_count),
+    }
+
+
+def _reconciliation_state(
+    command: models.Command,
+    execution: Optional[models.Execution],
+) -> str:
+    if command.status == "PENDING":
+        return "PENDING"
+    if command.status == "SENT_TO_EA":
+        return "AWAITING_EXECUTION_REPORT"
+    if execution is None:
+        return "REVIEW_REQUIRED"
+    if execution.status == "FAILED" and command.status == "FAILED":
+        return "RECONCILED_FAILED"
+    if execution.status == "SUCCESS" and command.status == "FULLY_CLOSED":
+        return "RECONCILED_CLOSED"
+    if execution.status == "SUCCESS" and command.status in {
+        "EXECUTED_OPEN",
+        "PARTIAL_TP1_DONE",
+        "PARTIAL_TP2_DONE",
+    }:
+        return "OPEN_OR_MANAGED"
+    return "REVIEW_REQUIRED"
+
+
+def provider_history(db: Session, provider_id: str, limit: int = 50) -> list[dict]:
+    """Complete tenant-scoped evidence timeline for recent commands."""
+    rows: list[dict] = []
+    commands = list_provider_commands(db, provider_id, limit=limit)
+    for command in commands:
+        execution = db.scalar(
+            select(models.Execution).where(
+                models.Execution.command_id == command.id
+            )
+        )
+        events = list(
+            db.scalars(
+                select(models.TradeManagementEvent)
+                .where(models.TradeManagementEvent.command_id == command.id)
+                .order_by(models.TradeManagementEvent.created_at.asc())
+            ).all()
+        )
+        ledger = db.scalar(
+            select(models.PerformanceLedger).where(
+                models.PerformanceLedger.command_id == command.id
+            )
+        )
+        signal = db.get(models.Signal, command.signal_id)
+        rows.append(
+            {
+                "command_id": command.id,
+                "signal_id": command.signal_id,
+                "feed_id": command.feed_id,
+                "account_id": command.account_id,
+                "user_id": command.user_id,
+                "symbol": command.symbol,
+                "direction": command.direction,
+                "command_status": command.status,
+                "created_at": command.created_at,
+                "processed_at": command.processed_at,
+                "reconciliation_state": _reconciliation_state(command, execution),
+                "signal": {
+                    "parser_status": signal.parser_status if signal else None,
+                    "source": signal.source if signal else None,
+                    "created_at": signal.created_at if signal else None,
+                },
+                "execution": (
+                    {
+                        "status": execution.status,
+                        "broker_ticket": execution.broker_ticket,
+                        "executed_symbol": execution.executed_symbol,
+                        "executed_price": execution.executed_price,
+                        "lot_size": execution.lot_size,
+                        "slippage": execution.slippage,
+                        "created_at": execution.created_at,
+                    }
+                    if execution
+                    else None
+                ),
+                "management_events": [
+                    {
+                        "event_type": event.event_type,
+                        "stage": event.stage,
+                        "result": event.result,
+                        "price": event.price,
+                        "created_at": event.created_at,
+                    }
+                    for event in events
+                ],
+                "ledger": (
+                    {
+                        "result_status": ledger.result_status,
+                        "r_result": ledger.r_result,
+                        "final_notes": ledger.final_notes,
+                    }
+                    if ledger
+                    else None
+                ),
+            }
+        )
+    return rows
+
+
+def bootstrap_demo_tenant(db: Session) -> dict:
+    """Idempotently provision a provider/feed/subscriber demo bundle.
+
+    A fresh provider credential is issued on each call because raw credentials
+    are intentionally never recoverable from storage.
+    """
+    org = db.scalar(
+        select(models.Organization).where(
+            models.Organization.slug == "signalgate-demo"
+        )
+    )
+    if org is None:
+        org = create_organization(db, "SignalGate Demo", "signalgate-demo")
+
+    provider = db.scalar(
+        select(models.Provider).where(
+            models.Provider.organization_id == org.id,
+            models.Provider.slug == "demo-provider",
+        )
+    )
+    if provider is None:
+        provider = create_provider(
+            db,
+            org.id,
+            "Demo Signal Provider",
+            "demo-provider",
+        )
+        provider.brand_display_name = "Demo Signal Provider"
+        provider.brand_primary_color = "#111827"
+
+    feed = db.scalar(
+        select(models.Feed).where(
+            models.Feed.provider_id == provider.id,
+            models.Feed.source_namespace == "DEMO_FEED",
+        )
+    )
+    if feed is None:
+        feed = create_feed(db, provider, "Demo Feed", "DEMO_FEED")
+
+    user = get_user_by_telegram(db, "demo-subscriber")
+    if user is None:
+        user = register_user(
+            db,
+            telegram_user_id="demo-subscriber",
+            telegram_username="demo_subscriber",
+            first_name="Demo Subscriber",
+        )
+    subscription, account = subscribe_user_to_feed(db, provider, feed, user)
+    credential, raw_key = issue_provider_credential(db, provider, "demo-bootstrap")
+    db.flush()
+    add_audit(
+        db,
+        "DEMO_TENANT_BOOTSTRAPPED",
+        "provider",
+        provider.id,
+        {
+            "feed_id": feed.id,
+            "user_id": user.id,
+            "account_id": account.id,
+            "subscription_id": subscription.id,
+            "credential_id": credential.id,
+        },
+    )
+    return {
+        "provider": provider,
+        "feed": feed,
+        "user": user,
+        "account": account,
+        "provider_api_key": raw_key,
+    }
+
+
 # --- Users ----------------------------------------------------------------
 
 def register_user(
