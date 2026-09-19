@@ -72,3 +72,90 @@ def test_ea_continuously_reconciles_open_broker_positions():
     assert "if(open_sg_commands > 0)" in timer
     assert "PollPendingCommand()" in timer
     assert timer.index("if(open_sg_commands > 0)") < timer.index("PollPendingCommand()")
+
+
+
+def test_ea_child_position_ownership_uses_exact_command_comment():
+    assert 'comment == "SG:" + command_id' in EA
+    assert 'PositionGetString(POSITION_COMMENT) != "SG:" + command_id' in EA
+    count = EA.split("int CountOpenChildren(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    move = EA.split("bool MoveRemainingSL(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    close = EA.split("void CloseAllChildren(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert "StringFind(comment, command_id)" not in count
+    assert "StringFind(PositionGetString(POSITION_COMMENT), command_id)" not in move
+    assert "StringFind(PositionGetString(POSITION_COMMENT), command_id)" not in close
+
+
+def test_ea_never_increases_configured_lot_to_broker_minimum_or_step():
+    block = EA.split("bool NormalizeLot(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert "if(lot < minlot || lot > maxlot)" in block
+    assert "return(false);" in block
+    assert "MathFloor" in block
+    assert "MathRound" not in block
+    assert "lot = minlot" not in block
+    assert "lot = maxlot" not in block
+
+
+def test_execution_report_uses_actual_broker_filled_volume_and_weighted_price():
+    split = EA.split("bool ExecuteSplitTicket(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    single = EA.split("bool ExecuteSingleTicket(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    report = EA.split("void ReportExecutionSuccess(", 1)[1].split(
+        "void ReportManagementEvent(", 1
+    )[0]
+    assert "trade.ResultVolume()" in split
+    assert "weighted_exec_price" in split
+    assert "weighted_exec_price / executed_lot" in split
+    assert "trade.ResultVolume()" in single
+    assert "const double executed_lot" in report
+    assert '"lot_size\":" + DoubleToString(executed_lot, 8)' in report
+    assert "TP1Lot + TP2Lot + TP3Lot" not in report
+
+
+def test_execution_report_uses_executed_symbol_precision():
+    report = EA.split("void ReportExecutionSuccess(", 1)[1].split(
+        "void ReportManagementEvent(", 1
+    )[0]
+    assert "SymbolInfoInteger(symbol, SYMBOL_DIGITS)" in report
+    assert "DoubleToString(exec_price, digits)" in report
+    assert "DoubleToString(sl, digits)" in report
+
+
+def test_ea_fails_closed_if_backend_does_not_acknowledge_command():
+    process = EA.split("void ProcessCommand(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    ack = EA.split("bool AckReceived(", 1)[1].split(
+        "void SendHeartbeat(", 1
+    )[0]
+    assert "if(!AckReceived(command_id))" in process
+    assert "refusing broker execution" in process
+    assert "g_last_http_code >= 200 && g_last_http_code < 300" in ack
+
+
+def test_http_helpers_reject_non_2xx_responses():
+    http = EA.split("string HttpGet(", 1)[1].split(
+        "//+------------------------------------------------------------------+\n//| Backend calls", 1
+    )[0]
+    assert http.count("code < 200 || code >= 300") >= 2
+    assert "g_last_http_code = code" in http
+
+
+def test_broker_suffix_resolution_refuses_ambiguous_matches():
+    block = EA.split("string ResolveBrokerSymbol(", 1)[1].split(
+        "bool ExecutionFilled(", 1
+    )[0]
+    assert "matches != 1" in block
+    assert "Ambiguous broker symbol suffix match" in block
+    assert "refusing to guess" in block
