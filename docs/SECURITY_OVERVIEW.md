@@ -12,7 +12,7 @@ Every provider-facing feed, subscriber, signal and command query is server-side 
 
 ### Customer EA identity
 
-The EA uses a platform EA API key plus the customer's licence in headers. Hosted callbacks are bound to the customer that owns the command. Licence secrets are not placed in URLs.
+The EA uses a platform EA API key plus the customer's licence in headers. Customer licences are returned only at issuance/rotation and stored as SHA-256 hash + last four; admin listings never expose the raw key. Hosted callbacks are bound to the customer that owns the command. Licence secrets are not placed in URLs.
 
 ### Admin/bot boundaries
 
@@ -71,3 +71,8 @@ Before G8 passes:
 ## Scope
 
 Current repository policy remains demo-only. Nothing in this overview authorises live retail trading.
+
+
+## Credential migration evidence
+
+Migration `20260919_0007` hashes legacy customer EA licences, stores last-four metadata, and NULLs the historical plaintext column. PostgreSQL CI seeds a legacy plaintext credential at the prior revision and proves the upgrade removes it. Historical backups created before that migration must still be treated as credential-bearing until their reviewed retention period ends.
