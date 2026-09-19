@@ -13,6 +13,7 @@ from ..schemas import (
     DemoTenantOut,
     FeedCreate,
     FeedOut,
+    FeedPolicyUpdate,
     OrganizationCreate,
     ProviderBrandingUpdate,
     ProviderCreate,
@@ -200,6 +201,74 @@ def provider_feeds(
     if principal is None:
         return []
     return [FeedOut.model_validate(row) for row in crud.list_provider_feeds(db, principal.provider_id)]
+
+
+@router.post("/providers/me/feeds", response_model=FeedOut)
+def provider_create_feed(
+    payload: FeedCreate,
+    principal: ProviderPrincipal = Depends(require_provider_principal),
+    db: Session = Depends(get_db),
+) -> FeedOut:
+    if principal is None:
+        raise HTTPException(status_code=400, detail="Tenant principal required")
+    provider = crud.get_provider(db, principal.provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    try:
+        feed = crud.create_feed(
+            db,
+            provider,
+            payload.name,
+            payload.source_namespace,
+        )
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+    db.commit()
+    return FeedOut.model_validate(feed)
+
+
+@router.put("/providers/me/feeds/{feed_id}", response_model=FeedOut)
+def provider_update_feed(
+    feed_id: str,
+    payload: FeedPolicyUpdate,
+    principal: ProviderPrincipal = Depends(require_provider_principal),
+    db: Session = Depends(get_db),
+) -> FeedOut:
+    if principal is None:
+        raise HTTPException(status_code=400, detail="Tenant principal required")
+    feed = crud.get_feed_for_provider(db, principal.provider_id, feed_id)
+    if feed is None:
+        raise HTTPException(status_code=404, detail="Feed not found")
+    try:
+        feed = crud.update_feed_policy(
+            db,
+            feed,
+            payload.model_dump(exclude_unset=True),
+        )
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+    db.commit()
+    return FeedOut.model_validate(feed)
+
+
+@router.post("/providers/me/credentials/rotate", response_model=ProviderCredentialOut)
+def provider_rotate_credential(
+    principal: ProviderPrincipal = Depends(require_provider_principal),
+    db: Session = Depends(get_db),
+) -> ProviderCredentialOut:
+    if principal is None:
+        raise HTTPException(status_code=400, detail="Tenant principal required")
+    provider = crud.get_provider(db, principal.provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    credential, raw_key = crud.rotate_provider_credential(db, provider)
+    db.commit()
+    return ProviderCredentialOut(
+        provider_id=provider.id,
+        credential_id=credential.id,
+        api_key=raw_key,
+        label=credential.label,
+    )
 
 
 @router.post("/providers/me/subscriptions", response_model=SubscriptionOut)
