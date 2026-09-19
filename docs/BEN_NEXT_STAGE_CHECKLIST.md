@@ -4,7 +4,7 @@ The repository build is no longer the bottleneck. The frozen demo-only release c
 
 - branch target: `release/signalgate-demo-rc2-2026-09-19`
 - RC2 runtime/tooling candidate: `852a6bc9ca9f0651b34e87b63e86c65669130767`
-- final runtime/tooling CI: run **#134** / GitHub run `35459129106` — **PENDING_FINAL**
+- final runtime/tooling CI: run **#134** / GitHub run `35459129106` — **SUCCESS**
 - RC1 remains preserved only as historical evidence.
 
 Do not change the frozen RC while collecting acceptance evidence.
