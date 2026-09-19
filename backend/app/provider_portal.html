@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SignalGate Provider Portal</title>
+<style>
+:root{--brand:#111827;--bg:#f5f6f8;--card:#fff;--text:#111827;--muted:#667085;--line:#e5e7eb}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
+header{background:var(--brand);color:#fff;padding:18px 24px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:2}
+header img{width:34px;height:34px;object-fit:contain;border-radius:6px;background:#fff}header h1{font-size:18px;margin:0}header span{opacity:.75}
+main{max-width:1180px;margin:0 auto;padding:24px}.grid{display:grid;gap:16px}.metrics{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.metric strong{display:block;font-size:26px}.metric span,.muted{color:var(--muted)}
+h2{font-size:17px;margin:0 0 14px}h3{font-size:15px;margin:0 0 10px}
+input,button,textarea{font:inherit}input,textarea{width:100%;border:1px solid #d0d5dd;border-radius:8px;padding:9px 10px;background:#fff}
+label{display:block;font-weight:600;margin:9px 0 5px}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.row>div{flex:1;min-width:170px}
+button{border:0;border-radius:8px;padding:9px 13px;cursor:pointer;background:var(--brand);color:#fff;font-weight:650}
+button.secondary{background:#fff;color:var(--text);border:1px solid #d0d5dd}button.danger{background:#b42318}button:disabled{opacity:.5;cursor:not-allowed}
+.auth{max-width:620px;margin:35px auto}.hidden{display:none!important}.section{margin-top:18px}.feed{display:grid;grid-template-columns:1fr auto;gap:14px;border-top:1px solid var(--line);padding:14px 0}.feed:first-child{border-top:0}
+.badge{display:inline-block;padding:3px 8px;border-radius:999px;background:#eef2f6;font-size:12px}.ok{background:#ecfdf3;color:#027a48}.warn{background:#fffaeb;color:#b54708}.bad{background:#fef3f2;color:#b42318}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600}
+code{font-size:12px}.error{background:#fef3f2;color:#b42318;padding:10px;border-radius:8px;margin:10px 0}.success{background:#ecfdf3;color:#027a48;padding:10px;border-radius:8px;margin:10px 0}
+.two{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}@media(max-width:600px){main{padding:14px}header{padding:14px}.feed{grid-template-columns:1fr}table{display:block;overflow:auto}}
+</style>
+</head>
+<body>
+<header>
+  <img id="brandLogo" class="hidden" alt="">
+  <div><h1 id="brandTitle">SignalGate Provider Portal</h1><span id="brandSupport">Controlled execution evidence</span></div>
+</header>
+<main>
+  <section id="authCard" class="card auth">
+    <h2>Connect your provider tenant</h2>
+    <p class="muted">Credentials are kept only in this page's memory. They are not put in the URL or stored in the browser.</p>
+    <div id="authError"></div>
+    <label for="providerId">Provider ID</label><input id="providerId" autocomplete="off">
+    <label for="providerKey">Provider API key</label><input id="providerKey" type="password" autocomplete="off">
+    <div style="margin-top:14px"><button id="connectBtn">Connect</button></div>
+  </section>
+
+  <div id="portal" class="hidden">
+    <div id="notice"></div>
+    <section class="grid metrics" id="metrics"></section>
+
+    <section class="grid two section">
+      <div class="card">
+        <h2>Provider controls</h2>
+        <div id="providerState"></div>
+        <div class="row" style="margin-top:12px">
+          <button id="providerPause">Pause provider</button>
+          <button id="rotateKey" class="secondary">Rotate API key</button>
+          <button id="disconnect" class="secondary">Disconnect</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Branding</h2>
+        <label>Display name</label><input id="brandName">
+        <label>Logo URL</label><input id="brandLogoUrl" placeholder="https://…">
+        <div class="row">
+          <div><label>Primary colour</label><input id="brandColor" placeholder="#111827"></div>
+          <div><label>Support contact</label><input id="supportContact"></div>
+        </div>
+        <div style="margin-top:12px"><button id="saveBrand">Save branding</button></div>
+      </div>
+    </section>
+
+    <section class="grid two section">
+      <div class="card">
+        <h2>Create feed</h2>
+        <label>Name</label><input id="feedName" placeholder="Main signals">
+        <label>Source namespace</label><input id="feedNamespace" placeholder="telegram-main">
+        <div style="margin-top:12px"><button id="createFeed">Create feed</button></div>
+      </div>
+      <div class="card">
+        <h2>Attach subscriber</h2>
+        <label>Feed</label><select id="subscriberFeed" style="width:100%;padding:9px;border:1px solid #d0d5dd;border-radius:8px"></select>
+        <label>Registered Telegram user ID</label><input id="subscriberTelegram" placeholder="123456789">
+        <div style="margin-top:12px"><button id="subscribeUser">Attach subscriber</button></div>
+      </div>
+    </section>
+
+    <section class="card section">
+      <h2>Feeds & policy</h2>
+      <div id="feeds"></div>
+    </section>
+
+    <section class="card section">
+      <h2>Execution & reconciliation history</h2>
+      <div class="muted" style="margin-bottom:10px">Every row is tenant-scoped. “Review required” is surfaced rather than hidden.</div>
+      <div style="overflow:auto"><table>
+        <thead><tr><th>Created</th><th>Symbol</th><th>Command</th><th>Execution</th><th>Reconciliation</th><th>Ledger</th><th>Events</th></tr></thead>
+        <tbody id="history"></tbody>
+      </table></div>
+    </section>
+  </div>
+</main>
+<script>
+let providerId="", apiKey="", provider=null, feeds=[];
+const $=id=>document.getElementById(id);
+const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+async function api(path, options={}){
+  const headers={...(options.headers||{}),"X-Provider-Id":providerId,"X-Provider-API-Key":apiKey};
+  if(options.body && !headers["Content-Type"]) headers["Content-Type"]="application/json";
+  const response=await fetch(path,{...options,headers});
+  let body=null; try{body=await response.json()}catch{body={detail:await response.text()}}
+  if(!response.ok) throw new Error(body?.detail||("HTTP "+response.status));
+  return body;
+}
+function notice(text,type="success"){ $("notice").innerHTML=text?'<div class="'+type+'">'+esc(text)+'</div>':""; }
+function reconciliationBadge(state){
+  const cls=state==="REVIEW_REQUIRED"?"bad":state?.startsWith("RECONCILED")?"ok":"warn";
+  return '<span class="badge '+cls+'">'+esc(state||"-")+'</span>';
+}
+async function connect(){
+  providerId=$("providerId").value.trim(); apiKey=$("providerKey").value.trim();
+  $("authError").innerHTML="";
+  try{
+    provider=await api("/providers/me");
+    $("authCard").classList.add("hidden"); $("portal").classList.remove("hidden");
+    await refresh();
+  }catch(err){ $("authError").innerHTML='<div class="error">'+esc(err.message)+'</div>'; providerId="";apiKey=""; }
+}
+async function refresh(){
+  const [overview,feedRows,history]=await Promise.all([
+    api("/providers/me/overview"),api("/providers/me/feeds"),api("/providers/me/history?limit=100")
+  ]);
+  provider=overview.provider; feeds=feedRows; applyBrand(); renderMetrics(overview); renderProvider(); renderFeeds(); renderHistory(history.history||[]);
+}
+function applyBrand(){
+  const color=provider.brand_primary_color||"#111827"; document.documentElement.style.setProperty("--brand",color);
+  $("brandTitle").textContent=provider.brand_display_name||provider.name||"SignalGate Provider Portal";
+  $("brandSupport").textContent=provider.support_contact||"Controlled execution evidence";
+  $("brandName").value=provider.brand_display_name||"";
+  $("brandLogoUrl").value=provider.brand_logo_url||"";
+  $("brandColor").value=color; $("supportContact").value=provider.support_contact||"";
+  if(provider.brand_logo_url){$("brandLogo").src=provider.brand_logo_url;$("brandLogo").classList.remove("hidden")}else{$("brandLogo").classList.add("hidden")}
+}
+function renderMetrics(o){
+  const items=[["Feeds",o.feed_count],["Active subscribers",o.active_subscribers],["Active accounts",o.active_accounts],["Signals",o.signal_count],["Commands",o.command_count]];
+  $("metrics").innerHTML=items.map(([k,v])=>'<div class="card metric"><strong>'+esc(v)+'</strong><span>'+esc(k)+'</span></div>').join("");
+}
+function renderProvider(){
+  $("providerState").innerHTML='<strong>'+esc(provider.name)+'</strong><div class="muted"><code>'+esc(provider.id)+'</code> · '+esc(provider.status)+' · '+(provider.paused?'<span class="badge bad">PAUSED</span>':'<span class="badge ok">ACTIVE</span>')+'</div>';
+  $("providerPause").textContent=provider.paused?"Resume provider":"Pause provider";
+  $("providerPause").className=provider.paused?"":"danger";
+}
+function feedSymbols(f){try{return f.allowed_symbols_json?JSON.parse(f.allowed_symbols_json).join(", "):""}catch{return""}}
+function renderFeeds(){
+  $("subscriberFeed").innerHTML=feeds.map(f=>'<option value="'+esc(f.id)+'">'+esc(f.name)+'</option>').join("");
+  $("feeds").innerHTML=feeds.length?feeds.map(f=>'<div class="feed"><div><h3>'+esc(f.name)+' '+(f.paused?'<span class="badge bad">PAUSED</span>':'<span class="badge ok">ACTIVE</span>')+'</h3><div class="muted"><code>'+esc(f.id)+'</code> · '+esc(f.source_namespace)+'</div><div class="row"><div><label>Allowed symbols</label><input id="symbols-'+esc(f.id)+'" value="'+esc(feedSymbols(f))+'" placeholder="EURUSD, GBPJPY, XAUUSD"></div><div><label>Expiry minutes</label><input id="expiry-'+esc(f.id)+'" type="number" min="1" max="1440" value="'+esc(f.expiry_minutes||5)+'"></div><div><label>Default lot</label><input id="lot-'+esc(f.id)+'" type="number" step="0.01" min="0.01" value="'+esc(f.default_lot_size||0.01)+'"></div></div></div><div><button onclick="saveFeed(\''+esc(f.id)+'\')">Save</button> <button class="'+(f.paused?'secondary':'danger')+'" onclick="pauseFeed(\''+esc(f.id)+'\','+(!f.paused)+')">'+(f.paused?'Resume':'Pause')+'</button> <button class="secondary" onclick="showSubscribers(\''+esc(f.id)+'\')">Subscribers</button></div></div>').join(""):'<div class="muted">No feeds yet.</div>';
+}
+async function saveFeed(id){
+  const raw=$("symbols-"+id).value.trim();
+  const payload={allowed_symbols:raw?raw.split(",").map(x=>x.trim()).filter(Boolean):null,expiry_minutes:Number($("expiry-"+id).value),default_lot_size:Number($("lot-"+id).value)};
+  try{await api("/providers/me/feeds/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify(payload)});notice("Feed policy saved.");await refresh()}catch(err){notice(err.message,"error")}
+}
+async function pauseFeed(id,paused){try{await api("/providers/me/feeds/"+encodeURIComponent(id)+"/pause?paused="+paused,{method:"POST"});await refresh()}catch(err){notice(err.message,"error")}}
+async function showSubscribers(id){try{const r=await api("/providers/me/subscribers?feed_id="+encodeURIComponent(id));alert((r.subscribers||[]).map(x=>(x.first_name||x.telegram_username||x.telegram_user_id)+" ("+x.telegram_user_id+")").join("\n")||"No active subscribers")}catch(err){notice(err.message,"error")}}
+function renderHistory(rows){
+  $("history").innerHTML=rows.length?rows.map(r=>'<tr><td>'+esc(r.created_at||"")+'</td><td><strong>'+esc(r.symbol)+'</strong><br><span class="muted">'+esc(r.direction)+'</span></td><td>'+esc(r.command_status)+'<br><code>'+esc(r.command_id)+'</code></td><td>'+(r.execution?esc(r.execution.status)+'<br><span class="muted">'+esc(r.execution.broker_ticket||"no ticket")+'</span>':'—')+'</td><td>'+reconciliationBadge(r.reconciliation_state)+'</td><td>'+(r.ledger?esc(r.ledger.result_status)+'<br><span class="muted">R '+esc(r.ledger.r_result??"—")+'</span>':'—')+'</td><td>'+esc((r.management_events||[]).length)+'</td></tr>').join(""):'<tr><td colspan="7" class="muted">No command history yet.</td></tr>';
+}
+$("connectBtn").onclick=connect;
+$("disconnect").onclick=()=>location.reload();
+$("providerPause").onclick=async()=>{try{await api("/providers/me/pause?paused="+(!provider.paused),{method:"POST"});await refresh()}catch(err){notice(err.message,"error")}};
+$("rotateKey").onclick=async()=>{if(!confirm("Rotate this provider API key? The current key will stop working immediately."))return;try{const r=await api("/providers/me/credentials/rotate",{method:"POST"});apiKey=r.api_key;$("providerKey").value=apiKey;notice("API key rotated. Copy the new key now; SignalGate will not show it again.");await refresh()}catch(err){notice(err.message,"error")}};
+$("saveBrand").onclick=async()=>{try{provider=await api("/providers/me/branding",{method:"PUT",body:JSON.stringify({display_name:$("brandName").value.trim()||null,logo_url:$("brandLogoUrl").value.trim()||null,primary_color:$("brandColor").value.trim()||null,support_contact:$("supportContact").value.trim()||null})});applyBrand();notice("Branding saved.")}catch(err){notice(err.message,"error")}};
+$("createFeed").onclick=async()=>{try{await api("/providers/me/feeds",{method:"POST",body:JSON.stringify({name:$("feedName").value.trim(),source_namespace:$("feedNamespace").value.trim()})});$("feedName").value="";$("feedNamespace").value="";notice("Feed created.");await refresh()}catch(err){notice(err.message,"error")}};
+$("subscribeUser").onclick=async()=>{try{await api("/providers/me/subscriptions",{method:"POST",body:JSON.stringify({feed_id:$("subscriberFeed").value,telegram_user_id:$("subscriberTelegram").value.trim()})});$("subscriberTelegram").value="";notice("Subscriber attached.");await refresh()}catch(err){notice(err.message,"error")}};
+</script>
+</body>
+</html>
