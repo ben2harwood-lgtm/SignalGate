@@ -7,6 +7,36 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+# --- Provider tenancy ------------------------------------------------------
+
+class ProviderOrganizationCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ProviderFeedCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    source_namespace: str = Field(min_length=1, max_length=200)
+
+
+class ProviderCredentialIssue(BaseModel):
+    role: Literal["OPERATOR", "VIEWER"] = "OPERATOR"
+
+
+class ProviderFeedOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    organization_id: str
+    name: str
+    source_namespace: str
+    status: str
+    paused: bool
+
+
+class ProviderSubscriptionRequest(BaseModel):
+    telegram_user_id: str
+
+
 # --- Users ----------------------------------------------------------------
 
 class RegisterUserRequest(BaseModel):
@@ -39,6 +69,7 @@ class SignalOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    feed_id: Optional[str] = None
     source: str
     raw_text: str
     symbol: Optional[str] = None
