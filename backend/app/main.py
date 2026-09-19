@@ -1,11 +1,14 @@
 """FastAPI application entrypoint for SignalGate backend."""
 from __future__ import annotations
 
+import json
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 
 from .config import get_settings
@@ -14,6 +17,7 @@ from .routes import admin, commands, ea, health, providers, signals, users
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("signalgate")
+request_logger = logging.getLogger("signalgate.request")
 settings = get_settings()
 
 # Default settings seeded on first run.
@@ -67,6 +71,51 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=_lifespan,
     )
+
+    @app.middleware("http")
+    async def _request_observability(request: Request, call_next):
+        request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+        started = time.perf_counter()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+        except Exception:
+            latency_ms = round((time.perf_counter() - started) * 1000, 3)
+            request_logger.exception(
+                json.dumps(
+                    {
+                        "event": "http_request",
+                        "request_id": request_id,
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status": status_code,
+                        "latency_ms": latency_ms,
+                    },
+                    separators=(",", ":"),
+                )
+            )
+            raise
+
+        latency_ms = round((time.perf_counter() - started) * 1000, 3)
+        response.headers["X-Request-Id"] = request_id
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        request_logger.info(
+            json.dumps(
+                {
+                    "event": "http_request",
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": status_code,
+                    "latency_ms": latency_ms,
+                },
+                separators=(",", ":"),
+            )
+        )
+        return response
 
     @app.get("/", include_in_schema=False)
     def _root() -> RedirectResponse:
