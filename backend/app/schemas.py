@@ -45,6 +45,16 @@ class FeedOut(BaseModel):
     source_namespace: str
     status: str
     paused: bool
+    allowed_symbols_json: Optional[str] = None
+    expiry_minutes: Optional[int] = None
+    default_lot_size: Optional[float] = None
+
+
+class FeedPolicyUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    allowed_symbols: Optional[list[str]] = None
+    expiry_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
+    default_lot_size: Optional[float] = Field(default=None, gt=0, le=100)
 
 
 class ProviderOut(BaseModel):
@@ -56,6 +66,29 @@ class ProviderOut(BaseModel):
     slug: str
     status: str
     paused: bool
+    brand_display_name: Optional[str] = None
+    brand_logo_url: Optional[str] = None
+    brand_primary_color: Optional[str] = None
+    support_contact: Optional[str] = None
+
+
+class ProviderBrandingUpdate(BaseModel):
+    display_name: Optional[str] = Field(default=None, max_length=120)
+    logo_url: Optional[str] = Field(default=None, max_length=500)
+    primary_color: Optional[str] = Field(
+        default=None,
+        pattern=r"^#[0-9A-Fa-f]{6}$",
+    )
+    support_contact: Optional[str] = Field(default=None, max_length=200)
+
+
+class DemoTenantOut(BaseModel):
+    provider_id: str
+    provider_api_key: str
+    feed_id: str
+    user_id: str
+    telegram_user_id: str
+    license_key: Optional[str] = None
 
 
 class SubscriptionCreate(BaseModel):
@@ -75,8 +108,9 @@ class ProviderOverview(BaseModel):
     provider: ProviderOut
     feed_count: int
     active_subscribers: int
-    recent_signal_count: int
-    recent_command_count: int
+    active_accounts: int
+    signal_count: int
+    command_count: int
 
 
 # --- Users ----------------------------------------------------------------
