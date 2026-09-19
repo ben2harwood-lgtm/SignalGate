@@ -31,3 +31,8 @@ Credentials, authentication headers and request query values must never be inclu
 - service secrets: rotate in the deployment secret store using the incident/runbook process.
 
 A database downgrade across the customer-licence hashing migration cannot reconstruct old raw credentials. After such a rollback, customer licences must be reissued.
+
+
+## Historical backups
+
+Database backups created before migration `20260919_0007` may contain legacy plaintext customer licences. Treat those artifacts as credential-bearing until they expire or are securely destroyed under the reviewed retention policy. Backups created after the migration contain the hash/last-four representation, subject to the normal encrypted-backup controls.
