@@ -138,6 +138,15 @@ def ledger(
     }
 
 
+@router.get("/audit/verify")
+def verify_audit(
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+) -> dict:
+    """Verify the complete tamper-evident audit hash chain."""
+    return crud.verify_audit_chain(db)
+
+
 @router.get("/metrics")
 def metrics(
     db: Session = Depends(get_db),
