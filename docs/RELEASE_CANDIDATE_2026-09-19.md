@@ -8,7 +8,7 @@
 - Integrated CI workflow: `SignalGate CI`
 - Combined runtime/tooling CI run: **#134**
 - GitHub Actions run id: `35459129106`
-- Result: **PENDING_FINAL**
+- Result: **SUCCESS**
 - Operating mode: **demo-only**
 
 This receipt records repository evidence. It does **not** claim that external/manual gates are complete.
@@ -39,7 +39,7 @@ RC2 adds no real-money or automatic-copy mode. It improves how safely and reprod
 
 ## Machine evidence
 
-The final RC2 runtime/tooling candidate is not accepted until CI run #134 is recorded as SUCCESS.
+CI run #134 completed **SUCCESS** at the exact RC2 runtime/tooling SHA.
 
 The same CI matrix covers:
 
@@ -55,7 +55,7 @@ The same CI matrix covers:
 - hosted container build;
 - encrypted PostgreSQL backup + checksum + isolated restore smoke.
 
-The safe-provisioning branch immediately before final integration passed **170 tests on SQLite and 170 tests on PostgreSQL**, with only two upstream framework deprecation warnings. The final combined runtime/tooling CI run #134 is the authoritative integration receipt.
+The safe-provisioning branch passed **170 tests on SQLite and 170 tests on PostgreSQL**. After the bundle-integrity tests were integrated, final combined CI run #134 passed **172 tests on SQLite and 172 tests on PostgreSQL**, with only two upstream framework deprecation warnings. Run #134 is the authoritative runtime/tooling integration receipt.
 
 The versioned database chain reaches `20260919_0010_audit_hash_chain`.
 
@@ -161,6 +161,6 @@ RC2 does **not** prove:
 
 ## RC2 decision
 
-Once run #134 is recorded **SUCCESS** and the documentation-only RC2 freeze itself is green, this candidate is suitable to proceed to the external/manual acceptance sequence.
+Run #134 is **SUCCESS**. Once the documentation-only RC2 freeze itself is green and the named RC2 release branch is pinned, this candidate is suitable to proceed to the external/manual acceptance sequence.
 
 Do not enable UK retail real-money trading or automatic copy execution from RC2.
