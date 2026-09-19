@@ -7,7 +7,7 @@ SignalGate is provider-agnostic, human-authorised signal-execution infrastructur
 The current release candidate is DEMO ONLY. Do not use a live trading account.
 
 Frozen demo RC:
-    release/signalgate-demo-rc-2026-09-19
+    release/signalgate-demo-rc2-2026-09-19
 
 Start here:
     README.md
