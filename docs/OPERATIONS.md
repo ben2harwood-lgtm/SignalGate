@@ -46,3 +46,8 @@ Load balancers should use `/readyz`; process supervisors may use `/livez`.
 - production rollback exercise.
 
 Do not mark G6 complete until those have actual receipts.
+
+
+## Observability and alerting
+
+See `docs/OBSERVABILITY.md` for the structured request-log contract, protected metrics, pre-production SLO targets and alert defaults. A deployed beta still needs a central log/metrics backend and alert routing before G6 is fully accepted.
