@@ -1,0 +1,14 @@
+.git
+.github
+.env
+*.db
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+site-mockups/
+docs/
+mt5_ea/
+telegram_bot/
+simulator/
