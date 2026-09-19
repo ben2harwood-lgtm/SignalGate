@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import zipfile
 from pathlib import Path
 from typing import Iterable
@@ -85,6 +86,20 @@ def _normalise_paths(paths: Iterable[str]) -> tuple[str, ...]:
     return ordered
 
 
+def _git_head(repo_root: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    head = result.stdout.strip().lower()
+    return head if FULL_SHA_RE.fullmatch(head) else None
+
+
 def build_bundle(
     *,
     repo_root: Path,
@@ -92,12 +107,25 @@ def build_bundle(
     candidate_sha: str,
     profile: str,
     paths: Iterable[str] | None = None,
+    verify_source: bool = True,
 ) -> dict:
     """Build one deterministic ZIP and return its manifest."""
     if not FULL_SHA_RE.fullmatch(candidate_sha):
         raise ValueError("candidate_sha must be an exact 40-character lowercase hex commit SHA")
     if profile not in PROFILES and paths is None:
         raise ValueError(f"unknown profile: {profile}")
+
+    source_head = _git_head(repo_root)
+    if verify_source:
+        if source_head is None:
+            raise RuntimeError(
+                "repo_root is not a verifiable Git checkout; use a candidate checkout "
+                "or pass verify_source=False explicitly"
+            )
+        if source_head != candidate_sha:
+            raise ValueError(
+                f"candidate_sha {candidate_sha} does not match repo HEAD {source_head}"
+            )
 
     selected = _normalise_paths(paths if paths is not None else PROFILES[profile])
     files: list[tuple[str, bytes]] = []
@@ -111,6 +139,8 @@ def build_bundle(
         "schema": "signalgate-acceptance-bundle-v1",
         "candidate_sha": candidate_sha,
         "profile": profile,
+        "source_tree_verified": bool(verify_source and source_head == candidate_sha),
+        "source_head": source_head,
         "files": [
             {"path": name, "sha256": _sha256(data), "bytes": len(data)}
             for name, data in files
@@ -136,6 +166,11 @@ def main() -> int:
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--allow-unverified-source",
+        action="store_true",
+        help="Allow packaging a non-Git/unmatched source tree; manifest records it unverified.",
+    )
     args = parser.parse_args()
 
     output = args.output or (
@@ -148,6 +183,7 @@ def main() -> int:
         output_path=output.resolve(),
         candidate_sha=args.candidate_sha,
         profile=args.profile,
+        verify_source=not args.allow_unverified_source,
     )
     print(f"bundle={output}")
     print(f"profile={manifest['profile']}")
