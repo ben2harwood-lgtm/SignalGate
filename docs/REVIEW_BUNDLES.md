@@ -6,13 +6,19 @@ The builder deliberately does **not** crawl the repository. Each profile contain
 
 ## Command
 
-From the repository root:
+Check out the exact candidate first, then build from that checkout:
 
 ```bash
+git checkout <candidate-branch-or-sha>
+candidate_sha="$(git rev-parse HEAD)"
 python scripts/build_acceptance_bundle.py \
   --profile mt5 \
-  --candidate-sha 9499f4e7140b887d0a3c1d136bde8398dd276c9d
+  --candidate-sha "$candidate_sha"
 ```
+
+By default the builder verifies that the checked-out Git HEAD exactly equals `--candidate-sha` and fails if it does not. This prevents a later working tree from being mislabeled as an older accepted candidate.
+
+`--allow-unverified-source` exists only for deliberately exported/non-Git source trees. When used, the manifest records `source_tree_verified: false`; do not treat that bundle as candidate-bound evidence without an independent source-integrity receipt.
 
 Profiles:
 
