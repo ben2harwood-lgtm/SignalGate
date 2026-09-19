@@ -45,6 +45,16 @@ class FeedOut(BaseModel):
     source_namespace: str
     status: str
     paused: bool
+    allowed_symbols_json: Optional[str] = None
+    expiry_minutes: Optional[int] = None
+    default_lot_size: Optional[float] = None
+
+
+class FeedPolicyUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    allowed_symbols: Optional[list[str]] = None
+    expiry_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
+    default_lot_size: Optional[float] = Field(default=None, gt=0, le=100)
 
 
 class ProviderOut(BaseModel):
