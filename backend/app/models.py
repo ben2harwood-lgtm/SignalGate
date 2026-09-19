@@ -116,6 +116,40 @@ class User(Base):
     )
 
 
+class ProviderSourceInvite(Base):
+    __tablename__ = "provider_source_invites"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id"), index=True)
+    feed_id: Mapped[str] = mapped_column(ForeignKey("feeds.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String, default="PENDING")
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    accepted_telegram_user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    accepted_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class ProviderSourceBinding(Base):
+    __tablename__ = "provider_source_bindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_type",
+            "external_identity",
+            name="uq_provider_source_external_identity",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id"), index=True)
+    feed_id: Mapped[str] = mapped_column(ForeignKey("feeds.id"), index=True)
+    source_type: Mapped[str] = mapped_column(String, default="TELEGRAM")
+    external_identity: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class SubscriptionInvite(Base):
     __tablename__ = "subscription_invites"
 
