@@ -30,6 +30,7 @@ _PREFIXES = {
     models.Provider: "PRV",
     models.ProviderCredential: "PCR",
     models.Feed: "FED",
+    models.SubscriptionInvite: "INV",
     models.Subscription: "SUB",
     models.TradingAccount: "ACC",
     models.User: "USER",
@@ -357,6 +358,156 @@ def get_trading_account(
             models.TradingAccount.status == "ACTIVE",
         )
     )
+
+
+def generate_subscription_invite_token() -> str:
+    return "sgi_" + secrets.token_urlsafe(24)
+
+
+def hash_subscription_invite_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def create_subscription_invite(
+    db: Session,
+    provider: models.Provider,
+    feed: models.Feed,
+    expires_minutes: int = 1440,
+) -> tuple[models.SubscriptionInvite, str]:
+    if feed.provider_id != provider.id:
+        raise ValueError("Feed does not belong to provider")
+    if provider.status != "ACTIVE" or feed.status != "ACTIVE":
+        raise ValueError("Provider/feed is not active")
+    raw_token = generate_subscription_invite_token()
+    row = models.SubscriptionInvite(
+        id=_next_id(db, models.SubscriptionInvite),
+        provider_id=provider.id,
+        feed_id=feed.id,
+        token_hash=hash_subscription_invite_token(raw_token),
+        status="PENDING",
+        expires_at=utcnow() + dt.timedelta(minutes=expires_minutes),
+    )
+    db.add(row)
+    db.flush()
+    add_audit(
+        db,
+        "SUBSCRIPTION_INVITE_ISSUED",
+        "subscription_invite",
+        row.id,
+        {
+            "provider_id": provider.id,
+            "feed_id": feed.id,
+            "expires_at": row.expires_at,
+        },
+    )
+    return row, raw_token
+
+
+def list_provider_subscription_invites(
+    db: Session, provider_id: str, limit: int = 100
+) -> List[models.SubscriptionInvite]:
+    return list(
+        db.scalars(
+            select(models.SubscriptionInvite)
+            .where(models.SubscriptionInvite.provider_id == provider_id)
+            .order_by(models.SubscriptionInvite.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def revoke_subscription_invite(
+    db: Session,
+    provider_id: str,
+    invite_id: str,
+) -> models.SubscriptionInvite:
+    invite = db.scalar(
+        select(models.SubscriptionInvite).where(
+            models.SubscriptionInvite.id == invite_id,
+            models.SubscriptionInvite.provider_id == provider_id,
+        )
+    )
+    if invite is None:
+        raise ValueError("Invite not found")
+    if invite.status == "ACCEPTED":
+        raise ValueError("Accepted invite cannot be revoked")
+    invite.status = "REVOKED"
+    db.flush()
+    add_audit(
+        db,
+        "SUBSCRIPTION_INVITE_REVOKED",
+        "subscription_invite",
+        invite.id,
+        {"provider_id": provider_id, "feed_id": invite.feed_id},
+    )
+    return invite
+
+
+def accept_subscription_invite(
+    db: Session,
+    raw_token: str,
+    telegram_user_id: str,
+) -> tuple[
+    models.SubscriptionInvite,
+    models.Subscription,
+    models.TradingAccount,
+    models.Provider,
+    models.Feed,
+]:
+    token_hash = hash_subscription_invite_token(raw_token)
+    invite = db.scalar(
+        select(models.SubscriptionInvite).where(
+            models.SubscriptionInvite.token_hash == token_hash
+        )
+    )
+    if invite is None:
+        raise ValueError("Invite not found")
+    if not secrets.compare_digest(token_hash, invite.token_hash):
+        raise ValueError("Invite not found")
+    if invite.status != "PENDING":
+        raise ValueError("Invite is no longer active")
+    if invite.expires_at <= utcnow():
+        invite.status = "EXPIRED"
+        db.flush()
+        add_audit(
+            db,
+            "SUBSCRIPTION_INVITE_EXPIRED",
+            "subscription_invite",
+            invite.id,
+            {"provider_id": invite.provider_id, "feed_id": invite.feed_id},
+        )
+        raise ValueError("Invite has expired")
+
+    provider = get_provider(db, invite.provider_id)
+    feed = get_feed_for_provider(db, invite.provider_id, invite.feed_id)
+    if provider is None or feed is None:
+        raise ValueError("Invite provider/feed no longer exists")
+    if provider.status != "ACTIVE" or feed.status != "ACTIVE":
+        raise ValueError("Invite provider/feed is not active")
+
+    user = get_user_by_telegram(db, telegram_user_id)
+    if user is None or user.status != "ACTIVE":
+        raise ValueError("Subscriber must be registered and active")
+
+    subscription, account = subscribe_user_to_feed(db, provider, feed, user)
+    invite.status = "ACCEPTED"
+    invite.accepted_user_id = user.id
+    invite.accepted_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "SUBSCRIPTION_INVITE_ACCEPTED",
+        "subscription_invite",
+        invite.id,
+        {
+            "provider_id": provider.id,
+            "feed_id": feed.id,
+            "user_id": user.id,
+            "subscription_id": subscription.id,
+            "account_id": account.id,
+        },
+    )
+    return invite, subscription, account, provider, feed
 
 
 def subscribe_user_to_feed(
