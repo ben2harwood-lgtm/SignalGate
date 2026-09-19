@@ -37,7 +37,16 @@ It does not delete historical signal/audit evidence.
 
 ## Local demo compatibility
 
-The historical `SIGNAL_PROVIDER_TELEGRAM_IDS` / `/provider` shared-provider path remains only as a local-demo compatibility route. Hosted Provider Edition should use the tenant source binding flow.
+The historical `SIGNAL_PROVIDER_TELEGRAM_IDS` / `/provider` shared-provider path remains only as a local-demo compatibility route.
+
+When `REQUIRE_LICENSE=true` (hosted Provider Edition):
+
+- the Telegram bot does not register the legacy `/provider` command;
+- configured/local provider ids are not accepted as provider authority;
+- screenshot/signal submission requires an active persisted feed-bound source binding;
+- a direct call into the legacy handler still fails closed and points the user to `/connectprovider`.
+
+Hosted Provider Edition therefore uses only the tenant source-binding flow for provider Telegram submission.
 
 ## Security properties
 
