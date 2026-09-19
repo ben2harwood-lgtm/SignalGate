@@ -3,8 +3,10 @@
 **Receipt id:**  
 **Date/time:**  
 **Operator:**  
-**Candidate branch:**  
-**Candidate/runtime SHA:**  
+**Frozen candidate ref:**  
+**Frozen candidate SHA:**  
+**EA source SHA-256:**  
+**Compile-harness/tooling SHA:**  
 **MetaEditor build/version:**  
 **MetaTrader terminal version:**  
 **Broker/demo environment:**  
@@ -12,10 +14,13 @@
 
 ## Compile receipt
 
-- [ ] Exact candidate EA source used
+- [ ] Candidate ref resolved to the recorded exact SHA
+- [ ] Detached candidate worktree/source used
+- [ ] EA SHA-256 recorded
 - [ ] 0 compile errors
 - [ ] 0 compile warnings
-- [ ] Compiler log/screenshot retained
+- [ ] Raw MetaEditor compiler log retained
+- [ ] Automated receipt JSON/Markdown retained (when harness is used)
 
 **Controlled evidence reference:**  
 

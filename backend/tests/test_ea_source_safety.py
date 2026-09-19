@@ -56,7 +56,17 @@ def test_ea_continuously_reconciles_open_broker_positions():
     assert "int ReconcileOpenPositions()" in EA
     assert "/reconcile_open_position" in EA
     assert 'StringFind(comment, "SG:") != 0' in EA
-    assert '"broker_tickets"' in EA
+    reconcile = EA.split("int ReconcileOpenPositions()", 1)[1].split(
+        "void ReportExecutionSuccess(", 1
+    )[0]
+    assert 'tickets += "\\\"" + IntegerToString((long)ticket) + "\\\"";' in reconcile
+    assert 'body += "\\\"broker_tickets\\\":[" + tickets + "],";' in reconcile
+    assert 'body += "\\\"executed_symbol\\\":" + JsonEscapeString(symbol) + ",";' in reconcile
+    assert 'body += "\\\"executed_direction\\\":" + JsonEscapeString(direction) + ",";' in reconcile
+    assert 'body += "\\\"executed_price\\\":" + DoubleToString(avg_price, digits) + ",";' in reconcile
+    assert 'body += "\\\"lot_size\\\":" + DoubleToString(total_volume, 8);' in reconcile
+    assert 'body += ",\\\"stop_loss\\\":" + DoubleToString(current_sl, digits);' in reconcile
+    assert '""broker_tickets"' not in reconcile
     timer = EA.split("void OnTimer()", 1)[1].split("//+------------------------------------------------------------------+", 1)[0]
     assert "ReconcileOpenPositions()" in timer
     assert "if(open_sg_commands > 0)" in timer

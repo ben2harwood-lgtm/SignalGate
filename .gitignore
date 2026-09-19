@@ -38,3 +38,6 @@ SignalGate_share.zip
 
 # Local demo-site request log
 site-mockups/demo-requests.jsonl
+
+# Local acceptance evidence (may contain machine/environment details)
+artifacts/mt5-acceptance/

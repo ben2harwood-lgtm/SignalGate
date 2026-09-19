@@ -348,3 +348,25 @@ jobs:
           test "$value" = "survived"
           count="$(psql "$RESTORE_DATABASE_URL" -tA -v ON_ERROR_STOP=1 -c "SELECT COUNT(*) FROM settings;")"
           test "$count" -gt 0
+
+
+  powershell-harness-syntax:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse MT5 evidence PowerShell
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "scripts/capture_mt5_compile_evidence.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          Write-Host "PowerShell syntax OK"
