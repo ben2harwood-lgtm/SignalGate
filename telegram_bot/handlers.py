@@ -417,59 +417,89 @@ async def screenshot_help(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def _create_and_broadcast(
     update: Update, context: ContextTypes.DEFAULT_TYPE, raw_text: str
 ) -> str:
-    """Create a signal from confirmed text and broadcast the trade card.
-
-    Shared by /testsignal and the screenshot-confirmation flow. Returns a
-    human-readable status string. The backend's deterministic parser still has
-    the final say on validity.
-    """
-    # Replay identity must be scoped to the originating Telegram chat. Telegram
-    # message ids are chat-scoped, not globally unique across providers.
+    """Create one tenant-bound signal and broadcast only to its feed subscribers."""
     if update.effective_chat is None or update.effective_message is None:
         return "Cannot identify Telegram source message. Nothing was sent."
+
+    user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     message_id = str(update.effective_message.message_id)
+    source = await _provider_source_status(user_id)
 
-    signal = await _backend_post(
-        "/signals/create",
-        json={
-            "raw_text": raw_text,
-            "source": f"TELEGRAM_CHAT:{chat_id}",
-            "source_message_id": message_id,
-        },
-        headers=_signal_provider_headers(update.effective_user.id),
-    )
+    if source:
+        signal = await _backend_post(
+            "/provider-sources/telegram/signals",
+            json={
+                "telegram_user_id": str(user_id),
+                "raw_text": raw_text,
+                "source_message_id": f"{chat_id}:{message_id}",
+            },
+            headers=_registration_headers(),
+        )
+        try:
+            expiry = int(source.get("expiry_minutes") or 5)
+        except (TypeError, ValueError):
+            expiry = 5
+    else:
+        # Local-demo legacy path for configured admin/screenshot-provider ids.
+        # Hosted mode rejects this shared-credential route.
+        if not config.is_signal_provider(user_id):
+            return (
+                "Provider source is not connected. Generate a token in the "
+                "Provider Portal and send /connectprovider TOKEN."
+            )
+        signal = await _backend_post(
+            "/signals/create",
+            json={
+                "raw_text": raw_text,
+                "source": f"TELEGRAM_CHAT:{chat_id}",
+                "source_message_id": message_id,
+            },
+            headers=_signal_provider_headers(user_id),
+        )
+        expiry = 5
+        if config.is_admin(user_id):
+            admin_status = await _backend_get(
+                "/admin/status", headers=_admin_headers(user_id)
+            )
+            if admin_status and admin_status.get("settings"):
+                try:
+                    expiry = int(
+                        admin_status["settings"].get(
+                            "default_signal_expiry_minutes", 5
+                        )
+                    )
+                except (TypeError, ValueError):
+                    expiry = 5
+
     if signal is None:
         return "Backend unreachable."
+    if signal.get("detail"):
+        return f"Signal not created: {signal.get('detail')}"
     if signal.get("parser_status") != "VALID":
         return f"Parser rejected signal: {signal.get('parser_error')}"
 
     from keyboards import format_trade_card, trade_card_keyboard
 
-    status = await _backend_get(
-        "/admin/status", headers=_admin_headers(update.effective_user.id)
-    )
-    expiry = 5
-    if status and status.get("settings"):
-        try:
-            expiry = int(status["settings"].get("default_signal_expiry_minutes", 5))
-        except (TypeError, ValueError):
-            expiry = 5
-
     card = format_trade_card(signal, expiry)
     keyboard = trade_card_keyboard(signal["id"])
-
-    recipients = await _active_recipients(update)
+    recipients = await _active_recipients(update, source)
     sent = 0
-    for chat_id in recipients:
+    for recipient_chat_id in recipients:
         try:
             await context.bot.send_message(
-                chat_id=chat_id, text=card, reply_markup=keyboard
+                chat_id=recipient_chat_id,
+                text=card,
+                reply_markup=keyboard,
             )
             sent += 1
         except Exception as exc:  # noqa: BLE001
-            logger.warning("send card to %s failed: %s", chat_id, exc)
-    return f"Signal {signal['id']} created and card sent to {sent} tester(s)."
+            logger.warning(
+                "send card to %s failed: %s",
+                recipient_chat_id,
+                exc,
+            )
+    return f"Signal {signal['id']} created and card sent to {sent} subscriber(s)."
 
 
 async def testsignal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -547,12 +577,24 @@ async def _preview_screenshot(
     image_bytes: bytes,
     mime: str,
 ) -> None:
-    url = f"{config.backend_base_url}/signals/extract"
+    user_id = update.effective_user.id
+    source = await _provider_source_status(user_id)
+    if source:
+        url = f"{config.backend_base_url}/provider-sources/telegram/extract"
+        headers = _registration_headers()
+        params = {"telegram_user_id": str(user_id)}
+    else:
+        # Local-demo legacy path only.
+        url = f"{config.backend_base_url}/signals/extract"
+        headers = _signal_provider_headers(user_id)
+        params = None
+
     try:
         async with httpx.AsyncClient(timeout=60.0) as http:
             resp = await http.post(
                 url,
-                headers=_signal_provider_headers(update.effective_user.id),
+                params=params,
+                headers=headers,
                 files={"file": ("signal", image_bytes, mime)},
             )
             if resp.status_code != 200:
@@ -564,8 +606,7 @@ async def _preview_screenshot(
     except Exception as exc:  # noqa: BLE001
         logger.warning("extract failed: %s", exc)
         await update.message.reply_text(
-            "Couldn't read that image (backend/extractor error). Try again, or "
-            "type the signal with /testsignal."
+            "Couldn't read that image (backend/extractor error). Try again."
         )
         return
 
@@ -637,18 +678,26 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(result)
 
 
-async def _active_recipients(update: Update) -> List[str]:
-    """Best-effort recipient list.
+async def _active_recipients(
+    update: Update,
+    source: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Return only eligible recipients for the provider source/feed."""
+    if source:
+        data = await _backend_get(
+            "/provider-sources/telegram/recipients",
+            params={"telegram_user_id": str(update.effective_user.id)},
+            headers=_registration_headers(),
+        )
+        recipients: set[str] = set()
+    else:
+        # Legacy local-demo behaviour includes the submitting provider chat.
+        data = await _backend_get(
+            "/signals/recipients",
+            headers=_signal_provider_headers(update.effective_user.id),
+        )
+        recipients = {str(update.effective_chat.id)}
 
-    The backend tracks registered testers by telegram id. In a private Telegram
-    chat, that id is also the chat id, so the bot can broadcast trade cards to
-    active testers without giving screenshot providers broad admin access.
-    """
-    recipients = {str(update.effective_chat.id)}
-    data = await _backend_get(
-        "/signals/recipients",
-        headers=_signal_provider_headers(update.effective_user.id),
-    )
     if data and data.get("recipients"):
         for recipient in data["recipients"]:
             telegram_id = recipient.get("telegram_user_id")
