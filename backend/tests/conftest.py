@@ -9,7 +9,10 @@ import pytest
 
 # --- Configure environment BEFORE importing app modules -------------------
 _TMP_DB = os.path.join(tempfile.gettempdir(), "signalgate_test.db")
-os.environ["DATABASE_URL"] = f"sqlite:///{_TMP_DB}"
+os.environ["DATABASE_URL"] = os.getenv(
+    "SIGNALGATE_TEST_DATABASE_URL",
+    f"sqlite:///{_TMP_DB}",
+)
 os.environ["ADMIN_TELEGRAM_IDS"] = "999"
 os.environ["SIGNAL_PROVIDER_TELEGRAM_IDS"] = "777"
 os.environ["EA_API_KEY"] = "test-ea-key"
