@@ -19,7 +19,22 @@ At minimum, confirm:
 
 Use `scripts/provision_provider.py` or the equivalent authenticated admin workflow.
 
-The provisioning CLI creates the initial feed **paused**. Treat an unexpectedly unpaused new feed as a setup failure and pause it before continuing.
+The provisioning CLI creates the initial feed **paused** and no longer prints the raw provider credential to ordinary stdout. Choose the credential-delivery path **before** provisioning.
+
+Recommended secret-file flow (write the file outside the repository and deliver it through the approved private channel):
+
+```bash
+python scripts/provision_provider.py \
+  --organization-name "Provider Organisation" \
+  --provider-name "Provider Name" \
+  --credential-output /secure/private/provider-onboarding-secret.json
+```
+
+The secret file is created without overwrite and with owner-only mode where the operating system supports POSIX permissions. Delete it from the operator machine after confirmed secure delivery/rotation according to the agreed secret-handling process.
+
+For an attended emergency/demo terminal only, `--show-secret` explicitly opts into displaying the one-time secret. Do not use that mode in captured CI/session logs.
+
+Treat an unexpectedly unpaused new feed as a setup failure and pause it before continuing.
 
 Record:
 
@@ -34,11 +49,12 @@ Never record the raw provider credential in the evidence index.
 
 ## 2. Deliver and rotate provider credential
 
-1. Deliver the one-time initial credential through an approved private channel.
-2. Provider confirms portal access.
-3. Provider immediately rotates the credential.
-4. Confirm the original credential no longer authenticates.
-5. Record only credential id/last-four metadata if available; never the secret.
+1. Deliver the one-time initial credential through an approved private channel. Do not copy it into the evidence index, ticket, issue or shared chat.
+2. Remove the operator's temporary credential file after confirmed delivery, subject to the approved onboarding/secret process.
+3. Provider confirms portal access.
+4. Provider immediately rotates the credential.
+5. Confirm the original credential no longer authenticates.
+6. Record only credential id/last-four metadata if available; never the secret.
 
 ## 3. Configure feed while paused
 
