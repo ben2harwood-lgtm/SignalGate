@@ -92,8 +92,15 @@ jobs:
       - name: Prove hosted startup accepts current schema
         working-directory: backend
         run: python -c "from app.database import _assert_hosted_schema_current; _assert_hosted_schema_current()"
-      - name: Verify baseline shape
-        run: python scripts/verify_migration_baseline.py
+      - name: Verify historical baseline shape
+        run: |
+          cd backend
+          alembic -c alembic.ini downgrade 20260918_0001
+          cd ..
+          python scripts/verify_migration_baseline.py
+          cd backend
+          alembic -c alembic.ini upgrade head
+          alembic -c alembic.ini check
       - name: Prove downgrade is rejected, then re-upgrade
         working-directory: backend
         run: |
