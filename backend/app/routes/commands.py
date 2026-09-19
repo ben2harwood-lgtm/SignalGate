@@ -11,6 +11,8 @@ from ..config import get_settings
 from ..database import get_db
 from ..models import Command
 from ..schemas import (
+    BrokerPositionReconcileRequest,
+    BrokerPositionReconcileResponse,
     CommandOut,
     CommandReceivedRequest,
     ExecutionRequest,
@@ -151,6 +153,36 @@ def report_execution(
             f"{execution.error_message or ''}".strip(),
         )
     return SimpleStatus(status="ok")
+
+
+@router.post(
+    "/commands/{command_id}/reconcile_open_position",
+    response_model=BrokerPositionReconcileResponse,
+)
+def reconcile_open_position(
+    command_id: str,
+    payload: BrokerPositionReconcileRequest,
+    x_sg_license_key: str = Header(default="", alias="X-SG-License-Key"),
+    db: Session = Depends(get_db),
+    _ea: str = Depends(require_ea_api_key),
+) -> BrokerPositionReconcileResponse:
+    command = _get_command_or_404(db, command_id)
+    _require_command_owner(db, command, x_sg_license_key)
+    try:
+        execution, reconciliation_status = crud.reconcile_open_position(
+            db, command, payload
+        )
+    except crud.BrokerReconciliationConflict as exc:
+        # Persist the discrepancy receipt. Never mutate an execution to make
+        # contradictory broker state fit.
+        db.commit()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    db.commit()
+    return BrokerPositionReconcileResponse(
+        status=reconciliation_status,
+        execution_id=execution.id,
+        command_status=command.status,
+    )
 
 
 _NOTIFY_EVENTS = {
