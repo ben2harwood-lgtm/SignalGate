@@ -156,8 +156,15 @@ jobs:
           cache-dependency-path: |
             backend/requirements.txt
             backend/requirements-hosted.txt
-      - name: Install PostgreSQL client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Install PostgreSQL client and age
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client age
+      - name: Generate ephemeral backup encryption identity
+        run: |
+          age-keygen -o "$RUNNER_TEMP/backup-age-key.txt"
+          recipient="$(age-keygen -y "$RUNNER_TEMP/backup-age-key.txt")"
+          test -n "$recipient"
+          echo "BACKUP_AGE_RECIPIENT=$recipient" >> "$GITHUB_ENV"
+          echo "BACKUP_AGE_IDENTITY_FILE=$RUNNER_TEMP/backup-age-key.txt" >> "$GITHUB_ENV"
       - name: Install hosted dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
       - name: Initialise source database at migration head
@@ -172,6 +179,8 @@ jobs:
           printf '%s\n' "$output"
           file="$(printf '%s\n' "$output" | sed -n 's/^backup=//p')"
           test -n "$file" && test -f "$file" && test -f "$file.sha256"
+          case "$file" in *.age) ;; *) echo "backup was not encrypted" >&2; exit 1;; esac
+          test ! -e "${file%.age}"
           echo "BACKUP_FILE=$file" >> "$GITHUB_ENV"
       - name: Create isolated restore database
         run: psql -h 127.0.0.1 -U signalgate -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE signalgate_restore;"
