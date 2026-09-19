@@ -396,10 +396,11 @@ def _role_name(telegram_user_id: int | str) -> str:
 
 
 async def screenshot_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _require_signal_provider(update):
+    if not await _can_submit_provider_signal(update):
         await update.message.reply_text(
-            "Screenshot submission is limited to approved signal providers.\n"
-            "If Ben gave you an invite code, send /provider YOUR_CODE."
+            "Screenshot submission requires a connected provider source.\n"
+            "Generate a connection token in the Provider Portal, then send "
+            "/connectprovider YOUR_TOKEN."
         )
         return
     await update.message.reply_text(
@@ -493,9 +494,10 @@ async def testsignal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # Confirm. Nothing about extraction bypasses the parser or the human check.
 
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _require_signal_provider(update):
+    if not await _can_submit_provider_signal(update):
         await update.message.reply_text(
-            "Only the signal provider can submit screenshots."
+            "Connect this Telegram account to a provider feed with "
+            "/connectprovider before submitting screenshots."
         )
         return
 
@@ -515,9 +517,10 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _require_signal_provider(update):
+    if not await _can_submit_provider_signal(update):
         await update.message.reply_text(
-            "Only the signal provider can submit screenshots."
+            "Connect this Telegram account to a provider feed with "
+            "/connectprovider before submitting screenshots."
         )
         return
 
@@ -582,8 +585,10 @@ async def on_signal_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Handle Confirm / Edit / Cancel on an extracted-signal preview."""
     query = update.callback_query
     await query.answer()
-    if not _require_signal_provider(update):
-        await query.edit_message_text("Signal provider only.")
+    if not await _can_submit_provider_signal(update):
+        await query.edit_message_text(
+            "Provider source is no longer connected. Nothing was sent."
+        )
         return
 
     action = query.data
@@ -620,7 +625,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Free-text handler. Only acts when the admin is editing an extracted signal."""
     if not context.user_data.get("awaiting_edit"):
         return  # ignore ordinary chatter
-    if not _require_signal_provider(update):
+    if not await _can_submit_provider_signal(update):
         return
     raw_text = (update.message.text or "").strip()
     if not raw_text:
