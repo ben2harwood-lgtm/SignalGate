@@ -51,7 +51,7 @@ Hosted mode separates admin, registration/bot, provider and EA credentials. Host
 
 ## Backup/recovery
 
-The operations lane provides PostgreSQL backup/restore scripts and restore-smoke CI. The encrypted-backup lane upgrades this to age public-key encryption with checksum verification and fail-closed plaintext handling. A production-like scheduled restore drill with recorded RTO/RPO is still required.
+The integrated operations baseline uses age public-key encryption, checksum verification, fail-closed plaintext handling, and an isolated encrypted backup/restore smoke in CI. A production-like scheduled restore drill with recorded RTO/RPO is still required.
 
 ## Observability
 
