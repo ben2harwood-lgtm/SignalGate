@@ -55,7 +55,7 @@ The operations lane provides PostgreSQL backup/restore scripts and restore-smoke
 
 ## Observability
 
-The observability lane provides request correlation IDs, structured request logs without query/header/body values, protected aggregate metrics and defined alert/SLO targets. A central telemetry backend, alert routing and measured SLO history remain deployment work.
+The integrated observability baseline provides request correlation IDs, structured request logs without query/header/body values, protected aggregate metrics and defined alert/SLO targets. A central telemetry backend, alert routing and measured SLO history remain deployment work.
 
 ## Known external assurance gaps
 
