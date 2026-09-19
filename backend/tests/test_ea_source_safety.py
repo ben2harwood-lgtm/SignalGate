@@ -50,3 +50,15 @@ def test_unknown_full_close_is_not_forced_to_tp3():
     block = EA.split("// Full close. Only attribute TP3", 1)[1].split("//+------------------------------------------------------------------+", 1)[0]
     assert "CommandClosedByReason(DEAL_REASON_TP)" in block
     assert "FULLY_CLOSED" in block
+
+
+def test_ea_continuously_reconciles_open_broker_positions():
+    assert "int ReconcileOpenPositions()" in EA
+    assert "/reconcile_open_position" in EA
+    assert 'StringFind(comment, "SG:") != 0' in EA
+    assert '"broker_tickets"' in EA
+    timer = EA.split("void OnTimer()", 1)[1].split("//+------------------------------------------------------------------+", 1)[0]
+    assert "ReconcileOpenPositions()" in timer
+    assert "if(open_sg_commands > 0)" in timer
+    assert "PollPendingCommand()" in timer
+    assert timer.index("if(open_sg_commands > 0)") < timer.index("PollPendingCommand()")
