@@ -131,3 +131,15 @@ def test_hosted_decision_endpoint_rejects_spoofed_telegram_id(client):
     finally:
         security.settings.registration_api_key = old
         _set_hosted_security(False)
+
+
+def test_hosted_startup_does_not_require_legacy_shared_provider_secret(monkeypatch):
+    monkeypatch.setenv("DEMO_ONLY_MODE", "true")
+    monkeypatch.setenv("REQUIRE_LICENSE", "true")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@db/signalgate")
+    monkeypatch.setenv("BACKEND_BASE_URL", "https://api.example.test")
+    monkeypatch.setenv("EA_API_KEY", "e" * 40)
+    monkeypatch.setenv("ADMIN_API_KEY", "a" * 40)
+    monkeypatch.setenv("REGISTRATION_API_KEY", "r" * 40)
+    monkeypatch.setenv("SIGNAL_PROVIDER_API_KEY", "")
+    Settings().validate_startup()
