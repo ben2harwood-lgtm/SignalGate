@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app import security
+from app import crud, security
 from app.config import Settings
 
 from .conftest import ADMIN_HEADERS, PROVIDER_HEADERS
@@ -49,27 +49,31 @@ def test_hosted_admin_id_alone_is_not_a_credential(client):
         _set_hosted_security(False)
 
 
-def test_hosted_provider_requires_provider_secret(client):
+def test_hosted_provider_requires_provider_specific_credential(client, db):
+    org = crud.create_organization(db, "Provider Org", "provider-org")
+    provider = crud.create_provider(db, org.id, "Provider One", "provider-one")
+    feed = crud.create_feed(db, provider, "Main Feed", "telegram-main")
+    _credential, raw_key = crud.issue_provider_credential(db, provider)
+    db.commit()
+
     _set_hosted_security(True)
-    old = security.settings.signal_provider_api_key
-    security.settings.signal_provider_api_key = "p" * 40
     try:
         denied = client.post(
             "/signals/create",
-            json={"raw_text": "XAUUSD BUY SL 2343 TP1 2353"},
+            json={"raw_text": "XAUUSD BUY SL 2343 TP1 2353", "feed_id": feed.id},
             headers=PROVIDER_HEADERS,
         )
-        assert denied.status_code == 403
+        assert denied.status_code == 401
 
-        headers = {**PROVIDER_HEADERS, "X-Signal-Provider-API-Key": "p" * 40}
         allowed = client.post(
             "/signals/create",
-            json={"raw_text": "XAUUSD BUY SL 2343 TP1 2353"},
-            headers=headers,
+            json={"raw_text": "XAUUSD BUY SL 2343 TP1 2353", "feed_id": feed.id},
+            headers={"X-Provider-Id": provider.id, "X-Provider-API-Key": raw_key},
         )
         assert allowed.status_code == 200
+        assert allowed.json()["provider_id"] == provider.id
+        assert allowed.json()["feed_id"] == feed.id
     finally:
-        security.settings.signal_provider_api_key = old
         _set_hosted_security(False)
 
 

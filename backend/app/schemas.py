@@ -7,6 +7,78 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+# --- Provider tenancy -----------------------------------------------------
+
+class OrganizationCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    slug: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9][a-z0-9-]*$")
+
+
+class ProviderCreate(BaseModel):
+    organization_id: str
+    name: str = Field(min_length=1, max_length=120)
+    slug: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9][a-z0-9-]*$")
+
+
+class FeedCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    source_namespace: str = Field(min_length=1, max_length=120)
+
+
+class ProviderCredentialCreate(BaseModel):
+    label: str = Field(default="default", min_length=1, max_length=80)
+
+
+class ProviderCredentialOut(BaseModel):
+    provider_id: str
+    credential_id: str
+    api_key: str
+    label: str
+
+
+class FeedOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    provider_id: str
+    name: str
+    source_namespace: str
+    status: str
+    paused: bool
+
+
+class ProviderOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    organization_id: str
+    name: str
+    slug: str
+    status: str
+    paused: bool
+
+
+class SubscriptionCreate(BaseModel):
+    feed_id: str
+    telegram_user_id: str
+
+
+class SubscriptionOut(BaseModel):
+    subscription_id: str
+    account_id: str
+    feed_id: str
+    user_id: str
+    status: str
+
+
+class ProviderOverview(BaseModel):
+    provider: ProviderOut
+    feed_count: int
+    active_subscribers: int
+    recent_signal_count: int
+    recent_command_count: int
+
+
 # --- Users ----------------------------------------------------------------
 
 class RegisterUserRequest(BaseModel):
@@ -33,12 +105,15 @@ class CreateSignalRequest(BaseModel):
     raw_text: str = Field(min_length=1, max_length=4000)
     source: str = Field(default="TELEGRAM_ADMIN_TEST", min_length=1, max_length=100)
     source_message_id: Optional[str] = Field(default=None, max_length=200)
+    feed_id: Optional[str] = Field(default=None, max_length=80)
 
 
 class SignalOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    provider_id: Optional[str] = None
+    feed_id: Optional[str] = None
     source: str
     raw_text: str
     symbol: Optional[str] = None
