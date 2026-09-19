@@ -90,3 +90,37 @@ def test_simulator_local_idempotency(client):
     assert sim.run_once() is True
     # No more pending commands; second run finds nothing.
     assert sim.run_once() is False
+
+
+def test_simulator_stop_out_records_loss(client):
+    user = register_user(client, "124")
+    sig = create_signal(client, VALID)
+    approve = client.post(
+        f"/signals/{sig['id']}/approve",
+        json={"telegram_user_id": "124"},
+    ).json()
+    assert approve["result"] == "APPROVED"
+
+    sim = EASimulator(
+        http=client,
+        user_id=user["id"],
+        api_key="test-ea-key",
+        delay=0,
+        verbose=False,
+        scenario="stop_out",
+    )
+    assert sim.run_once() is True
+    cid = approve["command_id"]
+    assert _command_status(cid) == "FULLY_CLOSED"
+
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(models.PerformanceLedger)
+            .filter(models.PerformanceLedger.signal_id == sig["id"])
+            .one()
+        )
+        assert row.result_status == "STOPPED_OUT"
+        assert row.r_result == -1.0
+    finally:
+        db.close()
