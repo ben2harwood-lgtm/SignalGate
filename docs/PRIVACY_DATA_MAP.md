@@ -41,7 +41,7 @@ This is an engineering inventory for privacy/legal review, not a final privacy p
 - request logging excludes query strings, headers and bodies;
 - provider queries are server-side tenant filtered;
 - portal displays only provider-owned subscriber metadata;
-- backup artifacts are moving to fail-closed public-key encryption.
+- backup artifacts use fail-closed age public-key encryption in the integrated operations baseline.
 
 ## Decisions required before external beta expansion
 
