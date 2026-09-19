@@ -10,7 +10,7 @@ from fastapi.responses import RedirectResponse
 
 from .config import get_settings
 from .database import SessionLocal, init_db
-from .routes import admin, commands, ea, health, signals, users
+from .routes import admin, commands, ea, health, providers, signals, users
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("signalgate")
@@ -83,6 +83,7 @@ def create_app() -> FastAPI:
     app.include_router(commands.router)
     app.include_router(ea.router)
     app.include_router(admin.router)
+    app.include_router(providers.router)
     return app
 
 
