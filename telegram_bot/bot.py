@@ -31,6 +31,7 @@ def build_application() -> Application:
 
     # User commands.
     app.add_handler(CommandHandler("start", handlers.start))
+    app.add_handler(CommandHandler("join", handlers.join_feed))
     app.add_handler(CommandHandler("status", handlers.status))
     app.add_handler(CommandHandler("settings", handlers.settings_cmd))
     app.add_handler(CommandHandler("provider", handlers.provider_invite))
