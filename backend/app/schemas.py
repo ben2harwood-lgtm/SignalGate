@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # --- Users ----------------------------------------------------------------
@@ -30,9 +30,9 @@ class UserOut(BaseModel):
 # --- Signals --------------------------------------------------------------
 
 class CreateSignalRequest(BaseModel):
-    raw_text: str
-    source: str = "TELEGRAM_ADMIN_TEST"
-    source_message_id: Optional[str] = None
+    raw_text: str = Field(min_length=1, max_length=4000)
+    source: str = Field(default="TELEGRAM_ADMIN_TEST", min_length=1, max_length=100)
+    source_message_id: Optional[str] = Field(default=None, max_length=200)
 
 
 class SignalOut(BaseModel):
@@ -108,7 +108,7 @@ class CommandReceivedRequest(BaseModel):
 
 
 class ExecutionRequest(BaseModel):
-    status: str  # SUCCESS / FAILED
+    status: Literal["SUCCESS", "FAILED"]
     broker_ticket: Optional[str] = None
     child_tickets_json: Optional[str] = None
     executed_symbol: Optional[str] = None
@@ -128,10 +128,25 @@ class ExecutionRequest(BaseModel):
 
 class ManagementEventRequest(BaseModel):
     broker_ticket: Optional[str] = None
-    event_type: str
+    event_type: Literal[
+        "OPENED",
+        "TP1_REACHED",
+        "TP1_CLOSE_SUCCESS",
+        "SL_MOVE_BREAKEVEN_SUCCESS",
+        "SL_MOVE_BREAKEVEN_FAILED",
+        "TP2_REACHED",
+        "TP2_CLOSE_SUCCESS",
+        "SL_MOVE_TP1_SUCCESS",
+        "SL_MOVE_TP1_FAILED",
+        "TP3_REACHED",
+        "TP3_CLOSE_SUCCESS",
+        "FULLY_CLOSED",
+        "STOP_LOSS_HIT",
+        "FAILED_MANAGEMENT",
+    ]
     stage: Optional[str] = None
     requested_action: Optional[str] = None
-    result: Optional[str] = None
+    result: Optional[Literal["SUCCESS", "FAILED", "PENDING"]] = None
     price: Optional[float] = None
     lot_size_before: Optional[float] = None
     lot_size_after: Optional[float] = None

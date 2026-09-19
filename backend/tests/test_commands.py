@@ -126,3 +126,259 @@ def test_management_events_update_status(client):
 
     status = client.get("/admin/status", headers={"X-Admin-Id": "999"}).json()
     assert status["counts"]["management_events"] == 4
+
+
+def test_duplicate_execution_report_is_idempotent(client):
+    user = register_user(client, "123")
+    sig = create_signal(client, VALID)
+    client.post(f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"})
+    cmd = client.get(
+        "/commands/pending", params={"user_id": user["id"]}, headers=EA_HEADERS
+    ).json()["command"]
+    cid = cmd["command_id"]
+    payload = {
+        "status": "SUCCESS",
+        "broker_ticket": "100",
+        "executed_symbol": "XAUUSD",
+        "executed_direction": "BUY",
+        "executed_price": 2345.0,
+        "lot_size": 0.04,
+        "initial_stop_loss": 2343.0,
+    }
+
+    first = client.post(f"/commands/{cid}/execution", json=payload, headers=EA_HEADERS)
+    second = client.post(f"/commands/{cid}/execution", json=payload, headers=EA_HEADERS)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["status"] == "duplicate_ignored"
+
+    status = client.get("/admin/status", headers={"X-Admin-Id": "999"}).json()
+    assert status["counts"]["executions"] == 1
+
+
+def test_duplicate_management_event_is_idempotent(client):
+    user = register_user(client, "123")
+    sig = create_signal(client, VALID)
+    client.post(f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"})
+    cmd = client.get(
+        "/commands/pending", params={"user_id": user["id"]}, headers=EA_HEADERS
+    ).json()["command"]
+    cid = cmd["command_id"]
+    client.post(
+        f"/commands/{cid}/execution",
+        json={"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04},
+        headers=EA_HEADERS,
+    )
+    event = {"event_type": "TP1_CLOSE_SUCCESS", "stage": "TP1_DONE", "result": "SUCCESS"}
+    first = client.post(f"/commands/{cid}/management_event", json=event, headers=EA_HEADERS)
+    second = client.post(f"/commands/{cid}/management_event", json=event, headers=EA_HEADERS)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["status"] == "duplicate_ignored"
+
+    status = client.get("/admin/status", headers={"X-Admin-Id": "999"}).json()
+    assert status["counts"]["management_events"] == 1
+
+
+def test_late_event_cannot_regress_terminal_command(client):
+    from app.database import SessionLocal
+    from app import crud
+
+    user = register_user(client, "123")
+    sig = create_signal(client, VALID)
+    client.post(f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"})
+    cmd = client.get(
+        "/commands/pending", params={"user_id": user["id"]}, headers=EA_HEADERS
+    ).json()["command"]
+    cid = cmd["command_id"]
+    client.post(
+        f"/commands/{cid}/execution",
+        json={"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04},
+        headers=EA_HEADERS,
+    )
+    client.post(
+        f"/commands/{cid}/management_event",
+        json={"event_type": "FULLY_CLOSED", "stage": "FULLY_CLOSED", "result": "SUCCESS"},
+        headers=EA_HEADERS,
+    )
+    late = client.post(
+        f"/commands/{cid}/management_event",
+        json={"event_type": "TP1_CLOSE_SUCCESS", "stage": "LATE", "result": "SUCCESS"},
+        headers=EA_HEADERS,
+    )
+    assert late.status_code == 200
+
+    db = SessionLocal()
+    try:
+        assert crud.get_command(db, cid).status == "FULLY_CLOSED"
+    finally:
+        db.close()
+
+
+def test_hosted_callback_is_bound_to_owning_license(client):
+    from app import crud
+
+    owner = register_user(client, "123")
+    attacker = register_user(client, "456")
+    sig = create_signal(client, VALID)
+    client.post(f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"})
+
+    crud.settings.require_license = True
+    try:
+        owner_headers = {**EA_HEADERS, "X-SG-License-Key": owner["license_key"]}
+        attacker_headers = {**EA_HEADERS, "X-SG-License-Key": attacker["license_key"]}
+        cmd = client.get("/commands/pending", headers=owner_headers).json()["command"]
+        assert cmd is not None
+
+        denied = client.post(
+            f"/commands/{cmd['command_id']}/execution",
+            json={"status": "FAILED", "error_code": "TEST"},
+            headers=attacker_headers,
+        )
+        assert denied.status_code == 403
+
+        allowed = client.post(
+            f"/commands/{cmd['command_id']}/execution",
+            json={"status": "FAILED", "error_code": "TEST"},
+            headers=owner_headers,
+        )
+        assert allowed.status_code == 200
+    finally:
+        crud.settings.require_license = False
+
+
+
+def test_conflicting_execution_retry_is_409_and_audited(client):
+    from app import models
+    from app.database import SessionLocal
+
+    user = register_user(client, "123")
+    sig = create_signal(client, VALID)
+    client.post(f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"})
+    cmd = client.get(
+        "/commands/pending", params={"user_id": user["id"]}, headers=EA_HEADERS
+    ).json()["command"]
+    cid = cmd["command_id"]
+
+    first = client.post(
+        f"/commands/{cid}/execution",
+        json={
+            "status": "SUCCESS",
+            "broker_ticket": "100",
+            "executed_symbol": "XAUUSD",
+            "executed_direction": "BUY",
+            "executed_price": 2345.0,
+            "lot_size": 0.04,
+        },
+        headers=EA_HEADERS,
+    )
+    conflict = client.post(
+        f"/commands/{cid}/execution",
+        json={
+            "status": "FAILED",
+            "error_code": "BROKER_TIMEOUT",
+            "error_message": "contradictory retry",
+        },
+        headers=EA_HEADERS,
+    )
+
+    assert first.status_code == 200
+    assert conflict.status_code == 409
+    assert "manual reconciliation" in conflict.json()["detail"].lower()
+
+    db = SessionLocal()
+    try:
+        assert db.query(models.Execution).count() == 1
+        audit = (
+            db.query(models.AuditLog)
+            .filter(models.AuditLog.event_type == "EXECUTION_REPORT_CONFLICT")
+            .one()
+        )
+        assert audit.entity_id == cid
+    finally:
+        db.close()
+
+
+def test_same_status_different_broker_ticket_is_execution_conflict(client):
+    user = register_user(client, "123")
+    sig = create_signal(client, VALID)
+    client.post(f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"})
+    cmd = client.get(
+        "/commands/pending", params={"user_id": user["id"]}, headers=EA_HEADERS
+    ).json()["command"]
+    cid = cmd["command_id"]
+
+    payload = {
+        "status": "SUCCESS",
+        "broker_ticket": "100",
+        "executed_symbol": "XAUUSD",
+        "executed_direction": "BUY",
+        "executed_price": 2345.0,
+        "lot_size": 0.04,
+    }
+    first = client.post(
+        f"/commands/{cid}/execution", json=payload, headers=EA_HEADERS
+    )
+    second = client.post(
+        f"/commands/{cid}/execution",
+        json={**payload, "broker_ticket": "999"},
+        headers=EA_HEADERS,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+
+def test_conflicting_management_retry_is_409_and_audited(client):
+    from app import models
+    from app.database import SessionLocal
+
+    user = register_user(client, "123")
+    sig = create_signal(client, VALID)
+    client.post(f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"})
+    cmd = client.get(
+        "/commands/pending", params={"user_id": user["id"]}, headers=EA_HEADERS
+    ).json()["command"]
+    cid = cmd["command_id"]
+    client.post(
+        f"/commands/{cid}/execution",
+        json={"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04},
+        headers=EA_HEADERS,
+    )
+
+    first = client.post(
+        f"/commands/{cid}/management_event",
+        json={
+            "event_type": "TP1_CLOSE_SUCCESS",
+            "stage": "TP1_DONE",
+            "result": "SUCCESS",
+            "price": 2353.0,
+        },
+        headers=EA_HEADERS,
+    )
+    conflict = client.post(
+        f"/commands/{cid}/management_event",
+        json={
+            "event_type": "TP1_CLOSE_SUCCESS",
+            "stage": "TP1_DONE",
+            "result": "SUCCESS",
+            "price": 2354.0,
+        },
+        headers=EA_HEADERS,
+    )
+
+    assert first.status_code == 200
+    assert conflict.status_code == 409
+    assert "manual reconciliation" in conflict.json()["detail"].lower()
+
+    db = SessionLocal()
+    try:
+        assert db.query(models.TradeManagementEvent).count() == 1
+        audit = (
+            db.query(models.AuditLog)
+            .filter(models.AuditLog.event_type == "MANAGEMENT_EVENT_CONFLICT")
+            .one()
+        )
+        assert audit.entity_id == cid
+    finally:
+        db.close()
