@@ -6,7 +6,7 @@ SignalGate is infrastructure for signal providers. It is not the signal provider
 
 **Provider brings:** strategy/signals, customers, brand and any required regulatory permissions.
 
-**SignalGate provides:** controlled ingestion, deterministic validation, customer authorisation workflow, execution transport, guardrails, reconciliation and immutable operational evidence.
+**SignalGate provides:** controlled ingestion, deterministic validation, customer authorisation workflow, execution transport, guardrails, reconciliation and traceable operational evidence.
 
 ## Provider journey
 
