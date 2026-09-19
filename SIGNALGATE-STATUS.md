@@ -14,9 +14,9 @@ SignalGate does not supply investment signals and must not make profitability cl
 
 - `main`: July demo baseline. Not a production release.
 - `codex/signalgate-hardening-2026-09-18`: September integration spine.
-- Integrated hardening head after G5 tenancy: `9160c0607e6501bc92bb4c5493a1332d5dc818f7`.
+- Integrated hardening head after G5 tenancy + operations baseline: `ae75b0e4c13ad90ffbe45c82ee83d36f7ec9f0eb`.
 - Versioned hosted migration chain: `20260918_0001` baseline -> `20260919_0002` execution safety -> `20260919_0003` replay identity -> `20260919_0004` provider tenancy.
-- Operations rebase: PR #19, machine-green before retarget; final integration evidence must be green on the hardening base before merge.
+- Operations baseline: PR #19 integrated at `ae75b0e4c13ad90ffbe45c82ee83d36f7ec9f0eb`; hardening-branch push CI passed.
 - Provider/commercial package rebase: this branch/PR; documentation and demo-facing site only, not production UI.
 
 ## Integrated capability evidence
@@ -38,7 +38,7 @@ SignalGate does not supply investment signals and must not make profitability cl
 | Provider/feed kill switches | Integrated | Approval path fails closed while paused |
 | Cross-tenant negative tests | Integrated | Provider A cannot read/broadcast Provider B feed/data |
 | Provider API | Integrated | Provisioning, credentials, feeds, subscriptions, pause, tenant-filtered history |
-| Container/readiness/backup baseline | PR #19 | Rebased ops lane; final hardening-base CI/merge pending |
+| Container/readiness/backup baseline | Integrated | Non-root image, staging compose, readiness/liveness, checked backup + isolated restore smoke CI |
 | Provider dashboard UI | **Not built** | G7 blocker |
 | White-label runtime configuration | **Not built** | G7 blocker |
 | Demo tenant bootstrap | **Not built** | G7 blocker |
@@ -58,8 +58,8 @@ SignalGate does not supply investment signals and must not make profitability cl
 - **G2 Identity/access:** machine-green and integrated; external security review remains later G8 evidence.
 - **G3 Execution safety:** core retry/ownership/state controls integrated; **not fully passed** until MT5 compile/demo receipts and broader fault/reconciliation evidence exist.
 - **G4 Adversarial ingestion:** core parser/replay controls integrated; broader fuzz/fault campaign still useful assurance.
-- **G5 Provider multi-tenancy:** machine-green and integrated at `9160c060...`; continue red-team after ops/package integration.
-- **G6 Production operations:** partial; PR #19 adds container/readiness/backup-restore CI. Central observability, SLOs and exercised recovery remain open.
+- **G5 Provider multi-tenancy:** machine-green and integrated; continue cross-tenant red-team for every provider-scoped change.
+- **G6 Production operations:** baseline integrated and machine-green: container/readiness/backup-restore smoke evidence exists. Central observability, SLOs and an exercised operational recovery drill remain open.
 - **G7 Provider Edition:** backend API and commercial package exist; **provider dashboard, runtime white-label configuration and demo-tenant UX remain open**.
 - **G8 External assurance:** not passed.
 - **G9 Controlled provider beta:** not started.
