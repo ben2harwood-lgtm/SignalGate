@@ -51,6 +51,10 @@ class Provider(Base):
     slug: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
     paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    brand_display_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    brand_logo_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    brand_primary_color: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    support_contact: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
