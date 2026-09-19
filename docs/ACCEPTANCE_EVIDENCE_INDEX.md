@@ -4,17 +4,17 @@ Use this file as the control sheet for external/manual acceptance. The public re
 
 ## Frozen candidate
 
-- Release branch: `release/signalgate-demo-rc-2026-09-19`
-- Final evidence/status head: `9499f4e7140b887d0a3c1d136bde8398dd276c9d`
-- Runtime candidate recorded in the RC receipt: `6235f136dac3e29d549dc942c998ae7bdacf4e1d`
-- Final hardening-spine CI: run **#117** — SUCCESS
+- Release branch target: `release/signalgate-demo-rc2-2026-09-19`
+- RC2 runtime/tooling candidate: `852a6bc9ca9f0651b34e87b63e86c65669130767`
+- Final runtime/tooling CI: run **#134** / GitHub run `35459129106` — **PENDING_FINAL**
+- Prior RC1: `release/signalgate-demo-rc-2026-09-19` (historical; do not use for new acceptance work)
 - Operating mode: **demo-only**
 
 ## Evidence register
 
 | Gate | Required receipt | Template / source | Status | Evidence reference |
 |---|---|---|---|---|
-| Candidate machine proof | Green full CI at candidate | `docs/RELEASE_CANDIDATE_2026-09-19.md` | Complete | CI #117 / GitHub run 35458021489 |
+| Candidate machine proof | Green full CI at candidate | `docs/RELEASE_CANDIDATE_2026-09-19.md` | Pending final freeze | CI #134 / GitHub run 35459129106 |
 | MetaEditor compile | 0 errors / 0 warnings, versions + candidate SHA | `docs/evidence/MT5_ACCEPTANCE_RECEIPT_TEMPLATE.md` | Open | |
 | MT5 demo scenarios | Ten scenario results + matching backend/broker evidence | `docs/evidence/MT5_ACCEPTANCE_RECEIPT_TEMPLATE.md` | Open | |
 | Independent security review | Written scope/findings/retest | `docs/PENTEST_SCOPE.md`, `docs/evidence/SECURITY_REVIEW_RECEIPT_TEMPLATE.md` | Open | |
@@ -39,10 +39,10 @@ Use this file as the control sheet for external/manual acceptance. The public re
 
 A simple convention:
 
-`SG-RC-2026-09-19/<gate>/<YYYY-MM-DD>-<receipt-id>`
+`SG-RC2-2026-09-19/<gate>/<YYYY-MM-DD>-<receipt-id>`
 
 Example:
 
-`SG-RC-2026-09-19/mt5/2026-09-20-MT5-001`
+`SG-RC2-2026-09-19/mt5/2026-09-20-MT5-001`
 
 Reference that identifier here instead of committing sensitive evidence.
