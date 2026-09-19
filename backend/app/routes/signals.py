@@ -50,7 +50,7 @@ def extract_signal(
     image_bytes = file.file.read(MAX_SIGNAL_IMAGE_BYTES + 1)
     if len(image_bytes) > MAX_SIGNAL_IMAGE_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Signal image exceeds 5 MiB limit",
         )
     extractor = get_extractor()

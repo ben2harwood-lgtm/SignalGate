@@ -25,7 +25,7 @@ from .database import Base
 
 def utcnow() -> dt.datetime:
     """Single source of truth for current UTC time (naive UTC)."""
-    return dt.datetime.utcnow()
+    return dt.datetime.now(dt.UTC).replace(tzinfo=None)
 
 
 class Organization(Base):
