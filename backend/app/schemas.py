@@ -56,6 +56,29 @@ class ProviderOut(BaseModel):
     slug: str
     status: str
     paused: bool
+    brand_display_name: Optional[str] = None
+    brand_logo_url: Optional[str] = None
+    brand_primary_color: Optional[str] = None
+    support_contact: Optional[str] = None
+
+
+class ProviderBrandingUpdate(BaseModel):
+    display_name: Optional[str] = Field(default=None, max_length=120)
+    logo_url: Optional[str] = Field(default=None, max_length=500)
+    primary_color: Optional[str] = Field(
+        default=None,
+        pattern=r"^#[0-9A-Fa-f]{6}$",
+    )
+    support_contact: Optional[str] = Field(default=None, max_length=200)
+
+
+class DemoTenantOut(BaseModel):
+    provider_id: str
+    provider_api_key: str
+    feed_id: str
+    user_id: str
+    telegram_user_id: str
+    license_key: Optional[str] = None
 
 
 class SubscriptionCreate(BaseModel):
