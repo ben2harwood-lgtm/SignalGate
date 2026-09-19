@@ -192,6 +192,58 @@ jobs:
           print("legacy plaintext erased and hash backfill verified")
           PY
           alembic -c alembic.ini check
+      - name: Prove audit-chain migration backfills historical rows
+        working-directory: backend
+        run: |
+          alembic -c alembic.ini downgrade 20260919_0009
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          try:
+              with conn, conn.cursor() as cur:
+                  cur.execute(
+                      """
+                      INSERT INTO audit_logs
+                        (id, event_type, entity_type, entity_id, payload_json, created_at)
+                      VALUES
+                        ('AUD-CI-1', 'CI_FIRST', 'ci', '1', '{"order":1}', '2026-09-19 00:00:00.000001'),
+                        ('AUD-CI-2', 'CI_SECOND', 'ci', '2', '{"order":2}', '2026-09-19 00:00:00.000002')
+                      """
+                  )
+          finally:
+              conn.close()
+          print("pre-chain audit rows inserted at 0009")
+          PY
+          alembic -c alembic.ini upgrade head
+          python scripts_verify_audit_chain.py
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          try:
+              with conn, conn.cursor() as cur:
+                  cur.execute(
+                      """
+                      SELECT id, prev_hash, record_hash
+                      FROM audit_logs
+                      WHERE id IN ('AUD-CI-1','AUD-CI-2')
+                      ORDER BY created_at ASC, id ASC
+                      """
+                  )
+                  rows = cur.fetchall()
+                  assert len(rows) == 2
+                  assert rows[0][1] is None
+                  assert rows[0][2] and len(rows[0][2]) == 64
+                  assert rows[1][1] == rows[0][2]
+                  assert rows[1][2] and len(rows[1][2]) == 64
+          finally:
+              conn.close()
+          print("audit hash-chain backfill verified")
+          PY
+          alembic -c alembic.ini check
       - name: Verify historical baseline shape
         run: |
           cd backend

@@ -373,6 +373,10 @@ class AuditLog(Base):
     entity_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     entity_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    prev_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    record_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
 
 
