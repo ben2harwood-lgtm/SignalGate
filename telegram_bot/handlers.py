@@ -117,6 +117,72 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(message)
 
 
+async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Subscriber-consent flow for a provider feed invite."""
+    user = update.effective_user
+    token = " ".join(context.args).strip() if context.args else ""
+    if not token:
+        await update.message.reply_text(
+            "Usage: /join INVITE_TOKEN\n"
+            "Only accept an invite you expected from a signal provider."
+        )
+        return
+
+    registration = await _backend_post(
+        "/register_user",
+        json={
+            "telegram_user_id": str(user.id),
+            "telegram_username": user.username,
+            "first_name": user.first_name,
+        },
+        headers=_registration_headers(),
+    )
+    if registration is None or registration.get("detail"):
+        await update.message.reply_text(
+            "I couldn't confirm your SignalGate registration. Nothing was joined."
+        )
+        return
+
+    result = await _backend_post(
+        "/subscriptions/accept",
+        json={
+            "invite_token": token,
+            "telegram_user_id": str(user.id),
+        },
+        headers=_registration_headers(),
+    )
+    if result is None:
+        await update.message.reply_text(
+            "SignalGate backend is unreachable. The invite was not confirmed."
+        )
+        return
+    if result.get("detail"):
+        await update.message.reply_text(
+            f"Invite not accepted: {result.get('detail')}"
+        )
+        return
+
+    provider_name = (
+        result.get("provider_display_name")
+        or result.get("provider_name")
+        or "the provider"
+    )
+    message = (
+        f"Joined {provider_name} — {result.get('feed_name', 'feed')}.\n"
+        "You will only receive cards for feeds you have explicitly joined.\n"
+        "Demo mode only. No live trades."
+    )
+    license_key = registration.get("license_key")
+    if license_key:
+        message += (
+            "\n\nYour one-time EA licence is:\n"
+            f"{license_key}\n"
+            "Keep it private. SignalGate cannot display it again; "
+            "if it is lost, an admin must rotate it."
+        )
+    await update.message.reply_text(message)
+
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     health = await _backend_get("/health")
