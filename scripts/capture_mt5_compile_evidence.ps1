@@ -109,7 +109,7 @@ function Read-CompileLog {
     $text = Get-Content -LiteralPath $Path -Raw
     $matches = [regex]::Matches(
         $text,
-        '(?im)result\s+(\d+)\s+errors?,\s+(\d+)\s+warnings?'
+        '(?im)result\s*:?\s*(\d+)\s+errors?,\s+(\d+)\s+warnings?'
     )
     if ($matches.Count -lt 1) {
         throw "Compile log does not contain a final MetaEditor result line."
