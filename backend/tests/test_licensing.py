@@ -28,7 +28,7 @@ def test_new_user_is_issued_a_license_key(client):
     assert user["license_key"].startswith("SG-")
 
 
-def test_admin_can_issue_and_list_licenses(client):
+def test_admin_can_issue_license_but_listing_never_exposes_raw_key(client):
     register_user(client, telegram_id="123")
     resp = client.post("/admin/users/123/issue_license", headers=ADMIN_HEADERS)
     assert resp.status_code == 200, resp.text
@@ -37,18 +37,22 @@ def test_admin_can_issue_and_list_licenses(client):
 
     listing = client.get("/admin/users", headers=ADMIN_HEADERS)
     assert listing.status_code == 200
-    users = listing.json()["users"]
-    assert any(u["license_key"] == key for u in users)
+    user = next(u for u in listing.json()["users"] if u["telegram_user_id"] == "123")
+    assert "license_key" not in user
+    assert user["license_configured"] is True
+    assert user["license_key_last4"] == key[-4:]
 
 
-def test_resolve_ea_user_by_license(client):
-    register_user(client, telegram_id="123")
+def test_resolve_ea_user_by_hashed_license(client):
+    registered = register_user(client, telegram_id="123")
+    raw_key = registered["license_key"]
     db = SessionLocal()
     try:
         user = crud.get_user_by_telegram(db, "123")
-        # valid license resolves to the user
-        assert crud.resolve_ea_user(db, license_key=user.license_key).id == user.id
-        # unknown license does not resolve
+        assert user.legacy_license_key is None
+        assert user.license_key_hash == crud.hash_license_key(raw_key)
+        assert user.license_key_last4 == raw_key[-4:]
+        assert crud.resolve_ea_user(db, license_key=raw_key).id == user.id
         assert crud.resolve_ea_user(db, license_key="SG-XXXX-XXXX-XXXX") is None
     finally:
         db.close()
@@ -148,5 +152,37 @@ def test_rotated_license_is_not_written_to_audit_payload(client):
         )
         assert rows
         assert all(issued not in (row.payload_json or "") for row in rows)
+    finally:
+        db.close()
+
+
+def test_existing_registration_does_not_redisplay_raw_license(client):
+    first = register_user(client, telegram_id="901")
+    assert first["license_key"]
+    second = client.post(
+        "/register_user",
+        json={"telegram_user_id": "901", "telegram_username": "same"},
+    )
+    assert second.status_code == 200
+    assert second.json()["license_key"] is None
+    assert second.json()["license_key_last4"] == first["license_key"][-4:]
+
+
+def test_license_rotation_invalidates_old_key_and_persists_no_plaintext(client):
+    first = register_user(client, telegram_id="902")
+    old_key = first["license_key"]
+    rotated = client.post("/admin/users/902/issue_license", headers=ADMIN_HEADERS)
+    assert rotated.status_code == 200
+    new_key = rotated.json()["license_key"]
+    assert new_key != old_key
+
+    db = SessionLocal()
+    try:
+        user = crud.get_user_by_telegram(db, "902")
+        assert user.legacy_license_key is None
+        assert user.license_key_hash == crud.hash_license_key(new_key)
+        assert user.license_key_last4 == new_key[-4:]
+        assert crud.resolve_ea_user(db, license_key=old_key) is None
+        assert crud.resolve_ea_user(db, license_key=new_key).id == user.id
     finally:
         db.close()
