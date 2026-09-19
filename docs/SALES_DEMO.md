@@ -20,7 +20,7 @@ Demonstrate that a wrong tenant/licence cannot report that command.
 
 ## 7–8 — retry/failure
 Replay the execution callback and show it is ignored rather than duplicated.
-Show platform/provider pause.
+Show the implemented platform-admin pause. Provider-scoped pause is a G7 target and must not be presented as implemented until that control and its isolation tests exist.
 
 ## 8–9 — evidence
 Open the signal → approval → command → execution → management/audit timeline.
