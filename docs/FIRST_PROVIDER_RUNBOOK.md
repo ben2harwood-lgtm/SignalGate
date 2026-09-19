@@ -19,6 +19,8 @@ At minimum, confirm:
 
 Use `scripts/provision_provider.py` or the equivalent authenticated admin workflow.
 
+The provisioning CLI creates the initial feed **paused**. Treat an unexpectedly unpaused new feed as a setup failure and pause it before continuing.
+
 Record:
 
 - organisation/provider ids;

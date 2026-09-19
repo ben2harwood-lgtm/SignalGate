@@ -17,6 +17,15 @@ def slug(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def feed_create_payload(name: str, source_namespace: str) -> dict:
+    """New provider feeds start paused until onboarding checks are complete."""
+    return {
+        "name": name,
+        "source_namespace": source_namespace,
+        "paused": True,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Provision a SignalGate provider tenant")
     parser.add_argument("--backend", default=os.getenv("SIGNALGATE_BACKEND", "http://127.0.0.1:8000"))
@@ -69,7 +78,7 @@ def main() -> int:
         )
         feed = post(
             f"/admin/providers/{provider['id']}/feeds",
-            {"name": args.feed_name, "source_namespace": args.source_namespace},
+            feed_create_payload(args.feed_name, args.source_namespace),
         )
 
     receipt = {
@@ -77,8 +86,12 @@ def main() -> int:
         "provider_id": provider["id"],
         "provider_api_key": credential["api_key"],
         "feed_id": feed["id"],
+        "feed_paused": feed["paused"],
         "provider_portal": args.backend.rstrip("/") + "/provider-portal",
-        "warning": "Store provider_api_key now; SignalGate stores only its one-way hash.",
+        "warning": (
+            "Store provider_api_key now; SignalGate stores only its one-way hash. "
+            "The new feed is paused; unpause only after source/subscriber/demo checks pass."
+        ),
     }
     print(json.dumps(receipt, indent=2))
     return 0

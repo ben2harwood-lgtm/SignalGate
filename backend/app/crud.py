@@ -589,7 +589,12 @@ def get_feed_for_provider(
 
 
 def create_feed(
-    db: Session, provider: models.Provider, name: str, source_namespace: str
+    db: Session,
+    provider: models.Provider,
+    name: str,
+    source_namespace: str,
+    *,
+    paused: bool = False,
 ) -> models.Feed:
     if provider.status != "ACTIVE":
         raise ValueError("Provider is not active")
@@ -607,14 +612,20 @@ def create_feed(
         name=name,
         source_namespace=source_namespace,
         status="ACTIVE",
-        paused=False,
+        paused=paused,
         allowed_symbols_json=None,
         expiry_minutes=settings.default_signal_expiry_minutes,
         default_lot_size=settings.default_lot_size,
     )
     db.add(row)
     db.flush()
-    add_audit(db, "FEED_CREATED", "feed", row.id, {"provider_id": provider.id})
+    add_audit(
+        db,
+        "FEED_CREATED",
+        "feed",
+        row.id,
+        {"provider_id": provider.id, "paused": paused},
+    )
     return row
 
 

@@ -112,7 +112,13 @@ def admin_create_feed(
     if provider is None:
         raise HTTPException(status_code=404, detail="Provider not found")
     try:
-        feed = crud.create_feed(db, provider, payload.name, payload.source_namespace)
+        feed = crud.create_feed(
+            db,
+            provider,
+            payload.name,
+            payload.source_namespace,
+            paused=payload.paused,
+        )
     except ValueError as exc:
         raise _bad_request(exc) from exc
     db.commit()
@@ -346,6 +352,7 @@ def provider_create_feed(
             provider,
             payload.name,
             payload.source_namespace,
+            paused=payload.paused,
         )
     except ValueError as exc:
         raise _bad_request(exc) from exc
