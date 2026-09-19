@@ -71,7 +71,22 @@ Keep provider/feed paused until the source and subscriber paths are verified.
 
 Do not use the deprecated direct subscriber-attachment path.
 
-## 6. Connect demo execution
+## 6. Run the read-only provider preflight
+
+Before unpausing, run `scripts/pilot_preflight.py` using the provider credential through `SIGNALGATE_PROVIDER_API_KEY`.
+
+See `docs/PILOT_PREFLIGHT.md`.
+
+Retain its receipt and require PASS for:
+
+- demo-only mode;
+- readiness;
+- provider authentication;
+- wrong-key rejection;
+- paused feed state;
+- provider export tenant/privacy checks.
+
+## 7. Connect demo execution
 
 Use the accepted demo MT5 setup or the simulator.
 
@@ -83,7 +98,7 @@ Before unpausing:
 - confirm account/licence ownership;
 - confirm provider/feed pause works.
 
-## 7. Mandatory pre-cohort scenarios
+## 8. Mandatory pre-cohort scenarios
 
 Run and retain receipts for:
 
@@ -104,7 +119,7 @@ Run and retain receipts for:
 
 Do not open the cohort if any safety-critical result is unexplained.
 
-## 8. Start pilot
+## 9. Start pilot
 
 Record pilot start:
 
@@ -119,7 +134,7 @@ Record pilot start:
 
 Start with the smallest useful invited cohort.
 
-## 9. Daily operator routine
+## 10. Daily operator routine
 
 At least once per operating day:
 
@@ -135,7 +150,7 @@ At least once per operating day:
 
 Use `docs/evidence/PILOT_OPERATIONS_LOG_TEMPLATE.md`.
 
-## 10. Incident rule
+## 11. Incident rule
 
 Immediately pause the affected provider/feed for:
 
@@ -147,7 +162,7 @@ Immediately pause the affected provider/feed for:
 
 Follow `docs/INCIDENT_RUNBOOKS.md`. Preserve evidence before remediation where safe.
 
-## 11. Pilot close / expansion decision
+## 12. Pilot close / expansion decision
 
 Before expansion, reconcile:
 

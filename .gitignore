@@ -38,3 +38,6 @@ SignalGate_share.zip
 
 # Local demo-site request log
 site-mockups/demo-requests.jsonl
+
+# Local provider-pilot receipts (environment/provider metadata)
+artifacts/pilot-preflight/
