@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -40,6 +41,7 @@ def test_bundle_is_deterministic_and_manifested(tmp_path):
         output_path=first,
         candidate_sha=SHA,
         profile="test",
+        verify_source=False,
         paths=paths,
     )
     m2 = bundle.build_bundle(
@@ -47,6 +49,7 @@ def test_bundle_is_deterministic_and_manifested(tmp_path):
         output_path=second,
         candidate_sha=SHA,
         profile="test",
+        verify_source=False,
         paths=reversed(paths),
     )
 
@@ -79,6 +82,7 @@ def test_bundle_rejects_unsafe_or_environment_paths(tmp_path, path):
             output_path=tmp_path / "x.zip",
             candidate_sha=SHA,
             profile="test",
+            verify_source=False,
             paths=(path,),
         )
 
@@ -90,5 +94,54 @@ def test_missing_allowlisted_file_fails_closed(tmp_path):
             output_path=tmp_path / "x.zip",
             candidate_sha=SHA,
             profile="test",
+            verify_source=False,
             paths=("missing.txt",),
         )
+
+
+def test_verified_source_requires_matching_git_head(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "a.txt").write_text("alpha\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "SignalGate CI"], cwd=root, check=True)
+    subprocess.run(["git", "add", "a.txt"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=root, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    output = tmp_path / "verified.zip"
+    manifest = bundle.build_bundle(
+        repo_root=root,
+        output_path=output,
+        candidate_sha=head,
+        profile="test",
+        paths=("a.txt",),
+    )
+    assert manifest["source_tree_verified"] is True
+    assert manifest["source_head"] == head
+
+    with pytest.raises(ValueError, match="does not match repo HEAD"):
+        bundle.build_bundle(
+            repo_root=root,
+            output_path=tmp_path / "wrong.zip",
+            candidate_sha="b" * 40,
+            profile="test",
+            paths=("a.txt",),
+        )
+
+
+def test_unverified_source_is_explicitly_marked(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    manifest = bundle.build_bundle(
+        repo_root=tmp_path,
+        output_path=tmp_path / "unverified.zip",
+        candidate_sha=SHA,
+        profile="test",
+        paths=("a.txt",),
+        verify_source=False,
+    )
+    assert manifest["source_tree_verified"] is False
+    assert manifest["source_head"] is None
