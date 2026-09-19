@@ -82,6 +82,21 @@ code{font-size:12px}.error{background:#fef3f2;color:#b42318;padding:10px;border-
       </div>
     </section>
 
+    <section class="grid two section">
+      <div class="card">
+        <h2>Connect Telegram signal source</h2>
+        <p class="muted">Generate a one-time feed-bound token. In the Telegram account that will submit screenshots/signals, send the command shown below.</p>
+        <label>Feed</label><select id="sourceFeed" style="width:100%;padding:9px;border:1px solid #d0d5dd;border-radius:8px"></select>
+        <label>Connection token lifetime (minutes)</label><input id="sourceExpiry" type="number" min="5" max="1440" value="60">
+        <div style="margin-top:12px"><button id="createSourceInvite">Generate source token</button></div>
+        <div id="sourceInviteReceipt" style="margin-top:12px"></div>
+      </div>
+      <div class="card">
+        <h2>Connected Telegram sources</h2>
+        <div id="sourceBindings" class="muted">No sources loaded.</div>
+      </div>
+    </section>
+
     <section class="card section">
       <h2>Feeds & policy</h2>
       <div id="feeds"></div>
@@ -98,7 +113,7 @@ code{font-size:12px}.error{background:#fef3f2;color:#b42318;padding:10px;border-
   </div>
 </main>
 <script>
-let providerId="", apiKey="", provider=null, feeds=[];
+let providerId="", apiKey="", provider=null, feeds=[], sourceBindings=[];
 const $=id=>document.getElementById(id);
 const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 async function api(path, options={}){
@@ -124,10 +139,21 @@ async function connect(){
   }catch(err){ $("authError").innerHTML='<div class="error">'+esc(err.message)+'</div>'; providerId="";apiKey=""; }
 }
 async function refresh(){
-  const [overview,feedRows,history]=await Promise.all([
-    api("/providers/me/overview"),api("/providers/me/feeds"),api("/providers/me/history?limit=100")
+  const [overview,feedRows,history,bindingRows]=await Promise.all([
+    api("/providers/me/overview"),
+    api("/providers/me/feeds"),
+    api("/providers/me/history?limit=100"),
+    api("/providers/me/source-bindings")
   ]);
-  provider=overview.provider; feeds=feedRows; applyBrand(); renderMetrics(overview); renderProvider(); renderFeeds(); renderHistory(history.history||[]);
+  provider=overview.provider;
+  feeds=feedRows;
+  sourceBindings=bindingRows;
+  applyBrand();
+  renderMetrics(overview);
+  renderProvider();
+  renderFeeds();
+  renderSourceBindings();
+  renderHistory(history.history||[]);
 }
 function applyBrand(){
   const color=provider.brand_primary_color||"#111827"; document.documentElement.style.setProperty("--brand",color);
@@ -149,7 +175,9 @@ function renderProvider(){
 }
 function feedSymbols(f){try{return f.allowed_symbols_json?JSON.parse(f.allowed_symbols_json).join(", "):""}catch{return""}}
 function renderFeeds(){
-  $("subscriberFeed").innerHTML=feeds.map(f=>'<option value="'+esc(f.id)+'">'+esc(f.name)+'</option>').join("");
+  const options=feeds.map(f=>'<option value="'+esc(f.id)+'">'+esc(f.name)+'</option>').join("");
+  $("subscriberFeed").innerHTML=options;
+  $("sourceFeed").innerHTML=options;
   $("feeds").innerHTML=feeds.length?feeds.map(f=>'<div class="feed"><div><h3>'+esc(f.name)+' '+(f.paused?'<span class="badge bad">PAUSED</span>':'<span class="badge ok">ACTIVE</span>')+'</h3><div class="muted"><code>'+esc(f.id)+'</code> · '+esc(f.source_namespace)+'</div><div class="row"><div><label>Allowed symbols</label><input id="symbols-'+esc(f.id)+'" value="'+esc(feedSymbols(f))+'" placeholder="EURUSD, GBPJPY, XAUUSD"></div><div><label>Expiry minutes</label><input id="expiry-'+esc(f.id)+'" type="number" min="1" max="1440" value="'+esc(f.expiry_minutes||5)+'"></div><div><label>Default lot</label><input id="lot-'+esc(f.id)+'" type="number" step="0.01" min="0.01" value="'+esc(f.default_lot_size||0.01)+'"></div></div></div><div><button onclick="saveFeed(\''+esc(f.id)+'\')">Save</button> <button class="'+(f.paused?'secondary':'danger')+'" onclick="pauseFeed(\''+esc(f.id)+'\','+(!f.paused)+')">'+(f.paused?'Resume':'Pause')+'</button> <button class="secondary" onclick="showSubscribers(\''+esc(f.id)+'\')">Subscribers</button></div></div>').join(""):'<div class="muted">No feeds yet.</div>';
 }
 async function saveFeed(id){
@@ -159,6 +187,27 @@ async function saveFeed(id){
 }
 async function pauseFeed(id,paused){try{await api("/providers/me/feeds/"+encodeURIComponent(id)+"/pause?paused="+paused,{method:"POST"});await refresh()}catch(err){notice(err.message,"error")}}
 async function showSubscribers(id){try{const r=await api("/providers/me/subscribers?feed_id="+encodeURIComponent(id));alert((r.subscribers||[]).map(x=>(x.first_name||x.telegram_username||x.telegram_user_id)+" ("+x.telegram_user_id+")").join("\n")||"No active subscribers")}catch(err){notice(err.message,"error")}}
+function renderSourceBindings(){
+  if(!sourceBindings.length){
+    $("sourceBindings").innerHTML='<span class="muted">No connected Telegram sources.</span>';
+    return;
+  }
+  $("sourceBindings").innerHTML=sourceBindings.map(b=>
+    '<div class="feed"><div><strong>'+esc(b.provider_display_name||b.provider_name)+'</strong><br>'+
+    '<span class="muted">'+esc(b.feed_name)+' · '+esc(b.source_type)+' · '+esc(b.status)+'</span><br>'+
+    '<code>'+esc(b.binding_id)+'</code></div>'+
+    '<div><button class="danger" onclick="revokeSource(\''+esc(b.binding_id)+'\')">Revoke</button></div></div>'
+  ).join("");
+}
+async function revokeSource(id){
+  if(!confirm("Revoke this Telegram source binding? It will stop being able to submit provider signals.")) return;
+  try{
+    await api("/providers/me/source-bindings/"+encodeURIComponent(id)+"/revoke",{method:"POST"});
+    notice("Telegram provider source revoked.");
+    await refresh();
+  }catch(err){notice(err.message,"error")}
+}
+
 function renderHistory(rows){
   $("history").innerHTML=rows.length?rows.map(r=>'<tr><td>'+esc(r.created_at||"")+'</td><td><strong>'+esc(r.symbol)+'</strong><br><span class="muted">'+esc(r.direction)+'</span></td><td>'+esc(r.command_status)+'<br><code>'+esc(r.command_id)+'</code></td><td>'+(r.execution?esc(r.execution.status)+'<br><span class="muted">'+esc(r.execution.broker_ticket||"no ticket")+'</span>':'—')+'</td><td>'+reconciliationBadge(r.reconciliation_state)+'</td><td>'+(r.ledger?esc(r.ledger.result_status)+'<br><span class="muted">R '+esc(r.ledger.r_result??"—")+'</span>':'—')+'</td><td>'+esc((r.management_events||[]).length)+'</td></tr>').join(""):'<tr><td colspan="7" class="muted">No command history yet.</td></tr>';
 }
@@ -168,6 +217,12 @@ $("providerPause").onclick=async()=>{try{await api("/providers/me/pause?paused="
 $("rotateKey").onclick=async()=>{if(!confirm("Rotate this provider API key? The current key will stop working immediately."))return;try{const r=await api("/providers/me/credentials/rotate",{method:"POST"});apiKey=r.api_key;$("providerKey").value=apiKey;notice("API key rotated. Copy the new key now; SignalGate will not show it again.");await refresh()}catch(err){notice(err.message,"error")}};
 $("saveBrand").onclick=async()=>{try{provider=await api("/providers/me/branding",{method:"PUT",body:JSON.stringify({display_name:$("brandName").value.trim()||null,logo_url:$("brandLogoUrl").value.trim()||null,primary_color:$("brandColor").value.trim()||null,support_contact:$("supportContact").value.trim()||null})});applyBrand();notice("Branding saved.")}catch(err){notice(err.message,"error")}};
 $("createFeed").onclick=async()=>{try{await api("/providers/me/feeds",{method:"POST",body:JSON.stringify({name:$("feedName").value.trim(),source_namespace:$("feedNamespace").value.trim()})});$("feedName").value="";$("feedNamespace").value="";notice("Feed created.");await refresh()}catch(err){notice(err.message,"error")}};
+$("createSourceInvite").onclick=async()=>{try{
+  const r=await api("/providers/me/source-invites",{method:"POST",body:JSON.stringify({feed_id:$("sourceFeed").value,expires_minutes:Number($("sourceExpiry").value)})});
+  const command="/connectprovider "+r.connection_token;
+  $("sourceInviteReceipt").innerHTML='<div class="success"><strong>Source token created.</strong><br>In the provider Telegram account send:<br><code>'+esc(command)+'</code><br><span class="muted">Expires '+esc(r.expires_at)+'. The token is shown only now.</span></div>';
+  notice("Telegram provider source token created.");
+}catch(err){notice(err.message,"error")}};
 $("createInvite").onclick=async()=>{try{
   const r=await api("/providers/me/subscription-invites",{method:"POST",body:JSON.stringify({feed_id:$("subscriberFeed").value,expires_minutes:Number($("inviteExpiry").value)})});
   const join="/join "+r.invite_token;
