@@ -18,9 +18,9 @@ Canonical truth:
 
 Frozen demo RC:
 
-`release/signalgate-demo-rc-2026-09-19`
+`release/signalgate-demo-rc2-2026-09-19`
 
-Do not modify that frozen branch to “tidy up” acceptance work. Runtime/source changes require a new candidate and new evidence as appropriate.
+Do not modify that frozen RC2 branch to “tidy up” acceptance work. RC1 remains preserved as historical evidence. Runtime/source changes require a new candidate and new evidence as appropriate.
 
 ## Non-negotiable safety invariants
 
