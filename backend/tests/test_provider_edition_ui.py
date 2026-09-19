@@ -101,6 +101,7 @@ def test_feed_symbol_policy_drives_parser_and_lot_size(client, db):
             "default_lot_size": 0.07,
         },
     )
+    db.commit()
     user = register_user(client, "811", "policy_user", "Policy")
     crud.subscribe_user_to_feed(db, provider, feed, db.get(models.User, user["id"]))
     db.commit()
