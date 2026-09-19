@@ -73,10 +73,12 @@ code{font-size:12px}.error{background:#fef3f2;color:#b42318;padding:10px;border-
         <div style="margin-top:12px"><button id="createFeed">Create feed</button></div>
       </div>
       <div class="card">
-        <h2>Attach subscriber</h2>
+        <h2>Invite subscriber</h2>
+        <p class="muted">SignalGate will not attach a person by Telegram ID. Generate a one-time invite; the subscriber must accept it from their own private bot chat.</p>
         <label>Feed</label><select id="subscriberFeed" style="width:100%;padding:9px;border:1px solid #d0d5dd;border-radius:8px"></select>
-        <label>Registered Telegram user ID</label><input id="subscriberTelegram" placeholder="123456789">
-        <div style="margin-top:12px"><button id="subscribeUser">Attach subscriber</button></div>
+        <label>Invite lifetime (minutes)</label><input id="inviteExpiry" type="number" min="5" max="10080" value="1440">
+        <div style="margin-top:12px"><button id="createInvite">Generate invite</button></div>
+        <div id="inviteReceipt" style="margin-top:12px"></div>
       </div>
     </section>
 
@@ -166,7 +168,12 @@ $("providerPause").onclick=async()=>{try{await api("/providers/me/pause?paused="
 $("rotateKey").onclick=async()=>{if(!confirm("Rotate this provider API key? The current key will stop working immediately."))return;try{const r=await api("/providers/me/credentials/rotate",{method:"POST"});apiKey=r.api_key;$("providerKey").value=apiKey;notice("API key rotated. Copy the new key now; SignalGate will not show it again.");await refresh()}catch(err){notice(err.message,"error")}};
 $("saveBrand").onclick=async()=>{try{provider=await api("/providers/me/branding",{method:"PUT",body:JSON.stringify({display_name:$("brandName").value.trim()||null,logo_url:$("brandLogoUrl").value.trim()||null,primary_color:$("brandColor").value.trim()||null,support_contact:$("supportContact").value.trim()||null})});applyBrand();notice("Branding saved.")}catch(err){notice(err.message,"error")}};
 $("createFeed").onclick=async()=>{try{await api("/providers/me/feeds",{method:"POST",body:JSON.stringify({name:$("feedName").value.trim(),source_namespace:$("feedNamespace").value.trim()})});$("feedName").value="";$("feedNamespace").value="";notice("Feed created.");await refresh()}catch(err){notice(err.message,"error")}};
-$("subscribeUser").onclick=async()=>{try{await api("/providers/me/subscriptions",{method:"POST",body:JSON.stringify({feed_id:$("subscriberFeed").value,telegram_user_id:$("subscriberTelegram").value.trim()})});$("subscriberTelegram").value="";notice("Subscriber attached.");await refresh()}catch(err){notice(err.message,"error")}};
+$("createInvite").onclick=async()=>{try{
+  const r=await api("/providers/me/subscription-invites",{method:"POST",body:JSON.stringify({feed_id:$("subscriberFeed").value,expires_minutes:Number($("inviteExpiry").value)})});
+  const join="/join "+r.invite_token;
+  $("inviteReceipt").innerHTML='<div class="success"><strong>Invite created.</strong><br>Send this command privately to the subscriber:<br><code id="joinCommand">'+esc(join)+'</code><br><span class="muted">Expires '+esc(r.expires_at)+'. The token is shown only in this creation response.</span></div>';
+  notice("Subscriber invite created; enrolment completes only after they accept it.");
+}catch(err){notice(err.message,"error")}};
 </script>
 </body>
 </html>
