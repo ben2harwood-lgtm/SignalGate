@@ -79,10 +79,46 @@ def _signal_provider_headers(user_id: int) -> Dict[str, str]:
     return headers
 
 
+async def _provider_source_status(
+    telegram_user_id: int | str,
+) -> Optional[Dict[str, Any]]:
+    data = await _backend_get(
+        "/provider-sources/telegram/status",
+        params={"telegram_user_id": str(telegram_user_id)},
+        headers=_registration_headers(),
+    )
+    if not data or data.get("detail"):
+        return None
+    return data
+
+
+async def _can_submit_provider_signal(update: Update) -> bool:
+    if await _provider_source_status(update.effective_user.id):
+        return True
+    # Local-demo backwards compatibility only; hosted backend rejects these
+    # legacy shared-provider credentials.
+    return config.is_signal_provider(update.effective_user.id)
+
+
 # --- user commands --------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
+    source = await _provider_source_status(user.id)
+    if source:
+        provider_name = (
+            source.get("provider_display_name")
+            or source.get("provider_name")
+            or "provider"
+        )
+        await update.message.reply_text(
+            f"SignalGate provider source connected to {provider_name} — "
+            f"{source.get('feed_name', 'feed')}.\n"
+            f"Your Telegram id is {user.id}.\n\n"
+            "Send a signal screenshot. I will preview the extracted levels and "
+            "wait for Confirm before any subscriber card is sent."
+        )
+        return
     if config.is_signal_provider(user.id):
         await update.message.reply_text(
             "SignalGate screenshot provider ready.\n"
@@ -186,17 +222,72 @@ async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     health = await _backend_get("/health")
+    source = await _provider_source_status(user.id)
 
     backend_ok = health is not None
     paused = health.get("admin_paused") if health else "unknown"
+    role = _role_name(user.id)
+    if source:
+        role = "provider source"
     lines = [
         f"Registered: yes (telegram id {user.id})",
-        f"Role: {_role_name(user.id)}",
+        f"Role: {role}",
         f"Backend reachable: {'yes' if backend_ok else 'no'}",
         f"Demo only mode: {health.get('demo_only_mode') if health else 'unknown'}",
         f"Admin paused: {paused}",
     ]
+    if source:
+        lines.extend(
+            [
+                f"Provider: {source.get('provider_display_name') or source.get('provider_name')}",
+                f"Feed: {source.get('feed_name')} ({source.get('feed_id')})",
+            ]
+        )
     await update.message.reply_text("\n".join(lines))
+
+
+async def connect_provider_source(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Consume a one-time provider/feed Telegram source connection token."""
+    user = update.effective_user
+    token = " ".join(context.args).strip() if context.args else ""
+    if not token:
+        await update.message.reply_text(
+            "Usage: /connectprovider CONNECTION_TOKEN\n"
+            "Generate the token in your SignalGate Provider Portal."
+        )
+        return
+    result = await _backend_post(
+        "/provider-sources/telegram/connect",
+        json={
+            "connection_token": token,
+            "telegram_user_id": str(user.id),
+        },
+        headers=_registration_headers(),
+    )
+    if result is None:
+        await update.message.reply_text(
+            "SignalGate backend is unreachable. Provider source was not connected."
+        )
+        return
+    if result.get("detail"):
+        await update.message.reply_text(
+            f"Provider source not connected: {result.get('detail')}"
+        )
+        return
+    provider_name = (
+        result.get("provider_display_name")
+        or result.get("provider_name")
+        or "provider"
+    )
+    await update.message.reply_text(
+        f"Provider source connected to {provider_name} — "
+        f"{result.get('feed_name', 'feed')}.\n"
+        "Send /screenshothelp or send a signal screenshot when ready.\n"
+        "Demo mode only."
+    )
 
 
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
