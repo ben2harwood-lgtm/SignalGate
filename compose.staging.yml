@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: signalgate
+      POSTGRES_USER: signalgate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - signalgate_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U signalgate -d signalgate"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://signalgate:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/signalgate
+      REQUIRE_LICENSE: "true"
+      DEMO_ONLY_MODE: "true"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3).read()"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  signalgate_pgdata:
