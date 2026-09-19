@@ -52,3 +52,21 @@ SignalGate receives:
 - configuration approval;
 - support escalation contacts;
 - beta/pilot success criteria.
+
+
+## Subscriber consent
+
+Providers cannot add a registered Telegram user directly.
+
+For each subscriber:
+
+1. In the Provider Portal choose the feed and select **Generate invite**.
+2. SignalGate returns a one-time `/join sgi_...` command. The raw token is not stored and is not shown again in later invite listings.
+3. Send that invite privately to the intended subscriber.
+4. The subscriber opens the SignalGate bot from their own Telegram account and sends the `/join ...` command.
+5. The bot authenticates its backend call, registers the subscriber if needed, and the subscriber's acceptance creates the feed subscription + trading account.
+6. Only after that acceptance does the subscriber appear in the provider's subscriber list or receive cards for that feed.
+
+Invites expire, can be revoked before acceptance, and cannot be reused. If an invite is forwarded, the first eligible Telegram account that accepts it consumes it, so providers should deliver invites through an appropriate private channel.
+
+The deprecated direct provider enrolment endpoint returns HTTP 410 and creates nothing.
