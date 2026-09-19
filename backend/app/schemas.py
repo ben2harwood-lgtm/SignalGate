@@ -117,6 +117,7 @@ class ProviderSourceBindingOut(BaseModel):
     provider_display_name: Optional[str] = None
     feed_id: str
     feed_name: str
+    expiry_minutes: Optional[int] = None
     source_type: str
     status: str
 
