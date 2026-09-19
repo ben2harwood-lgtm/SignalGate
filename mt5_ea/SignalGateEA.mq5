@@ -124,10 +124,24 @@ void OnTimer()
    if(!EnableTrading)
       return;
 
+   // Continuously reconcile actual broker positions with backend state. This
+   // recovers a lost execution callback after a network timeout.
+   int open_sg_commands = ReconcileOpenPositions();
+
    // If we already manage an active command, run management instead of polling.
    if(g_active_command_id != "")
    {
       ManageActiveCommand();
+      return;
+   }
+
+   // After an EA restart we may find an existing SignalGate position but no
+   // in-memory lifecycle state. Fail safe: report the broker position and do
+   // NOT claim a new command while that orphaned position remains open.
+   if(open_sg_commands > 0)
+   {
+      Print("SignalGate position(s) found without active in-memory state; "
+            "reconciled with backend and polling is blocked until flat.");
       return;
    }
 
@@ -672,6 +686,90 @@ void AckReceived(const string command_id)
 void SendHeartbeat()
 {
    HttpGet(BackendURL + "/ea/heartbeat");
+}
+
+// Reconcile all currently-open SignalGate broker positions. Positions are
+// grouped by command id from the immutable SG:<command_id> broker comment.
+int ReconcileOpenPositions()
+{
+   string command_ids[];
+   int command_count = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, "SG:") != 0) continue;
+      string cid = StringSubstr(comment, 3);
+      if(cid == "") continue;
+
+      bool seen = false;
+      for(int j = 0; j < command_count; j++)
+         if(command_ids[j] == cid) { seen = true; break; }
+      if(!seen)
+      {
+         ArrayResize(command_ids, command_count + 1);
+         command_ids[command_count] = cid;
+         command_count++;
+      }
+   }
+
+   for(int g = 0; g < command_count; g++)
+   {
+      string cid = command_ids[g];
+      string tickets = "";
+      string symbol = "";
+      string direction = "";
+      double total_volume = 0.0;
+      double weighted_price = 0.0;
+      double current_sl = 0.0;
+
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+      {
+         ulong ticket = PositionGetTicket(i);
+         if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+         if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+         string comment = PositionGetString(POSITION_COMMENT);
+         if(comment != "SG:" + cid) continue;
+
+         double volume = PositionGetDouble(POSITION_VOLUME);
+         double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+         if(tickets != "") tickets += ",";
+         tickets += """ + IntegerToString((long)ticket) + """;
+         total_volume += volume;
+         weighted_price += open_price * volume;
+         if(symbol == "") symbol = PositionGetString(POSITION_SYMBOL);
+         if(direction == "")
+            direction = (
+               PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY
+               ? "BUY" : "SELL"
+            );
+         double sl = PositionGetDouble(POSITION_SL);
+         if(current_sl == 0.0 && sl > 0.0) current_sl = sl;
+      }
+
+      if(total_volume <= 0.0 || tickets == "" || symbol == "" || direction == "")
+         continue;
+
+      double avg_price = weighted_price / total_volume;
+      int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      string body = "{";
+      body += ""broker_tickets":[" + tickets + "],";
+      body += ""executed_symbol":" + JsonEscapeString(symbol) + ",";
+      body += ""executed_direction":" + JsonEscapeString(direction) + ",";
+      body += ""executed_price":" + DoubleToString(avg_price, digits) + ",";
+      body += ""lot_size":" + DoubleToString(total_volume, 8);
+      if(current_sl > 0.0)
+         body += ","stop_loss":" + DoubleToString(current_sl, digits);
+      body += "}";
+      HttpPost(
+         BackendURL + "/commands/" + cid + "/reconcile_open_position",
+         body
+      );
+   }
+   return(command_count);
 }
 
 void ReportExecutionSuccess(const string command_id, const string symbol,
