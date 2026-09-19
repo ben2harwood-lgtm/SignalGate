@@ -14,7 +14,7 @@ Use this file as the control sheet for external/manual acceptance. The public re
 
 | Gate | Required receipt | Template / source | Status | Evidence reference |
 |---|---|---|---|---|
-| Candidate machine proof | Green full runtime/tooling CI | `docs/RELEASE_CANDIDATE_2026-09-19.md` | Complete; freeze CI still required | CI #134 / GitHub run 35459129106 |
+| Candidate machine proof | Green full runtime/tooling CI | `docs/RELEASE_CANDIDATE_2026-09-19.md` | Complete | CI #134 / GitHub run 35459129106; RC2 branch is pinned only after freeze CI passes |
 | MetaEditor compile | 0 errors / 0 warnings, versions + candidate SHA | `docs/evidence/MT5_ACCEPTANCE_RECEIPT_TEMPLATE.md` | Open | |
 | MT5 demo scenarios | Ten scenario results + matching backend/broker evidence | `docs/evidence/MT5_ACCEPTANCE_RECEIPT_TEMPLATE.md` | Open | |
 | Independent security review | Written scope/findings/retest | `docs/PENTEST_SCOPE.md`, `docs/evidence/SECURITY_REVIEW_RECEIPT_TEMPLATE.md` | Open | |
@@ -25,6 +25,8 @@ Use this file as the control sheet for external/manual acceptance. The public re
 | Provider pilot entry | All beta-entry gates evidenced | `docs/BETA_ACCEPTANCE.md` | Open | |
 | Provider pilot operating evidence | Daily/incident/support/reliability evidence | `docs/evidence/PILOT_OPERATIONS_LOG_TEMPLATE.md` | Open | |
 | Exceptions | Explicit owner/rationale/expiry/remediation | `docs/evidence/EXCEPTION_REGISTER_TEMPLATE.md` | Open | |
+
+RC2 must not be used for external acceptance until the documentation-only freeze branch has also passed the full CI matrix and the named release branch has been pinned.
 
 ## Rules
 
