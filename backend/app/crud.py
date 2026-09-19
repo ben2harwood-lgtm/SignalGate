@@ -1096,8 +1096,11 @@ def record_execution(
     if existing is not None:
         return _existing_execution_or_conflict(db, command, existing, payload)
 
-    if command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}:
-        raise ValueError(f"Cannot report execution for terminal command {command.status}")
+    if command.status != "SENT_TO_EA":
+        raise ValueError(
+            f"Cannot report first execution from command state {command.status}; "
+            "command must have been claimed by the EA first"
+        )
 
     execution = models.Execution(
         id=_next_id(db, models.Execution),
@@ -1154,6 +1157,179 @@ def record_execution(
     )
     ledger.on_execution(db, command, execution)
     return execution, True
+
+
+# --- Broker reconciliation ------------------------------------------------
+
+class BrokerReconciliationConflict(ValueError):
+    """Broker snapshot contradicts the command or stored execution state."""
+
+
+def _broker_symbol_matches(command_symbol: str, observed_symbol: str) -> bool:
+    command_symbol = (command_symbol or "").upper()
+    observed_symbol = (observed_symbol or "").upper()
+    return bool(
+        command_symbol
+        and observed_symbol
+        and (
+            observed_symbol == command_symbol
+            or observed_symbol.startswith(command_symbol)
+        )
+    )
+
+
+def _snapshot_tickets(payload) -> list[str]:
+    tickets = [str(ticket).strip() for ticket in payload.broker_tickets if str(ticket).strip()]
+    if not tickets:
+        raise BrokerReconciliationConflict("Broker snapshot contains no usable tickets")
+    return list(dict.fromkeys(tickets))
+
+
+def reconcile_open_position(
+    db: Session,
+    command: models.Command,
+    payload,
+) -> tuple[models.Execution, str]:
+    """Match or recover a lost execution report from authoritative broker state.
+
+    This path never sends an order. It only records an already-open position
+    after ownership and command fields agree.
+    """
+    from . import ledger
+
+    tickets = _snapshot_tickets(payload)
+    conflicts: list[str] = []
+    if not _broker_symbol_matches(command.symbol, payload.executed_symbol):
+        conflicts.append("symbol")
+    if command.direction != payload.executed_direction:
+        conflicts.append("direction")
+    if payload.stop_loss is not None and command.initial_stop_loss is not None:
+        if abs(float(payload.stop_loss) - float(command.initial_stop_loss)) > 1e-8:
+            conflicts.append("stop_loss")
+
+    existing = db.scalar(
+        select(models.Execution).where(models.Execution.command_id == command.id)
+    )
+    if existing is not None:
+        if existing.status != "SUCCESS":
+            conflicts.append("existing_execution_status")
+        if existing.executed_direction and existing.executed_direction != payload.executed_direction:
+            conflicts.append("existing_direction")
+        if existing.executed_symbol and not _broker_symbol_matches(
+            command.symbol, existing.executed_symbol
+        ):
+            conflicts.append("existing_symbol")
+        existing_tickets: set[str] = set()
+        if existing.broker_ticket:
+            existing_tickets.add(str(existing.broker_ticket))
+        if existing.child_tickets_json:
+            try:
+                existing_tickets.update(str(x) for x in json.loads(existing.child_tickets_json))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                conflicts.append("stored_ticket_payload")
+        if existing_tickets and not (existing_tickets & set(tickets)):
+            conflicts.append("broker_tickets")
+
+        if conflicts:
+            add_audit(
+                db,
+                "BROKER_RECONCILIATION_CONFLICT",
+                "command",
+                command.id,
+                {"conflicts": sorted(set(conflicts)), "tickets": tickets},
+            )
+            raise BrokerReconciliationConflict(
+                "Broker snapshot conflicts with stored execution: "
+                + ", ".join(sorted(set(conflicts)))
+            )
+
+        add_audit(
+            db,
+            "BROKER_RECONCILIATION_MATCHED",
+            "command",
+            command.id,
+            {"execution_id": existing.id, "tickets": tickets},
+        )
+        return existing, "matched"
+
+    if conflicts:
+        add_audit(
+            db,
+            "BROKER_RECONCILIATION_CONFLICT",
+            "command",
+            command.id,
+            {"conflicts": sorted(set(conflicts)), "tickets": tickets},
+        )
+        raise BrokerReconciliationConflict(
+            "Broker snapshot conflicts with command: "
+            + ", ".join(sorted(set(conflicts)))
+        )
+
+    recoverable_states = {
+        "SENT_TO_EA",
+        "EXECUTED_OPEN",
+        "PARTIAL_TP1_DONE",
+        "PARTIAL_TP2_DONE",
+    }
+    if command.status not in recoverable_states:
+        add_audit(
+            db,
+            "BROKER_RECONCILIATION_CONFLICT",
+            "command",
+            command.id,
+            {"conflicts": ["command_state"], "command_status": command.status},
+        )
+        raise BrokerReconciliationConflict(
+            f"Open broker position is incompatible with command state {command.status}"
+        )
+
+    previous_status = command.status
+    execution = models.Execution(
+        id=_next_id(db, models.Execution),
+        command_id=command.id,
+        user_id=command.user_id,
+        status="SUCCESS",
+        broker_ticket=tickets[0],
+        child_tickets_json=json.dumps(tickets),
+        executed_symbol=payload.executed_symbol,
+        executed_direction=payload.executed_direction,
+        requested_price=command.entry_price,
+        executed_price=payload.executed_price,
+        lot_size=payload.lot_size,
+        initial_stop_loss=payload.stop_loss or command.initial_stop_loss,
+        tp1=command.tp1,
+        tp2=command.tp2,
+        tp3=command.tp3,
+    )
+    db.add(execution)
+    if command.status == "SENT_TO_EA":
+        command.status = "EXECUTED_OPEN"
+        command.processed_at = utcnow()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        existing = db.scalar(
+            select(models.Execution).where(models.Execution.command_id == command.id)
+        )
+        if existing is None:
+            raise
+        return reconcile_open_position(db, command, payload)
+
+    add_audit(
+        db,
+        "EXECUTION_RECOVERED_FROM_BROKER_SNAPSHOT",
+        "execution",
+        execution.id,
+        {
+            "command_id": command.id,
+            "previous_status": previous_status,
+            "tickets": tickets,
+        },
+    )
+    if previous_status in {"SENT_TO_EA", "EXECUTED_OPEN"}:
+        ledger.on_execution(db, command, execution)
+    return execution, "recovered"
 
 
 # --- Management events ----------------------------------------------------
