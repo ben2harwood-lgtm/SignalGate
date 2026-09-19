@@ -122,7 +122,7 @@ def admin_demo_tenant(
         feed_id=bundle["feed"].id,
         user_id=bundle["user"].id,
         telegram_user_id=bundle["user"].telegram_user_id,
-        license_key=bundle["user"].license_key,
+        license_key=bundle["license_key"],
     )
 
 
