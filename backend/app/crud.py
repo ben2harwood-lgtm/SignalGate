@@ -6,6 +6,7 @@ admin pause, one-command-per-approval) live here.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import secrets
 from typing import List, Optional
@@ -38,10 +39,18 @@ _PREFIXES = {
 
 
 def _next_id(db: Session, model) -> str:
-    """Generate the next sequential prefixed ID for a model."""
+    """Generate a collision-resistant id.
+
+    Local demo users retain USER-000001 style ids because the bundled EA/demo
+    instructions rely on that convenience. Hosted mode and all safety-critical
+    entities use unpredictable ids so command/signal ids are not enumerable and
+    concurrent inserts do not derive the same id from a row count.
+    """
     prefix = _PREFIXES[model]
-    count = db.scalar(select(func.count()).select_from(model)) or 0
-    return f"{prefix}-{count + 1:06d}"
+    if model is models.User and not settings.require_license:
+        count = db.scalar(select(func.count()).select_from(model)) or 0
+        return f"{prefix}-{count + 1:06d}"
+    return f"{prefix}-{secrets.token_hex(8).upper()}"
 
 
 # --- Audit logging --------------------------------------------------------
@@ -196,7 +205,7 @@ def issue_license(db: Session, user: models.User) -> str:
             user.license_key = key
             user.updated_at = utcnow()
             db.flush()
-            add_audit(db, "LICENSE_ISSUED", "user", user.id, {"license_key": key})
+            add_audit(db, "LICENSE_ISSUED", "user", user.id, {"rotated": True})
             return key
     raise RuntimeError("Could not generate a unique license key")
 
@@ -618,33 +627,41 @@ def _create_command(
 def get_pending_command_for_user(
     db: Session, user_id: str
 ) -> Optional[models.Command]:
-    """Return + claim the oldest pending non-expired command for a user.
+    """Atomically claim the oldest pending non-expired command for a user.
 
-    Marks the command SENT_TO_EA so it is never handed out twice. Expired
-    pending commands are transitioned to EXPIRED and skipped.
+    PostgreSQL uses SELECT ... FOR UPDATE SKIP LOCKED so two EA polls/workers
+    cannot claim the same command concurrently. SQLite keeps the simple local
+    demo path, where the test/demo process is single-worker.
     """
-    candidates = db.scalars(
-        select(models.Command)
-        .where(
-            models.Command.user_id == user_id,
-            models.Command.status == "PENDING",
+    while True:
+        query = (
+            select(models.Command)
+            .where(
+                models.Command.user_id == user_id,
+                models.Command.status == "PENDING",
+            )
+            .order_by(models.Command.created_at.asc())
+            .limit(1)
         )
-        .order_by(models.Command.created_at.asc())
-    ).all()
+        bind = db.get_bind()
+        if bind is not None and bind.dialect.name == "postgresql":
+            query = query.with_for_update(skip_locked=True)
 
-    for command in candidates:
+        command = db.scalar(query)
+        if command is None:
+            return None
+
         if _is_expired(command.expires_at):
             command.status = "EXPIRED"
             db.flush()
             add_audit(db, "COMMAND_EXPIRED", "command", command.id)
             continue
-        # Claim it.
+
         command.status = "SENT_TO_EA"
         command.sent_to_ea_at = utcnow()
         db.flush()
         add_audit(db, "COMMAND_SENT_TO_EA", "command", command.id)
         return command
-    return None
 
 
 def get_command(db: Session, command_id: str) -> Optional[models.Command]:
@@ -667,11 +684,95 @@ def mark_command_received(db: Session, command: models.Command) -> None:
 
 # --- Executions -----------------------------------------------------------
 
+class ExecutionReportConflict(ValueError):
+    """A retry disagrees with the already-recorded broker execution outcome."""
+
+
+_EXECUTION_REPORT_FIELDS = (
+    "status",
+    "broker_ticket",
+    "child_tickets_json",
+    "executed_symbol",
+    "executed_direction",
+    "requested_price",
+    "executed_price",
+    "lot_size",
+    "initial_stop_loss",
+    "tp1",
+    "tp2",
+    "tp3",
+    "spread_at_execution",
+    "slippage",
+    "error_code",
+    "error_message",
+)
+
+
+def _execution_report_mismatches(
+    existing: models.Execution, payload
+) -> list[str]:
+    return [
+        field
+        for field in _EXECUTION_REPORT_FIELDS
+        if getattr(existing, field) != getattr(payload, field)
+    ]
+
+
+def _existing_execution_or_conflict(
+    db: Session,
+    command: models.Command,
+    existing: models.Execution,
+    payload,
+    *,
+    raced: bool = False,
+) -> tuple[models.Execution, bool]:
+    mismatches = _execution_report_mismatches(existing, payload)
+    if mismatches:
+        add_audit(
+            db,
+            "EXECUTION_REPORT_CONFLICT",
+            "command",
+            command.id,
+            {
+                "execution_id": existing.id,
+                "mismatched_fields": mismatches,
+                "existing_status": existing.status,
+                "incoming_status": payload.status,
+                "raced": raced,
+            },
+        )
+        raise ExecutionReportConflict(
+            "Conflicting execution report for command; manual reconciliation required"
+        )
+
+    add_audit(
+        db,
+        "DUPLICATE_EXECUTION_REPORT_IGNORED",
+        "command",
+        command.id,
+        {"execution_id": existing.id, "raced": raced},
+    )
+    return existing, False
+
+
 def record_execution(
     db: Session, command: models.Command, payload
-) -> models.Execution:
-    """Record an EA execution result and update command status + ledger."""
+) -> tuple[models.Execution, bool]:
+    """Record an execution result exactly once.
+
+    EA/network retries are normal. A retry for a command that already has an
+    execution returns the original row and does not replay ledger/state changes.
+    """
     from . import ledger
+
+    existing = db.scalar(
+        select(models.Execution).where(models.Execution.command_id == command.id)
+    )
+    if existing is not None:
+        return _existing_execution_or_conflict(db, command, existing, payload)
+
+    if command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}:
+        raise ValueError(f"Cannot report execution for terminal command {command.status}")
 
     execution = models.Execution(
         id=_next_id(db, models.Execution),
@@ -704,7 +805,21 @@ def record_execution(
         command.last_error = payload.error_message or payload.error_code
         command.processed_at = utcnow()
 
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # A simultaneous retry may have won the unique(command_id) race after
+        # our initial lookup. Roll back this transaction and return the winner.
+        db.rollback()
+        existing = db.scalar(
+            select(models.Execution).where(models.Execution.command_id == command.id)
+        )
+        if existing is not None:
+            return _existing_execution_or_conflict(
+                db, command, existing, payload, raced=True
+            )
+        raise
+
     add_audit(
         db,
         "EXECUTION_RECORDED",
@@ -713,10 +828,76 @@ def record_execution(
         {"status": payload.status, "command_id": command.id},
     )
     ledger.on_execution(db, command, execution)
-    return execution
+    return execution, True
 
 
 # --- Management events ----------------------------------------------------
+
+class ManagementEventConflict(ValueError):
+    """A retried lifecycle event disagrees with the stored event payload."""
+
+
+_MANAGEMENT_EVENT_FIELDS = (
+    "broker_ticket",
+    "event_type",
+    "stage",
+    "requested_action",
+    "result",
+    "price",
+    "lot_size_before",
+    "lot_size_after",
+    "stop_loss_before",
+    "stop_loss_after",
+    "error_code",
+    "error_message",
+)
+
+
+def _management_event_mismatches(
+    existing: models.TradeManagementEvent, payload
+) -> list[str]:
+    return [
+        field
+        for field in _MANAGEMENT_EVENT_FIELDS
+        if getattr(existing, field) != getattr(payload, field)
+    ]
+
+
+def _existing_management_event_or_conflict(
+    db: Session,
+    command: models.Command,
+    existing: models.TradeManagementEvent,
+    payload,
+    *,
+    raced: bool = False,
+) -> tuple[models.TradeManagementEvent, bool]:
+    mismatches = _management_event_mismatches(existing, payload)
+    if mismatches:
+        add_audit(
+            db,
+            "MANAGEMENT_EVENT_CONFLICT",
+            "command",
+            command.id,
+            {
+                "event_id": existing.id,
+                "event_type": payload.event_type,
+                "mismatched_fields": mismatches,
+                "raced": raced,
+            },
+        )
+        raise ManagementEventConflict(
+            "Conflicting management event retry; manual reconciliation required"
+        )
+
+    add_audit(
+        db,
+        "DUPLICATE_MANAGEMENT_EVENT_IGNORED",
+        "command",
+        command.id,
+        {"event_id": existing.id, "event_type": payload.event_type, "raced": raced},
+    )
+    return existing, False
+
 
 # Map of management event_type -> resulting command status (if any).
 _EVENT_TO_COMMAND_STATUS = {
@@ -730,15 +911,39 @@ _EVENT_TO_COMMAND_STATUS = {
 }
 
 
+def _management_event_key(command: models.Command, payload) -> str:
+    parts = [
+        command.id,
+        payload.event_type or "",
+        payload.stage or "",
+        payload.result or "",
+        payload.broker_ticket or "",
+        payload.requested_action or "",
+    ]
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
 def record_management_event(
     db: Session, command: models.Command, payload
-) -> models.TradeManagementEvent:
-    """Store a management event and advance command status + ledger."""
+) -> tuple[models.TradeManagementEvent, bool]:
+    """Store a management event idempotently and advance state monotonically."""
     from . import ledger
+
+    event_key = _management_event_key(command, payload)
+    existing = db.scalar(
+        select(models.TradeManagementEvent).where(
+            models.TradeManagementEvent.idempotency_key == event_key
+        )
+    )
+    if existing is not None:
+        return _existing_management_event_or_conflict(
+            db, command, existing, payload
+        )
 
     event = models.TradeManagementEvent(
         id=_next_id(db, models.TradeManagementEvent),
         command_id=command.id,
+        idempotency_key=event_key,
         broker_ticket=payload.broker_ticket,
         event_type=payload.event_type,
         stage=payload.stage,
@@ -754,22 +959,44 @@ def record_management_event(
     )
     db.add(event)
 
+    terminal = command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}
     new_status = _EVENT_TO_COMMAND_STATUS.get(payload.event_type)
-    if new_status:
+    if new_status and not terminal:
         command.status = new_status
         if new_status in {"FULLY_CLOSED", "FAILED"}:
             command.processed_at = utcnow()
 
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # Same event raced us. The unique idempotency key makes the DB the
+        # final arbiter even with multiple API workers.
+        db.rollback()
+        existing = db.scalar(
+            select(models.TradeManagementEvent).where(
+                models.TradeManagementEvent.idempotency_key == event_key
+            )
+        )
+        if existing is not None:
+            return _existing_management_event_or_conflict(
+                db, command, existing, payload, raced=True
+            )
+        raise
+
     add_audit(
         db,
         "MANAGEMENT_EVENT",
         "management_event",
         event.id,
-        {"event_type": payload.event_type, "command_id": command.id},
+        {
+            "event_type": payload.event_type,
+            "command_id": command.id,
+            "state_advanced": bool(new_status and not terminal),
+        },
     )
-    ledger.on_management_event(db, command, event)
-    return event
+    if not terminal:
+        ledger.on_management_event(db, command, event)
+    return event, True
 
 
 # --- helpers --------------------------------------------------------------

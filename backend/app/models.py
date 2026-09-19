@@ -133,7 +133,9 @@ class Execution(Base):
     __tablename__ = "executions"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    command_id: Mapped[str] = mapped_column(ForeignKey("commands.id"), index=True)
+    command_id: Mapped[str] = mapped_column(
+        ForeignKey("commands.id"), unique=True, index=True
+    )
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     status: Mapped[str] = mapped_column(String)  # SUCCESS / FAILED
     broker_ticket: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -159,6 +161,7 @@ class TradeManagementEvent(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     command_id: Mapped[str] = mapped_column(ForeignKey("commands.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     broker_ticket: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     event_type: Mapped[str] = mapped_column(String)
     stage: Mapped[Optional[str]] = mapped_column(String, nullable=True)

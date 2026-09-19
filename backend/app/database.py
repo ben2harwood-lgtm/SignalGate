@@ -1,16 +1,16 @@
 """Database engine, session factory and Base for SQLAlchemy models."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Generator
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
 
 settings = get_settings()
 
-# SQLite needs check_same_thread=False when used across FastAPI threads.
 _connect_args = (
     {"check_same_thread": False}
     if settings.database_url.startswith("sqlite")
@@ -21,8 +21,6 @@ engine = create_engine(
     settings.database_url,
     connect_args=_connect_args,
     future=True,
-    # pool_pre_ping avoids handing out a dead connection after a Postgres
-    # server idle-timeout/restart on the hosted deployment. Harmless for SQLite.
     pool_pre_ping=True,
 )
 
@@ -44,8 +42,43 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def init_db() -> None:
-    """Create all tables. Import models first so they register on Base."""
-    from . import models  # noqa: F401  (ensures models are registered)
+def _assert_hosted_schema_current() -> None:
+    """Fail closed unless the hosted database is exactly at Alembic head."""
+    # Alembic is a hosted-only dependency, so import lazily to keep the local
+    # SQLite demo lightweight.
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
 
+    config_path = Path(__file__).resolve().parents[1] / "alembic.ini"
+    config = Config(str(config_path))
+    script = ScriptDirectory.from_config(config)
+    heads = tuple(script.get_heads())
+    if len(heads) != 1:
+        raise RuntimeError(
+            f"Hosted database requires exactly one Alembic head; found {heads!r}"
+        )
+
+    with engine.connect() as connection:
+        current = MigrationContext.configure(connection).get_current_revision()
+
+    if current != heads[0]:
+        raise RuntimeError(
+            "Hosted database schema is not migration-current: "
+            f"current={current or 'none'}, expected={heads[0]}. "
+            "Run the reviewed Alembic migration gate before starting SignalGate."
+        )
+
+
+def init_db() -> None:
+    """Initialise local demo schema or verify hosted migration state.
+
+    Hosted mode never calls create_all(). It refuses to start unless PostgreSQL
+    is already at the single reviewed Alembic head.
+    """
+    from . import models  # noqa: F401
+
+    if settings.require_license:
+        _assert_hosted_schema_current()
+        return
     Base.metadata.create_all(bind=engine)

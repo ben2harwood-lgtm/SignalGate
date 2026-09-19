@@ -1,7 +1,6 @@
 # Hosted/server deployment requirements.
-# Installs everything from the local requirements PLUS the PostgreSQL driver.
-# Local demo users do NOT need this file — they use requirements.txt (SQLite).
+# Installs local backend dependencies plus the PostgreSQL driver and migration tool.
+# Hosted schema changes are Alembic-managed; the application never runs create_all().
 -r requirements.txt
-psycopg2-binary==2.9.9
-# Vision extraction of signal screenshots uses the Anthropic API over httpx
-# (already in requirements.txt) — no extra SDK needed. Just set ANTHROPIC_API_KEY.
+psycopg2-binary==2.9.13
+alembic==1.20.0
