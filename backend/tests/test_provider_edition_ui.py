@@ -79,6 +79,24 @@ def test_provider_can_create_and_configure_own_feed(client, db):
     assert "EURUSD" in (body["allowed_symbols_json"] or "")
 
 
+def test_provider_can_create_feed_paused_fail_safe(client, db):
+    provider, _feed, key = _provider(db, "paused-create")
+    created = client.post(
+        "/providers/me/feeds",
+        json={
+            "name": "Pilot Feed",
+            "source_namespace": "pilot-paused",
+            "paused": True,
+        },
+        headers=_headers(provider, key),
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["paused"] is True
+    row = db.get(models.Feed, created.json()["id"])
+    assert row is not None
+    assert row.paused is True
+
+
 def test_provider_cannot_configure_another_provider_feed(client, db):
     p1, f1, k1 = _provider(db, "policy-a")
     p2, _f2, k2 = _provider(db, "policy-b")
