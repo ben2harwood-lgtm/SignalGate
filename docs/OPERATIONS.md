@@ -28,15 +28,14 @@ Load balancers should use `/readyz`; process supervisors may use `/livez`.
 2. Set a strong PostgreSQL password outside the repository.
 3. Set `BACKEND_BASE_URL` to the public **HTTPS** origin.
 4. Build the image from a reviewed commit.
-5. Run schema migration gate before application rollout once Alembic migrations
-   land. Until then, this release is not production-migration-ready.
+5. Run the Alembic schema migration gate before application rollout and verify
+   the database is at the exact current head.
 6. Start one instance, verify readiness, then expand.
 7. Run the simulator smoke flow only; do not use real-money trading during
    hardening.
 
 ## Release evidence still required
 
-- versioned/reversible database migrations;
 - central log aggregation and alerts;
 - production-like retained-backup restore drill with measured RTO/RPO (CI now
   proves the backup/restore scripts round-trip data on ephemeral PostgreSQL);
@@ -45,7 +44,7 @@ Load balancers should use `/readyz`; process supervisors may use `/livez`.
 - independent penetration test;
 - production rollback exercise.
 
-Do not mark G6 complete until those have actual receipts.
+Versioned migrations, encrypted backup tooling, readiness and the container baseline are integrated; do not mark G6 complete until the remaining deployed-environment items have actual receipts.
 
 
 ## Observability and alerting
