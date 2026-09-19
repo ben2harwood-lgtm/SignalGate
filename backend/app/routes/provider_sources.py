@@ -42,6 +42,7 @@ def _provider_binding_out(
         provider_display_name=provider.brand_display_name,
         feed_id=feed.id,
         feed_name=feed.name,
+        expiry_minutes=feed.expiry_minutes,
         source_type=binding.source_type,
         status=binding.status,
     )
