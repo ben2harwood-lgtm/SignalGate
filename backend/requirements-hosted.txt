@@ -9,5 +9,5 @@ alembic==1.20.0
 # Container/runtime hardening pins.
 # Trivy identified vulnerable versions in the built hosted image; these are the
 # first fixed versions reported for the corresponding findings.
-setuptools==78.1.1
+setuptools==83.0.0
 msgpack==1.2.1
