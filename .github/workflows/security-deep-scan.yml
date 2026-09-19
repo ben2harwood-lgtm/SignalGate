@@ -54,7 +54,8 @@ jobs:
       - name: Inspect final Python package state
         run: |
           docker run --rm signalgate-security-scan python -m pip check
-          docker run --rm signalgate-security-scan python -c "import importlib.metadata as m; names=['setuptools','wheel','msgpack','jaraco.context']; [print(f'{n}={m.version(n)}') for n in names if any(d.metadata['Name'].lower()==n for d in m.distributions())]"
+          docker run --rm signalgate-security-scan python -c "import importlib.metadata as m; names=['setuptools','wheel','msgpack','jaraco.context']; [print(f'{n}={m.version(n)}') for n in names if any((d.metadata.get('Name') or '').lower()==n for d in m.distributions())]"
+          docker run --rm signalgate-security-scan python -c "import importlib.metadata as m,re; targets={'setuptools','wheel','msgpack','jaraco.context'}; rows=[]; [rows.extend((d.metadata.get('Name'),r) for r in (d.requires or []) if re.split(r'[ (<=>;\[]',r,1)[0].lower() in targets) for d in m.distributions()]; print('reverse-dependencies=',rows)"
       - name: Scan hosted image for fixable high/critical vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
