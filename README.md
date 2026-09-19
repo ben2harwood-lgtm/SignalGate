@@ -46,6 +46,9 @@ requires explicit YES approval and the MT5 EA refuses real accounts.
 - One-time customer EA licences stored only as hashes + last-four metadata.
 - Organisation/provider/feed/subscriber/account tenancy with provider-specific hashed credentials.
 - Provider Portal: feed policy, branding, key rotation, pause controls, history/reconciliation and demo bootstrap.
+- Explicit one-time subscriber consent invites; providers cannot silently attach subscribers.
+- Tenant-bound Telegram provider-source binding/revocation and feed-policy enforcement.
+- Tamper-evident audit hash chain with verification and migration backfill proof.
 - PostgreSQL-capable backend.
 - GitHub CI, Python compile checks and dependency vulnerability audit on the
   hardening integration branch.
@@ -66,7 +69,6 @@ compile/demo receipt, and G8 external security/regulatory reviews are not comple
 
 ## Not yet production-complete
 
-- Subscriber-consent invite flow is being integrated as the next migration gate.
 - Production SSO/MFA/RBAC where target enterprise customers require it.
 - Central telemetry backend, alert routing and measured SLO history.
 - Production-like scheduled restore drill with recorded RTO/RPO.
@@ -149,8 +151,10 @@ cd backend
 python -m pytest -q
 ```
 
-CI also compiles Python sources and runs `pip-audit` against backend and bot
-dependencies.
+CI runs the backend suite on SQLite and PostgreSQL, compiles Python sources, runs
+Bandit medium/high static-security scanning, audits dependencies, checks the full
+Alembic migration chain, builds the hosted container, and proves encrypted
+backup/restore on an isolated PostgreSQL database.
 
 ## Evidence and operations
 
