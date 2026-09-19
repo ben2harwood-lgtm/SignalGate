@@ -65,3 +65,8 @@ After restore:
 CI generates an ephemeral age key, performs PostgreSQL migration-to-head, writes sentinel data, creates an **encrypted** backup, verifies its checksum, restores it into an isolated database and proves the sentinel survived.
 
 That proves the scripts and encryption round-trip. G6 still requires a scheduled production-like drill against a retained backup with recorded RTO/RPO, access controls and reviewer sign-off.
+
+
+## Alert integration
+
+Backup failure, checksum failure and restore-drill failure are urgent alert conditions in `docs/OBSERVABILITY.md`. When a central monitoring backend is connected, retain the alert-delivery receipt alongside each scheduled restore drill.
