@@ -16,9 +16,9 @@ Current truth:
 
 Frozen demo RC:
 
-`release/signalgate-demo-rc-2026-09-19`
+`release/signalgate-demo-rc2-2026-09-19`
 
-Do not move or rewrite the frozen candidate while external evidence is being collected.
+Do not move or rewrite the frozen RC2 candidate while external evidence is being collected. RC1 remains historical.
 
 ## Before editing
 

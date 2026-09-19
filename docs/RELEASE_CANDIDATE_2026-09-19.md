@@ -1,34 +1,50 @@
-# SignalGate Release Candidate Evidence — 19 September 2026
+# SignalGate Release Candidate Evidence — RC2 — 19 September 2026
 
 ## Candidate identity
 
-- Runtime candidate SHA: `6235f136dac3e29d549dc942c998ae7bdacf4e1d`
+- RC2 runtime/tooling SHA: `852a6bc9ca9f0651b34e87b63e86c65669130767`
 - Integration branch: `codex/signalgate-hardening-2026-09-18`
+- Release branch target: `release/signalgate-demo-rc2-2026-09-19`
 - Integrated CI workflow: `SignalGate CI`
-- CI run: **#115**
-- GitHub Actions run id: `35457806582`
+- Combined runtime/tooling CI run: **#134**
+- GitHub Actions run id: `35459129106`
 - Result: **SUCCESS**
 - Operating mode: **demo-only**
 
 This receipt records repository evidence. It does **not** claim that external/manual gates are complete.
 
-## Final integration sequence
+RC1 remains preserved at `release/signalgate-demo-rc-2026-09-19`. RC2 supersedes RC1 for new acceptance work; RC1 must not be silently rewritten.
 
-The final release-candidate convergence included:
+## Why RC2 exists
 
-- PR #33 — stronger newly issued customer EA licences;
-- PR #29 — penetration-test scope, privacy/data map and UK regulatory-counsel brief;
-- PR #27 — provider provisioning, controlled-beta acceptance, commercial/pilot and due-diligence evidence;
-- PR #36 — clean current-spine rebase of the tenant-scoped provider evidence export, superseding conflicted PR #35.
+RC1 established a machine-green, substantially built/hardened Provider Edition. Before beginning external acceptance, the repository was pushed through one further readiness pass.
 
-The provider evidence export landed only after the original branch was retargeted, exposed as non-mergeable, rebuilt from the current spine and re-proved. The superseded PR #35 was closed rather than forced.
+RC2 adds no real-money or automatic-copy mode. It improves how safely and reproducibly the existing demo-only product can be handed to operators, assessors, counsel and a first provider.
 
-## Machine evidence at candidate SHA
+### RC2 readiness improvements
 
-CI run #115 passed:
+- acceptance evidence index and blank receipt templates;
+- first-provider operator runbook;
+- current Provider Edition demo/onboarding instructions;
+- stale Nick/admin-only prototype guides removed from the current operating path;
+- stale agent prompts replaced with current Provider Edition guardrails;
+- project-owned deprecation warnings cleaned while preserving naive-UTC database semantics;
+- deterministic allowlisted external-review bundles;
+- SHA-256 manifest for every external-review bundle;
+- default bundle verification that checked-out Git HEAD exactly equals the claimed candidate SHA;
+- explicit unverified-source escape hatch that marks the manifest unverified;
+- hosted deployment docs aligned with Alembic, tenant-scoped auth and encrypted backup/restore;
+- first-provider provisioning creates the initial feed paused by explicit API request;
+- provider provisioning receipt records the paused state and warns not to unpause before checks pass.
 
-- backend test suite on SQLite;
-- full backend test suite on PostgreSQL;
+## Machine evidence
+
+CI run #134 completed **SUCCESS** at the exact RC2 runtime/tooling SHA.
+
+The same CI matrix covers:
+
+- full backend suite on SQLite;
+- full backend suite on PostgreSQL;
 - Python source compilation;
 - Bandit medium/high static-security scan;
 - dependency vulnerability audits;
@@ -38,6 +54,8 @@ CI run #115 passed:
 - hosted stale-schema rejection and re-upgrade;
 - hosted container build;
 - encrypted PostgreSQL backup + checksum + isolated restore smoke.
+
+The safe-provisioning branch passed **170 tests on SQLite and 170 tests on PostgreSQL**. After the bundle-integrity tests were integrated, final combined CI run #134 passed **172 tests on SQLite and 172 tests on PostgreSQL**, with only two upstream framework deprecation warnings. Run #134 is the authoritative runtime/tooling integration receipt.
 
 The versioned database chain reaches `20260919_0010_audit_hash_chain`.
 
@@ -56,13 +74,15 @@ Automated coverage includes:
 - adversarial parser/replay controls and deterministic fuzz/hostile corpus;
 - tamper-evident audit-chain verification;
 - provider export privacy/isolation/authentication tests;
-- encrypted backup/restore smoke.
+- encrypted backup/restore smoke;
+- fail-safe paused first-provider feed provisioning;
+- acceptance-bundle path/secret allowlist and source-integrity tests.
 
 ## Product / pilot package present
 
 The repository now contains:
 
-- provider provisioning workflow;
+- repeatable provider provisioning;
 - Provider Edition portal and demo bootstrap;
 - feed policy, pause and branding controls;
 - credential rotation;
@@ -73,22 +93,27 @@ The repository now contains:
 - security overview;
 - controlled provider beta acceptance checklist;
 - controlled pilot plan;
+- first-provider operator runbook;
+- acceptance evidence index and receipt templates;
+- deterministic external-review bundle tooling;
 - dependency/licence inventory procedure;
 - due-diligence evidence map;
 - penetration-test scope;
 - privacy/data map;
-- UK regulatory-counsel architecture brief.
+- UK regulatory-counsel architecture brief;
+- current hosted-deployment/operations guidance;
+- current coding-agent safety guardrails.
 
-## Open external/manual gates
+## External/manual gates still open
 
 ### MT5 acceptance
 
-Still required:
+Still required against RC2:
 
-- compile the exact candidate EA in target MetaEditor;
+- compile the exact RC2 EA source in target MetaEditor;
 - record MetaEditor/build and broker-demo terminal versions;
 - prove 0 compile errors and 0 warnings;
-- retain screenshot/exported compiler log;
+- retain screenshot or exported compiler log;
 - run and retain the complete demo scenario pack in `docs/MT5_ACCEPTANCE.md`.
 
 Until those receipts exist, MT5 execution is machine-tested but not externally accepted.
@@ -123,7 +148,7 @@ Still required:
 
 ## Explicit non-claims
 
-This candidate does **not** prove:
+RC2 does **not** prove:
 
 - safety for UK retail real-money trading;
 - regulatory authorisation or exemption;
@@ -134,8 +159,8 @@ This candidate does **not** prove:
 - live-broker execution acceptance;
 - paying-customer traction.
 
-## RC decision
+## RC2 decision
 
-At `6235f136dac3e29d549dc942c998ae7bdacf4e1d`, the repository is a **machine-green, demo-only software release candidate** suitable to proceed to the external/manual acceptance sequence.
+Run #134 is **SUCCESS**. Once the documentation-only RC2 freeze itself is green and the named RC2 release branch is pinned, this candidate is suitable to proceed to the external/manual acceptance sequence.
 
-Do not enable UK retail real-money trading from this candidate.
+Do not enable UK retail real-money trading or automatic copy execution from RC2.
