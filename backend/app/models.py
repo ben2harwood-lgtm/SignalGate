@@ -116,6 +116,22 @@ class User(Base):
     )
 
 
+class SubscriptionInvite(Base):
+    __tablename__ = "subscription_invites"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id"), index=True)
+    feed_id: Mapped[str] = mapped_column(ForeignKey("feeds.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String, default="PENDING")
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    accepted_user_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id"), nullable=True, index=True
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    accepted_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class Subscription(Base):
     __tablename__ = "subscriptions"
     __table_args__ = (
