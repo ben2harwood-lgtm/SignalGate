@@ -41,3 +41,7 @@ site-mockups/demo-requests.jsonl
 
 # Local acceptance evidence (may contain machine/environment details)
 artifacts/mt5-acceptance/
+
+# One-time provider onboarding credential exports
+*provider-credential*.json
+*provider-onboarding-secret*.json
