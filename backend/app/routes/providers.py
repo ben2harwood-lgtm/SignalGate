@@ -1,10 +1,11 @@
 """Provider Edition tenancy and provisioning endpoints."""
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.orm import Session
 
 from .. import crud
@@ -200,6 +201,122 @@ def provider_history(
             limit=max(1, min(limit, 200)),
         )
     }
+
+
+@router.get("/providers/me/export")
+def provider_evidence_export(
+    principal: ProviderPrincipal = Depends(require_provider_principal),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """Export only the authenticated provider's operating evidence."""
+    if principal is None:
+        raise HTTPException(status_code=400, detail="Tenant principal required")
+    provider = crud.get_provider(db, principal.provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    feeds = crud.list_provider_feeds(db, provider.id)
+    feed_rows = []
+    subscriber_ids: set[str] = set()
+    for feed in feeds:
+        users = crud.list_active_users_for_feed(db, provider.id, feed.id)
+        subscribers = []
+        for user in users:
+            subscriber_ids.add(user.id)
+            account = crud.get_trading_account(db, provider.id, user.id)
+            subscribers.append(
+                {
+                    "user_id": user.id,
+                    "telegram_user_id": user.telegram_user_id,
+                    "telegram_username": user.telegram_username,
+                    "first_name": user.first_name,
+                    "status": user.status,
+                    "account_id": account.id if account else None,
+                    "account_status": account.status if account else None,
+                }
+            )
+        feed_rows.append(
+            {
+                "id": feed.id,
+                "name": feed.name,
+                "source_namespace": feed.source_namespace,
+                "status": feed.status,
+                "paused": feed.paused,
+                "allowed_symbols_json": feed.allowed_symbols_json,
+                "expiry_minutes": feed.expiry_minutes,
+                "default_lot_size": feed.default_lot_size,
+                "subscribers": subscribers,
+            }
+        )
+
+    source_bindings = crud.list_provider_source_bindings(db, provider.id)
+    history = crud.provider_history(db, provider.id, limit=1000)
+    signals = crud.list_provider_signals(db, provider.id, limit=1000)
+
+    payload = {
+        "schema": "signalgate-provider-evidence-v1",
+        "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "provider": {
+            "id": provider.id,
+            "organization_id": provider.organization_id,
+            "name": provider.name,
+            "slug": provider.slug,
+            "status": provider.status,
+            "paused": provider.paused,
+            "brand_display_name": provider.brand_display_name,
+            "support_contact": provider.support_contact,
+        },
+        "feeds": feed_rows,
+        "source_bindings": [
+            {
+                "binding_id": row.id,
+                "feed_id": row.feed_id,
+                "source_type": row.source_type,
+                "external_identity": row.external_identity,
+                "status": row.status,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            }
+            for row in source_bindings
+        ],
+        "signals": [
+            {
+                "id": row.id,
+                "feed_id": row.feed_id,
+                "source": row.source,
+                "source_message_id": row.source_message_id,
+                "symbol": row.symbol,
+                "direction": row.direction,
+                "entry_type": row.entry_type,
+                "entry_price": row.entry_price,
+                "initial_stop_loss": row.initial_stop_loss,
+                "tp1": row.tp1,
+                "tp2": row.tp2,
+                "tp3": row.tp3,
+                "parser_status": row.parser_status,
+                "parser_error": row.parser_error,
+                "status": row.status,
+                "created_at": row.created_at,
+                "expires_at": row.expires_at,
+            }
+            for row in signals
+        ],
+        "history": history,
+        "summary": {
+            "feed_count": len(feeds),
+            "active_subscriber_count": len(subscriber_ids),
+            "signal_count_in_export": len(signals),
+            "command_count_in_export": len(history),
+        },
+    }
+    return JSONResponse(
+        content=__import__("fastapi").encoders.jsonable_encoder(payload),
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="signalgate-{provider.slug}-evidence.json"'
+            )
+        },
+    )
 
 
 @router.get("/providers/me/feeds", response_model=list[FeedOut])
