@@ -70,3 +70,8 @@ For each subscriber:
 Invites expire, can be revoked before acceptance, and cannot be reused. If an invite is forwarded, the first eligible Telegram account that accepts it consumes it, so providers should deliver invites through an appropriate private channel.
 
 The deprecated direct provider enrolment endpoint returns HTTP 410 and creates nothing.
+
+
+## Telegram signal source
+
+Hosted providers connect Telegram through a feed-bound one-time token rather than a shared provider credential. Generate the token in the Provider Portal, send `/connectprovider <token>` from the provider Telegram account, and verify the binding before submitting screenshots. See `docs/PROVIDER_TELEGRAM_SOURCE.md`.
