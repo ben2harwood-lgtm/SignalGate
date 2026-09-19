@@ -1,12 +1,13 @@
 """Signal creation, listing, and approve/reject decision endpoints."""
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from .. import crud
+from ..config import get_settings
 from ..database import get_db
 from ..parser import parse_signal
 from ..schemas import (
@@ -16,10 +17,16 @@ from ..schemas import (
     ExtractionResponse,
     SignalOut,
 )
-from ..security import require_admin, require_registration, require_signal_provider
+from ..security import (
+    ProviderPrincipal,
+    require_admin,
+    require_registration,
+    require_signal_provider,
+)
 from ..vision_extractor import get_extractor
 
 router = APIRouter(tags=["signals"])
+settings = get_settings()
 MAX_SIGNAL_IMAGE_BYTES = 5 * 1024 * 1024
 
 
@@ -27,7 +34,7 @@ MAX_SIGNAL_IMAGE_BYTES = 5 * 1024 * 1024
 def extract_signal(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _provider: str = Depends(require_signal_provider),
+    _provider: ProviderPrincipal = Depends(require_signal_provider),
 ) -> ExtractionResponse:
     """Read a signal screenshot into structured fields for human confirmation.
 
@@ -99,14 +106,40 @@ def extract_signal(
 def create_signal(
     payload: CreateSignalRequest,
     db: Session = Depends(get_db),
-    _provider: str = Depends(require_signal_provider),
+    principal: ProviderPrincipal = Depends(require_signal_provider),
 ) -> SignalOut:
+    feed_id = None
+    source = payload.source
+    if principal.organization_id is not None:
+        feed = crud.get_provider_feed_by_source(
+            db, principal.organization_id, payload.source
+        )
+        if feed is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Signal source is not assigned to this provider tenant",
+            )
+        if feed.status != "ACTIVE" or feed.paused:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Provider feed is inactive or paused",
+            )
+        feed_id = feed.id
+        # Never persist a provider-controlled alternate namespace in hosted mode.
+        source = feed.source_namespace
+    elif settings.require_license:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Hosted signal creation requires a tenant-scoped provider credential",
+        )
+
     try:
         signal = crud.create_signal(
             db,
             raw_text=payload.raw_text,
-            source=payload.source,
+            source=source,
             source_message_id=payload.source_message_id,
+            feed_id=feed_id,
         )
     except crud.SignalReplayConflict as exc:
         # Persist the conflict audit receipt, but never pretend the new content
@@ -122,15 +155,37 @@ def create_signal(
 
 @router.get("/signals/recipients")
 def signal_recipients(
+    signal_id: Optional[str] = None,
     db: Session = Depends(get_db),
-    _provider: str = Depends(require_signal_provider),
+    principal: ProviderPrincipal = Depends(require_signal_provider),
 ) -> dict:
-    """Return active Telegram recipients for trade-card broadcast.
+    """Return recipients without allowing cross-tenant subscriber enumeration."""
+    if principal.organization_id is not None:
+        if not signal_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="signal_id is required for tenant-scoped recipient lookup",
+            )
+        signal = crud.get_signal(db, signal_id)
+        if signal is None or signal.feed_id is None:
+            raise HTTPException(status_code=404, detail="Signal not found")
+        feed = crud.get_provider_feed(
+            db, principal.organization_id, signal.feed_id
+        )
+        if feed is None:
+            raise HTTPException(status_code=404, detail="Signal not found")
+        users = crud.list_active_feed_users(db, feed.id)
+    else:
+        if settings.require_license:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tenant-scoped provider credential required",
+            )
+        # Local demo compatibility: unscoped signals still broadcast to all
+        # active test users.
+        users = crud.list_active_users(db)
 
-    This endpoint is for the bot, not a dashboard. It keeps screenshot providers
-    out of admin endpoints while still letting a confirmed signal reach testers.
-    """
-    users = crud.list_active_users(db)
+    db.commit()
     return {
         "recipients": [
             {
