@@ -1,18 +1,24 @@
 """FastAPI application entrypoint for SignalGate backend."""
 from __future__ import annotations
 
+import json
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 
+from .config import get_settings
 from .database import SessionLocal, init_db
-from .routes import admin, commands, ea, health, signals, users
+from .routes import admin, commands, ea, health, provider_sources, providers, signals, users
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("signalgate")
+request_logger = logging.getLogger("signalgate.request")
+settings = get_settings()
 
 # Default settings seeded on first run.
 DEFAULT_SETTINGS = {
@@ -48,6 +54,7 @@ def seed_settings() -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    settings.validate_startup()
     init_db()
     seed_settings()
     logger.info("SignalGate backend ready (demo-only mode).")
@@ -65,6 +72,51 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
+    @app.middleware("http")
+    async def _request_observability(request: Request, call_next):
+        request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+        started = time.perf_counter()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+        except Exception:
+            latency_ms = round((time.perf_counter() - started) * 1000, 3)
+            request_logger.exception(
+                json.dumps(
+                    {
+                        "event": "http_request",
+                        "request_id": request_id,
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status": status_code,
+                        "latency_ms": latency_ms,
+                    },
+                    separators=(",", ":"),
+                )
+            )
+            raise
+
+        latency_ms = round((time.perf_counter() - started) * 1000, 3)
+        response.headers["X-Request-Id"] = request_id
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        request_logger.info(
+            json.dumps(
+                {
+                    "event": "http_request",
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": status_code,
+                    "latency_ms": latency_ms,
+                },
+                separators=(",", ":"),
+            )
+        )
+        return response
+
     @app.get("/", include_in_schema=False)
     def _root() -> RedirectResponse:
         """Send browser users to the local API console.
@@ -80,6 +132,8 @@ def create_app() -> FastAPI:
     app.include_router(commands.router)
     app.include_router(ea.router)
     app.include_router(admin.router)
+    app.include_router(providers.router)
+    app.include_router(provider_sources.router)
     return app
 
 

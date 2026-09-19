@@ -183,9 +183,16 @@ def on_management_event(
     if event.event_type == "FULLY_CLOSED" and led.result_status not in {
         "STOPPED_OUT",
         "FAILED",
+        "TP1_HIT",
+        "TP2_HIT",
+        "TP3_HIT",
     }:
-        if led.result_status not in {"TP1_HIT", "TP2_HIT", "TP3_HIT"}:
-            led.result_status = "TP3_HIT"
+        led.result_status = "CLOSED_UNATTRIBUTED"
+        led.r_result = None
+        led.final_notes = (
+            "Trade reported fully closed without a TP/SL attribution; "
+            "manual reconciliation required."
+        )
 
     led.updated_at = utcnow()
     db.flush()

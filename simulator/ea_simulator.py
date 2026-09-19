@@ -48,14 +48,21 @@ class EASimulator:
         http: HttpLike,
         user_id: str,
         api_key: str,
+        license_key: str = "",
         delay: float = 0.5,
         verbose: bool = True,
+        scenario: str = "win",
     ) -> None:
         self.http = http
         self.user_id = user_id
         self.headers = {"X-EA-API-Key": api_key}
+        if license_key:
+            self.headers["X-SG-License-Key"] = license_key
         self.delay = delay
         self.verbose = verbose
+        if scenario not in {"win", "stop_out"}:
+            raise ValueError("scenario must be 'win' or 'stop_out'")
+        self.scenario = scenario
         self.processed: set = set()  # local idempotency, like the real EA
 
     def log(self, msg: str) -> None:
@@ -130,6 +137,10 @@ class EASimulator:
         else:
             child_tickets = [_fake_ticket(base_ticket, 0)]
 
+        if self.scenario == "stop_out":
+            self._simulate_stop_out(command, child_tickets)
+            return
+
         self.log(f"Simulating OPEN for {cid} tickets={child_tickets}")
         self.post_execution(command, child_tickets)
         self.post_event(
@@ -186,6 +197,39 @@ class EASimulator:
         self.log("Simulating FULLY_CLOSED")
         self.post_event(cid, event_type="FULLY_CLOSED", stage="FULLY_CLOSED",
                         result="SUCCESS")
+
+    def _simulate_stop_out(
+        self, command: Dict[str, Any], child_tickets: List[str]
+    ) -> None:
+        """Exercise the losing path without placing any broker trade."""
+        cid = command["command_id"]
+        sl = command["initial_stop_loss"]
+        self.log(f"Simulating OPEN then STOP-OUT for {cid}")
+        self.post_execution(command, child_tickets)
+        self.post_event(
+            cid,
+            broker_ticket=child_tickets[0],
+            event_type="OPENED",
+            stage="OPENED",
+            result="SUCCESS",
+            price=_implied_entry(command),
+        )
+        self._sleep()
+        self.post_event(
+            cid,
+            broker_ticket=child_tickets[0],
+            event_type="STOP_LOSS_HIT",
+            stage="FULLY_CLOSED",
+            result="SUCCESS",
+            price=sl,
+            stop_loss_after=sl,
+        )
+        self.post_event(
+            cid,
+            event_type="FULLY_CLOSED",
+            stage="FULLY_CLOSED",
+            result="SUCCESS",
+        )
 
     def run_once(self) -> bool:
         """Poll once; if a command is found, run its full lifecycle.
@@ -246,6 +290,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SignalGate EA SIMULATOR (no trading)")
     parser.add_argument("--user-id", required=True, help="e.g. USER-000001")
     parser.add_argument("--api-key", default="local-demo-ea-key")
+    parser.add_argument("--license-key", default="")
+    parser.add_argument(
+        "--scenario",
+        choices=["win", "stop_out"],
+        default="win",
+        help="Simulator lifecycle: full targets or explicit stop-out loss",
+    )
     parser.add_argument("--backend", default="http://127.0.0.1:8000")
     parser.add_argument("--poll-interval", type=float, default=2.0)
     parser.add_argument(
@@ -264,7 +315,9 @@ def main() -> None:
             http=http,
             user_id=args.user_id,
             api_key=args.api_key,
+            license_key=args.license_key,
             delay=args.delay,
+            scenario=args.scenario,
         )
         if args.once:
             if not sim.run_once():

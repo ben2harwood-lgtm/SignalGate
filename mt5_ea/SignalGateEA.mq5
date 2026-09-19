@@ -55,11 +55,15 @@ double  g_active_sl           = 0.0;
 double  g_active_tp1          = 0.0;
 double  g_active_tp2          = 0.0;
 double  g_active_tp3          = 0.0;
-ulong   g_child_tickets[3];               // TP1, TP2, TP3 child tickets
+ulong   g_child_tickets[3];               // opening deal tickets
+ulong   g_child_pos_ids[3];               // broker position ids for close-reason lookup
 int     g_child_count         = 0;
+datetime g_open_time          = 0;
 bool    g_tp1_done            = false;
 bool    g_tp2_done            = false;
 bool    g_tp3_done            = false;
+double  g_effective_sl        = 0.0;
+bool    g_split_mode          = true;
 
 //+------------------------------------------------------------------+
 //| OnInit                                                            |
@@ -85,6 +89,17 @@ int OnInit()
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(MaxSlippagePoints);
 
+   // Split tickets require a hedging account. On netting accounts multiple
+   // orders collapse into one position and count-based TP management becomes
+   // unsafe, so fall back to a single ticket.
+   g_split_mode = SplitTicketDemoPartialMode;
+   long margin_mode = AccountInfoInteger(ACCOUNT_MARGIN_MODE);
+   if(g_split_mode && margin_mode != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+   {
+      Print("WARNING: non-hedging account detected; using single-ticket mode.");
+      g_split_mode = false;
+   }
+
    PrintWebRequestHint();
    SendHeartbeat();
 
@@ -109,10 +124,24 @@ void OnTimer()
    if(!EnableTrading)
       return;
 
+   // Continuously reconcile actual broker positions with backend state. This
+   // recovers a lost execution callback after a network timeout.
+   int open_sg_commands = ReconcileOpenPositions();
+
    // If we already manage an active command, run management instead of polling.
    if(g_active_command_id != "")
    {
       ManageActiveCommand();
+      return;
+   }
+
+   // After an EA restart we may find an existing SignalGate position but no
+   // in-memory lifecycle state. Fail safe: report the broker position and do
+   // NOT claim a new command while that orphaned position remains open.
+   if(open_sg_commands > 0)
+   {
+      Print("SignalGate position(s) found without active in-memory state; "
+            "reconciled with backend and polling is blocked until flat.");
       return;
    }
 
@@ -149,6 +178,7 @@ void ProcessCommand(const string command_id, const string json)
    // --- Parse structured fields -------------------------------------
    string symbol      = JsonGetString(json, "symbol");
    string direction_s = JsonGetString(json, "direction");
+   string entry_type  = JsonGetString(json, "entry_type");
    bool   demo_only   = JsonGetBool(json, "demo_only");
    double sl          = JsonGetDouble(json, "initial_stop_loss");
 
@@ -157,7 +187,8 @@ void ProcessCommand(const string command_id, const string json)
    double tp2 = JsonGetTpPrice(json, 2);
    double tp3 = JsonGetTpPrice(json, 3);
 
-   string trade_symbol = (SymbolOverride != "") ? SymbolOverride : symbol;
+   string requested    = (SymbolOverride != "") ? SymbolOverride : symbol;
+   string trade_symbol = ResolveBrokerSymbol(requested);
 
    // --- Validation (report and bail on failure) ---------------------
    if(!demo_only)
@@ -165,9 +196,16 @@ void ProcessCommand(const string command_id, const string json)
       ReportError(command_id, "DEMO_ONLY_VIOLATION", "Command not flagged demo_only");
       return;
    }
-   if(!SymbolSelect(trade_symbol, true))
+   if(entry_type != "MARKET")
    {
-      ReportError(command_id, "SYMBOL_NOT_FOUND", "Symbol not available: " + trade_symbol);
+      ReportError(command_id, "UNSUPPORTED_ENTRY_TYPE",
+                  "Only MARKET entries are supported by this EA");
+      return;
+   }
+   if(trade_symbol == "")
+   {
+      ReportError(command_id, "SYMBOL_NOT_FOUND",
+                  "No exact or suffix broker symbol match: " + requested);
       return;
    }
    if(sl <= 0.0)
@@ -217,7 +255,7 @@ void ProcessCommand(const string command_id, const string json)
 
    // --- Execute ------------------------------------------------------
    bool ok = false;
-   if(SplitTicketDemoPartialMode)
+   if(g_split_mode)
       ok = ExecuteSplitTicket(command_id, trade_symbol, direction, sl, tp1, tp2, tp3);
    else
       ok = ExecuteSingleTicket(command_id, trade_symbol, direction, sl, tp1, tp2, tp3);
@@ -230,6 +268,7 @@ void ProcessCommand(const string command_id, const string json)
    g_active_symbol     = trade_symbol;
    g_active_direction  = direction;
    g_active_sl         = sl;
+   g_effective_sl      = sl;
    g_active_tp1        = tp1;
    g_active_tp2        = tp2;
    g_active_tp3        = tp3;
@@ -259,7 +298,7 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
       {
          ReportError(command_id, "LOT_SIZE_INVALID",
                      "Lot invalid for child " + IntegerToString(i+1));
-         CloseAllChildren(symbol);
+         CloseAllChildren(symbol, command_id);
          return(false);
       }
 
@@ -269,18 +308,20 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
       else
          sent = trade.Sell(lots[i], symbol, 0.0, sl, tps[i], "SG:"+command_id);
 
-      if(!sent)
+      if(!sent || !ExecutionFilled(trade.ResultRetcode()))
       {
-         ReportError(command_id, "ORDER_SEND_FAILED",
+         ReportError(command_id, RetcodeErrorCode(trade.ResultRetcode()),
                      "Child " + IntegerToString(i+1) + " retcode " +
                      IntegerToString(trade.ResultRetcode()));
-         CloseAllChildren(symbol);
+         CloseAllChildren(symbol, command_id);
          return(false);
       }
       g_child_tickets[g_child_count] = trade.ResultDeal();
+      g_child_pos_ids[g_child_count] = PositionIdOfDeal(trade.ResultDeal());
       exec_price = trade.ResultPrice();
       g_child_count++;
    }
+   g_open_time = TimeCurrent();
 
    if(g_child_count == 0)
    {
@@ -318,15 +359,17 @@ bool ExecuteSingleTicket(const string command_id, const string symbol,
    else
       sent = trade.Sell(lot, symbol, 0.0, sl, final_tp, "SG:"+command_id);
 
-   if(!sent)
+   if(!sent || !ExecutionFilled(trade.ResultRetcode()))
    {
-      ReportError(command_id, "ORDER_SEND_FAILED",
+      ReportError(command_id, RetcodeErrorCode(trade.ResultRetcode()),
                   "retcode " + IntegerToString(trade.ResultRetcode()));
       return(false);
    }
 
    g_child_tickets[0] = trade.ResultDeal();
+   g_child_pos_ids[0] = PositionIdOfDeal(trade.ResultDeal());
    g_child_count = 1;
+   g_open_time = TimeCurrent();
    g_active_entry = trade.ResultPrice();
 
    ReportExecutionSuccess(command_id, symbol, direction, g_active_entry,
@@ -345,6 +388,18 @@ void ManageActiveCommand()
 
    int open_children = CountOpenChildren(g_active_symbol, cid);
 
+   // Broker deal history is authoritative for why a position closed. Never
+   // infer a take-profit merely because the position disappeared.
+   if(open_children == 0 && CommandClosedByReason(DEAL_REASON_SL))
+   {
+      ReportManagementEvent(cid, "STOP_LOSS_HIT", "FULLY_CLOSED", "", "SUCCESS",
+                            g_effective_sl, 0,0, g_active_sl, g_effective_sl);
+      ReportManagementEvent(cid, "FULLY_CLOSED", "FULLY_CLOSED", "", "SUCCESS",
+                            0,0,0,0,0);
+      ClearActiveCommand();
+      return;
+   }
+
    // TP1 stage: when the first child has closed (TP1 hit).
    if(!g_tp1_done && open_children <= (g_child_count - 1) && g_child_count >= 2)
    {
@@ -355,6 +410,7 @@ void ManageActiveCommand()
                             "SUCCESS", g_active_tp1, 0,0,0,0);
       // Move remaining SLs to breakeven (open price).
       bool moved = MoveRemainingSL(g_active_symbol, cid, g_active_entry);
+      if(moved) g_effective_sl = g_active_entry;
       ReportManagementEvent(cid,
          moved ? "SL_MOVE_BREAKEVEN_SUCCESS" : "SL_MOVE_BREAKEVEN_FAILED",
          "TP1_DONE", "MOVE_SL_BREAKEVEN", moved ? "SUCCESS" : "FAILED",
@@ -371,28 +427,107 @@ void ManageActiveCommand()
       ReportManagementEvent(cid, "TP2_CLOSE_SUCCESS", "TP2_DONE", "CLOSE_TP2",
                             "SUCCESS", g_active_tp2, 0,0,0,0);
       bool moved = MoveRemainingSL(g_active_symbol, cid, g_active_tp1);
+      if(moved) g_effective_sl = g_active_tp1;
       ReportManagementEvent(cid,
          moved ? "SL_MOVE_TP1_SUCCESS" : "SL_MOVE_TP1_FAILED",
          "TP2_DONE", "MOVE_SL_TP1", moved ? "SUCCESS" : "FAILED",
          g_active_tp1, 0,0, g_active_entry, g_active_tp1);
    }
 
-   // TP3 / full close.
+   // Full close. Only attribute TP3 when broker history says the final close
+   // was a take-profit. A manual/unknown close remains unattributed in the
+   // backend ledger rather than being fabricated as a win.
    if(open_children == 0)
    {
-      if(!g_tp3_done)
+      if(!g_tp3_done && g_active_tp3 > 0 && CommandClosedByReason(DEAL_REASON_TP))
       {
          g_tp3_done = true;
-         if(g_active_tp3 > 0)
-            ReportManagementEvent(cid, "TP3_CLOSE_SUCCESS", "TP3_DONE",
-                                  "CLOSE_TP3", "SUCCESS", g_active_tp3, 0,0,0,0);
+         ReportManagementEvent(cid, "TP3_CLOSE_SUCCESS", "TP3_DONE",
+                               "CLOSE_TP3", "SUCCESS", g_active_tp3, 0,0,0,0);
       }
       ReportManagementEvent(cid, "FULLY_CLOSED", "FULLY_CLOSED", "", "SUCCESS",
                             0,0,0,0,0);
-      // Clear active command; ready to poll again.
-      g_active_command_id = "";
-      g_child_count = 0;
+      ClearActiveCommand();
    }
+}
+
+//+------------------------------------------------------------------+
+//| Broker execution / close-reason helpers                          |
+//+------------------------------------------------------------------+
+string ResolveBrokerSymbol(const string requested)
+{
+   if(requested == "") return("");
+   if(SymbolSelect(requested, true)) return(requested);
+   int total = SymbolsTotal(false);
+   for(int i = 0; i < total; i++)
+   {
+      string name = SymbolName(i, false);
+      if(StringFind(name, requested) == 0 && SymbolSelect(name, true))
+         return(name);
+   }
+   return("");
+}
+
+bool ExecutionFilled(const uint retcode)
+{
+   return(retcode == TRADE_RETCODE_DONE || retcode == TRADE_RETCODE_DONE_PARTIAL);
+}
+
+string RetcodeErrorCode(const uint retcode)
+{
+   switch(retcode)
+   {
+      case TRADE_RETCODE_MARKET_CLOSED:  return("MARKET_CLOSED");
+      case TRADE_RETCODE_NO_MONEY:       return("MARGIN_INSUFFICIENT");
+      case TRADE_RETCODE_INVALID_STOPS:  return("INVALID_STOP_LOSS");
+      case TRADE_RETCODE_TRADE_DISABLED: return("TRADING_DISABLED");
+      default:                           return("ORDER_SEND_FAILED");
+   }
+}
+
+ulong PositionIdOfDeal(const ulong deal_ticket)
+{
+   if(deal_ticket == 0) return(0);
+   if(HistoryDealSelect(deal_ticket))
+      return((ulong)HistoryDealGetInteger(deal_ticket, DEAL_POSITION_ID));
+   return(0);
+}
+
+bool IsChildPosition(const ulong position_id)
+{
+   for(int i = 0; i < g_child_count; i++)
+      if(g_child_pos_ids[i] != 0 && g_child_pos_ids[i] == position_id)
+         return(true);
+   return(false);
+}
+
+bool CommandClosedByReason(const long reason)
+{
+   datetime from = (g_open_time > 0) ? g_open_time - 5 : 0;
+   if(!HistorySelect(from, TimeCurrent() + 60))
+      return(false);
+   int total = HistoryDealsTotal();
+   for(int i = total - 1; i >= 0; i--)
+   {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0) continue;
+      if(HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber) continue;
+      if(HistoryDealGetInteger(deal, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+      ulong posid = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+      if(!IsChildPosition(posid)) continue;
+      if(HistoryDealGetInteger(deal, DEAL_REASON) == reason)
+         return(true);
+   }
+   return(false);
+}
+
+void ClearActiveCommand()
+{
+   g_active_command_id = "";
+   g_child_count = 0;
+   g_open_time = 0;
+   g_effective_sl = 0.0;
+   ArrayInitialize(g_child_pos_ids, 0);
 }
 
 //+------------------------------------------------------------------+
@@ -441,7 +576,7 @@ bool MoveRemainingSL(const string symbol, const string command_id,
 //+------------------------------------------------------------------+
 //| Close all children (used on partial execution failure rollback) |
 //+------------------------------------------------------------------+
-void CloseAllChildren(const string symbol)
+void CloseAllChildren(const string symbol, const string command_id)
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -450,6 +585,9 @@ void CloseAllChildren(const string symbol)
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      // CRITICAL: rollback belongs only to the command that partially opened.
+      // Never close another SignalGate command on the same symbol/magic.
+      if(StringFind(PositionGetString(POSITION_COMMENT), command_id) < 0) continue;
       trade.PositionClose(ticket);
    }
 }
@@ -488,7 +626,8 @@ bool IsLiveAccount()
 //+------------------------------------------------------------------+
 string HttpGet(const string url)
 {
-   string headers = "X-EA-API-Key: " + EAApiKey + "\r\n";
+   string headers = "X-EA-API-Key: " + EAApiKey + "\r\n" +
+                    "X-SG-License-Key: " + LicenseKey + "\r\n";
    char   post[];
    char   result[];
    string result_headers;
@@ -508,7 +647,7 @@ string HttpGet(const string url)
 string HttpPost(const string url, const string body)
 {
    string headers = "Content-Type: application/json\r\nX-EA-API-Key: " +
-                    EAApiKey + "\r\n";
+                    EAApiKey + "\r\nX-SG-License-Key: " + LicenseKey + "\r\n";
    char   post[];
    char   result[];
    string result_headers;
@@ -534,8 +673,7 @@ string HttpPost(const string url, const string body)
 //+------------------------------------------------------------------+
 string PollPendingCommand()
 {
-   string url = BackendURL + "/commands/pending?user_id=" + UserID +
-                "&license_key=" + LicenseKey;
+   string url = BackendURL + "/commands/pending?user_id=" + UserID;
    return(HttpGet(url));
 }
 
@@ -548,6 +686,90 @@ void AckReceived(const string command_id)
 void SendHeartbeat()
 {
    HttpGet(BackendURL + "/ea/heartbeat");
+}
+
+// Reconcile all currently-open SignalGate broker positions. Positions are
+// grouped by command id from the immutable SG:<command_id> broker comment.
+int ReconcileOpenPositions()
+{
+   string command_ids[];
+   int command_count = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, "SG:") != 0) continue;
+      string cid = StringSubstr(comment, 3);
+      if(cid == "") continue;
+
+      bool seen = false;
+      for(int j = 0; j < command_count; j++)
+         if(command_ids[j] == cid) { seen = true; break; }
+      if(!seen)
+      {
+         ArrayResize(command_ids, command_count + 1);
+         command_ids[command_count] = cid;
+         command_count++;
+      }
+   }
+
+   for(int g = 0; g < command_count; g++)
+   {
+      string cid = command_ids[g];
+      string tickets = "";
+      string symbol = "";
+      string direction = "";
+      double total_volume = 0.0;
+      double weighted_price = 0.0;
+      double current_sl = 0.0;
+
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+      {
+         ulong ticket = PositionGetTicket(i);
+         if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+         if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+         string comment = PositionGetString(POSITION_COMMENT);
+         if(comment != "SG:" + cid) continue;
+
+         double volume = PositionGetDouble(POSITION_VOLUME);
+         double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+         if(tickets != "") tickets += ",";
+         tickets += """ + IntegerToString((long)ticket) + """;
+         total_volume += volume;
+         weighted_price += open_price * volume;
+         if(symbol == "") symbol = PositionGetString(POSITION_SYMBOL);
+         if(direction == "")
+            direction = (
+               PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY
+               ? "BUY" : "SELL"
+            );
+         double sl = PositionGetDouble(POSITION_SL);
+         if(current_sl == 0.0 && sl > 0.0) current_sl = sl;
+      }
+
+      if(total_volume <= 0.0 || tickets == "" || symbol == "" || direction == "")
+         continue;
+
+      double avg_price = weighted_price / total_volume;
+      int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      string body = "{";
+      body += ""broker_tickets":[" + tickets + "],";
+      body += ""executed_symbol":" + JsonEscapeString(symbol) + ",";
+      body += ""executed_direction":" + JsonEscapeString(direction) + ",";
+      body += ""executed_price":" + DoubleToString(avg_price, digits) + ",";
+      body += ""lot_size":" + DoubleToString(total_volume, 8);
+      if(current_sl > 0.0)
+         body += ","stop_loss":" + DoubleToString(current_sl, digits);
+      body += "}";
+      HttpPost(
+         BackendURL + "/commands/" + cid + "/reconcile_open_position",
+         body
+      );
+   }
+   return(command_count);
 }
 
 void ReportExecutionSuccess(const string command_id, const string symbol,

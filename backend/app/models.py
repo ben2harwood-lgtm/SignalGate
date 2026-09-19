@@ -25,7 +25,68 @@ from .database import Base
 
 def utcnow() -> dt.datetime:
     """Single source of truth for current UTC time (naive UTC)."""
-    return dt.datetime.utcnow()
+    return dt.datetime.now(dt.UTC).replace(tzinfo=None)
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    slug: Mapped[str] = mapped_column(String, unique=True, index=True)
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class Provider(Base):
+    __tablename__ = "providers"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "slug", name="uq_provider_org_slug"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    name: Mapped[str] = mapped_column(String)
+    slug: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    brand_display_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    brand_logo_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    brand_primary_color: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    support_contact: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ProviderCredential(Base):
+    __tablename__ = "provider_credentials"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id"), index=True)
+    label: Mapped[str] = mapped_column(String, default="default")
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Feed(Base):
+    __tablename__ = "feeds"
+    __table_args__ = (
+        UniqueConstraint("provider_id", "source_namespace", name="uq_feed_provider_source"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id"), index=True)
+    name: Mapped[str] = mapped_column(String)
+    source_namespace: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    allowed_symbols_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    expiry_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    default_lot_size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class User(Base):
@@ -38,10 +99,16 @@ class User(Base):
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
     risk_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     fixed_lot_size: Mapped[float] = mapped_column(Float, default=0.01)
-    # Per-customer license key (hosted model). Unique when set; many users may
-    # have NULL locally (both SQLite and Postgres permit multiple NULLs here).
-    license_key: Mapped[Optional[str]] = mapped_column(
-        String, nullable=True, unique=True, index=True
+    # Legacy plaintext column retained only for migration compatibility.
+    # New/rotated credentials are never stored here.
+    legacy_license_key: Mapped[Optional[str]] = mapped_column(
+        "license_key", String, nullable=True, unique=True, index=True
+    )
+    license_key_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, unique=True, index=True
+    )
+    license_key_last4: Mapped[Optional[str]] = mapped_column(
+        String(4), nullable=True
     )
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(
@@ -49,10 +116,95 @@ class User(Base):
     )
 
 
-class Signal(Base):
-    __tablename__ = "signals"
+class ProviderSourceInvite(Base):
+    __tablename__ = "provider_source_invites"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id"), index=True)
+    feed_id: Mapped[str] = mapped_column(ForeignKey("feeds.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String, default="PENDING")
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    accepted_telegram_user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    accepted_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class ProviderSourceBinding(Base):
+    __tablename__ = "provider_source_bindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_type",
+            "external_identity",
+            name="uq_provider_source_external_identity",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id"), index=True)
+    feed_id: Mapped[str] = mapped_column(ForeignKey("feeds.id"), index=True)
+    source_type: Mapped[str] = mapped_column(String, default="TELEGRAM")
+    external_identity: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class SubscriptionInvite(Base):
+    __tablename__ = "subscription_invites"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id"), index=True)
+    feed_id: Mapped[str] = mapped_column(ForeignKey("feeds.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String, default="PENDING")
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    accepted_user_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id"), nullable=True, index=True
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    accepted_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+    __table_args__ = (
+        UniqueConstraint("feed_id", "user_id", name="uq_subscription_feed_user"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id"), index=True)
+    feed_id: Mapped[str] = mapped_column(ForeignKey("feeds.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class TradingAccount(Base):
+    __tablename__ = "trading_accounts"
+    __table_args__ = (
+        UniqueConstraint("provider_id", "user_id", name="uq_trading_account_provider_user"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    label: Mapped[str] = mapped_column(String, default="Primary")
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class Signal(Base):
+    __tablename__ = "signals"
+    __table_args__ = (
+        UniqueConstraint("source", "source_message_id", name="uq_signal_source_message"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[Optional[str]] = mapped_column(ForeignKey("providers.id"), nullable=True, index=True)
+    feed_id: Mapped[Optional[str]] = mapped_column(ForeignKey("feeds.id"), nullable=True, index=True)
     source: Mapped[str] = mapped_column(String, default="TELEGRAM_ADMIN_TEST")
     source_message_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     raw_text: Mapped[str] = mapped_column(Text)
@@ -92,6 +244,9 @@ class Command(Base):
     __tablename__ = "commands"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[Optional[str]] = mapped_column(ForeignKey("providers.id"), nullable=True, index=True)
+    feed_id: Mapped[Optional[str]] = mapped_column(ForeignKey("feeds.id"), nullable=True, index=True)
+    account_id: Mapped[Optional[str]] = mapped_column(ForeignKey("trading_accounts.id"), nullable=True, index=True)
     signal_id: Mapped[str] = mapped_column(ForeignKey("signals.id"), index=True)
     approval_id: Mapped[str] = mapped_column(ForeignKey("approvals.id"), index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
@@ -130,7 +285,9 @@ class Execution(Base):
     __tablename__ = "executions"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    command_id: Mapped[str] = mapped_column(ForeignKey("commands.id"), index=True)
+    command_id: Mapped[str] = mapped_column(
+        ForeignKey("commands.id"), unique=True, index=True
+    )
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     status: Mapped[str] = mapped_column(String)  # SUCCESS / FAILED
     broker_ticket: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -156,6 +313,7 @@ class TradeManagementEvent(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     command_id: Mapped[str] = mapped_column(ForeignKey("commands.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     broker_ticket: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     event_type: Mapped[str] = mapped_column(String)
     stage: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -215,6 +373,10 @@ class AuditLog(Base):
     entity_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     entity_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    prev_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    record_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
 
 

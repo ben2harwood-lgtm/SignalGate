@@ -56,23 +56,69 @@ async def _backend_post(path: str, **kwargs) -> Optional[Any]:
 
 
 def _admin_headers(user_id: int) -> Dict[str, str]:
-    return {"X-Admin-Id": str(user_id)}
+    headers = {"X-Admin-Id": str(user_id)}
+    if config.admin_api_key:
+        headers["X-Admin-API-Key"] = config.admin_api_key
+    return headers
+
+
+def _registration_headers() -> Dict[str, str]:
+    if not config.registration_api_key:
+        return {}
+    return {"X-Registration-API-Key": config.registration_api_key}
 
 
 def _signal_provider_headers(user_id: int) -> Dict[str, str]:
-    # If the bot has verified a provider locally (via invite code), let the bot
-    # call provider-only backend actions with the configured admin header. The
-    # provider never sees this header; it just avoids an env edit + restart.
-    admin_id = config.first_admin_id()
-    if admin_id:
-        return {"X-Admin-Id": admin_id}
-    return {"X-Signal-Provider-Id": str(user_id)}
+    # Preserve the caller's least-privilege identity. Hosted mode also requires
+    # a server-held API secret that never leaves this bot process.
+    if config.is_admin(user_id):
+        return _admin_headers(user_id)
+    headers = {"X-Signal-Provider-Id": str(user_id)}
+    if config.signal_provider_api_key:
+        headers["X-Signal-Provider-API-Key"] = config.signal_provider_api_key
+    return headers
+
+
+async def _provider_source_status(
+    telegram_user_id: int | str,
+) -> Optional[Dict[str, Any]]:
+    data = await _backend_get(
+        "/provider-sources/telegram/status",
+        params={"telegram_user_id": str(telegram_user_id)},
+        headers=_registration_headers(),
+    )
+    if not data or data.get("detail"):
+        return None
+    return data
+
+
+async def _can_submit_provider_signal(update: Update) -> bool:
+    if await _provider_source_status(update.effective_user.id):
+        return True
+    # Local-demo backwards compatibility only; hosted backend rejects these
+    # legacy shared-provider credentials.
+    return config.is_signal_provider(update.effective_user.id)
 
 
 # --- user commands --------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
+    source = await _provider_source_status(user.id)
+    if source:
+        provider_name = (
+            source.get("provider_display_name")
+            or source.get("provider_name")
+            or "provider"
+        )
+        await update.message.reply_text(
+            f"SignalGate provider source connected to {provider_name} — "
+            f"{source.get('feed_name', 'feed')}.\n"
+            f"Your Telegram id is {user.id}.\n\n"
+            "Send a signal screenshot. I will preview the extracted levels and "
+            "wait for Confirm before any subscriber card is sent."
+        )
+        return
     if config.is_signal_provider(user.id):
         await update.message.reply_text(
             "SignalGate screenshot provider ready.\n"
@@ -81,33 +127,167 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "SL/TP details, and wait for you to Confirm before anything is sent."
         )
     else:
-        await _backend_post(
+        registration = await _backend_post(
             "/register_user",
             json={
                 "telegram_user_id": str(user.id),
                 "telegram_username": user.username,
                 "first_name": user.first_name,
             },
+            headers=_registration_headers(),
         )
+        if registration is None:
+            await update.message.reply_text(
+                "SignalGate backend is unreachable. Registration was not confirmed."
+            )
+            return
+        license_key = registration.get("license_key")
+        message = "SignalGate demo tester registered.\nDemo mode only. No live trades."
+        if license_key:
+            message += (
+                "\n\nYour one-time EA licence is:\n"
+                f"{license_key}\n"
+                "Keep it private. SignalGate cannot display this key again; "
+                "if it is lost, an admin must rotate it."
+            )
+        await update.message.reply_text(message)
+
+
+async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Subscriber-consent flow for a provider feed invite."""
+    user = update.effective_user
+    token = " ".join(context.args).strip() if context.args else ""
+    if not token:
         await update.message.reply_text(
-            "SignalGate demo tester registered.\nDemo mode only. No live trades."
+            "Usage: /join INVITE_TOKEN\n"
+            "Only accept an invite you expected from a signal provider."
         )
+        return
+
+    registration = await _backend_post(
+        "/register_user",
+        json={
+            "telegram_user_id": str(user.id),
+            "telegram_username": user.username,
+            "first_name": user.first_name,
+        },
+        headers=_registration_headers(),
+    )
+    if registration is None or registration.get("detail"):
+        await update.message.reply_text(
+            "I couldn't confirm your SignalGate registration. Nothing was joined."
+        )
+        return
+
+    result = await _backend_post(
+        "/subscriptions/accept",
+        json={
+            "invite_token": token,
+            "telegram_user_id": str(user.id),
+        },
+        headers=_registration_headers(),
+    )
+    if result is None:
+        await update.message.reply_text(
+            "SignalGate backend is unreachable. The invite was not confirmed."
+        )
+        return
+    if result.get("detail"):
+        await update.message.reply_text(
+            f"Invite not accepted: {result.get('detail')}"
+        )
+        return
+
+    provider_name = (
+        result.get("provider_display_name")
+        or result.get("provider_name")
+        or "the provider"
+    )
+    message = (
+        f"Joined {provider_name} — {result.get('feed_name', 'feed')}.\n"
+        "You will only receive cards for feeds you have explicitly joined.\n"
+        "Demo mode only. No live trades."
+    )
+    license_key = registration.get("license_key")
+    if license_key:
+        message += (
+            "\n\nYour one-time EA licence is:\n"
+            f"{license_key}\n"
+            "Keep it private. SignalGate cannot display it again; "
+            "if it is lost, an admin must rotate it."
+        )
+    await update.message.reply_text(message)
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     health = await _backend_get("/health")
+    source = await _provider_source_status(user.id)
 
     backend_ok = health is not None
     paused = health.get("admin_paused") if health else "unknown"
+    role = _role_name(user.id)
+    if source:
+        role = "provider source"
     lines = [
         f"Registered: yes (telegram id {user.id})",
-        f"Role: {_role_name(user.id)}",
+        f"Role: {role}",
         f"Backend reachable: {'yes' if backend_ok else 'no'}",
         f"Demo only mode: {health.get('demo_only_mode') if health else 'unknown'}",
         f"Admin paused: {paused}",
     ]
+    if source:
+        lines.extend(
+            [
+                f"Provider: {source.get('provider_display_name') or source.get('provider_name')}",
+                f"Feed: {source.get('feed_name')} ({source.get('feed_id')})",
+            ]
+        )
     await update.message.reply_text("\n".join(lines))
+
+
+async def connect_provider_source(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Consume a one-time provider/feed Telegram source connection token."""
+    user = update.effective_user
+    token = " ".join(context.args).strip() if context.args else ""
+    if not token:
+        await update.message.reply_text(
+            "Usage: /connectprovider CONNECTION_TOKEN\n"
+            "Generate the token in your SignalGate Provider Portal."
+        )
+        return
+    result = await _backend_post(
+        "/provider-sources/telegram/connect",
+        json={
+            "connection_token": token,
+            "telegram_user_id": str(user.id),
+        },
+        headers=_registration_headers(),
+    )
+    if result is None:
+        await update.message.reply_text(
+            "SignalGate backend is unreachable. Provider source was not connected."
+        )
+        return
+    if result.get("detail"):
+        await update.message.reply_text(
+            f"Provider source not connected: {result.get('detail')}"
+        )
+        return
+    provider_name = (
+        result.get("provider_display_name")
+        or result.get("provider_name")
+        or "provider"
+    )
+    await update.message.reply_text(
+        f"Provider source connected to {provider_name} — "
+        f"{result.get('feed_name', 'feed')}.\n"
+        "Send /screenshothelp or send a signal screenshot when ready.\n"
+        "Demo mode only."
+    )
 
 
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -183,7 +363,11 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if decision == "YES"
         else f"/signals/{signal_id}/reject"
     )
-    result = await _backend_post(path, json={"telegram_user_id": str(user.id)})
+    result = await _backend_post(
+        path,
+        json={"telegram_user_id": str(user.id)},
+        headers=_registration_headers(),
+    )
     if result is None:
         await query.edit_message_text("Backend unreachable. Try again.")
         return
@@ -212,10 +396,11 @@ def _role_name(telegram_user_id: int | str) -> str:
 
 
 async def screenshot_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _require_signal_provider(update):
+    if not await _can_submit_provider_signal(update):
         await update.message.reply_text(
-            "Screenshot submission is limited to approved signal providers.\n"
-            "If Ben gave you an invite code, send /provider YOUR_CODE."
+            "Screenshot submission requires a connected provider source.\n"
+            "Generate a connection token in the Provider Portal, then send "
+            "/connectprovider YOUR_TOKEN."
         )
         return
     await update.message.reply_text(
@@ -232,48 +417,89 @@ async def screenshot_help(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def _create_and_broadcast(
     update: Update, context: ContextTypes.DEFAULT_TYPE, raw_text: str
 ) -> str:
-    """Create a signal from confirmed text and broadcast the trade card.
+    """Create one tenant-bound signal and broadcast only to its feed subscribers."""
+    if update.effective_chat is None or update.effective_message is None:
+        return "Cannot identify Telegram source message. Nothing was sent."
 
-    Shared by /testsignal and the screenshot-confirmation flow. Returns a
-    human-readable status string. The backend's deterministic parser still has
-    the final say on validity.
-    """
-    signal = await _backend_post(
-        "/signals/create",
-        json={"raw_text": raw_text},
-        headers=_signal_provider_headers(update.effective_user.id),
-    )
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    message_id = str(update.effective_message.message_id)
+    source = await _provider_source_status(user_id)
+
+    if source:
+        signal = await _backend_post(
+            "/provider-sources/telegram/signals",
+            json={
+                "telegram_user_id": str(user_id),
+                "raw_text": raw_text,
+                "source_message_id": f"{chat_id}:{message_id}",
+            },
+            headers=_registration_headers(),
+        )
+        try:
+            expiry = int(source.get("expiry_minutes") or 5)
+        except (TypeError, ValueError):
+            expiry = 5
+    else:
+        # Local-demo legacy path for configured admin/screenshot-provider ids.
+        # Hosted mode rejects this shared-credential route.
+        if not config.is_signal_provider(user_id):
+            return (
+                "Provider source is not connected. Generate a token in the "
+                "Provider Portal and send /connectprovider TOKEN."
+            )
+        signal = await _backend_post(
+            "/signals/create",
+            json={
+                "raw_text": raw_text,
+                "source": f"TELEGRAM_CHAT:{chat_id}",
+                "source_message_id": message_id,
+            },
+            headers=_signal_provider_headers(user_id),
+        )
+        expiry = 5
+        if config.is_admin(user_id):
+            admin_status = await _backend_get(
+                "/admin/status", headers=_admin_headers(user_id)
+            )
+            if admin_status and admin_status.get("settings"):
+                try:
+                    expiry = int(
+                        admin_status["settings"].get(
+                            "default_signal_expiry_minutes", 5
+                        )
+                    )
+                except (TypeError, ValueError):
+                    expiry = 5
+
     if signal is None:
         return "Backend unreachable."
+    if signal.get("detail"):
+        return f"Signal not created: {signal.get('detail')}"
     if signal.get("parser_status") != "VALID":
         return f"Parser rejected signal: {signal.get('parser_error')}"
 
     from keyboards import format_trade_card, trade_card_keyboard
 
-    status = await _backend_get(
-        "/admin/status", headers=_admin_headers(update.effective_user.id)
-    )
-    expiry = 5
-    if status and status.get("settings"):
-        try:
-            expiry = int(status["settings"].get("default_signal_expiry_minutes", 5))
-        except (TypeError, ValueError):
-            expiry = 5
-
     card = format_trade_card(signal, expiry)
     keyboard = trade_card_keyboard(signal["id"])
-
-    recipients = await _active_recipients(update)
+    recipients = await _active_recipients(update, source)
     sent = 0
-    for chat_id in recipients:
+    for recipient_chat_id in recipients:
         try:
             await context.bot.send_message(
-                chat_id=chat_id, text=card, reply_markup=keyboard
+                chat_id=recipient_chat_id,
+                text=card,
+                reply_markup=keyboard,
             )
             sent += 1
         except Exception as exc:  # noqa: BLE001
-            logger.warning("send card to %s failed: %s", chat_id, exc)
-    return f"Signal {signal['id']} created and card sent to {sent} tester(s)."
+            logger.warning(
+                "send card to %s failed: %s",
+                recipient_chat_id,
+                exc,
+            )
+    return f"Signal {signal['id']} created and card sent to {sent} subscriber(s)."
 
 
 async def testsignal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -298,9 +524,10 @@ async def testsignal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # Confirm. Nothing about extraction bypasses the parser or the human check.
 
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _require_signal_provider(update):
+    if not await _can_submit_provider_signal(update):
         await update.message.reply_text(
-            "Only the signal provider can submit screenshots."
+            "Connect this Telegram account to a provider feed with "
+            "/connectprovider before submitting screenshots."
         )
         return
 
@@ -320,9 +547,10 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _require_signal_provider(update):
+    if not await _can_submit_provider_signal(update):
         await update.message.reply_text(
-            "Only the signal provider can submit screenshots."
+            "Connect this Telegram account to a provider feed with "
+            "/connectprovider before submitting screenshots."
         )
         return
 
@@ -349,12 +577,24 @@ async def _preview_screenshot(
     image_bytes: bytes,
     mime: str,
 ) -> None:
-    url = f"{config.backend_base_url}/signals/extract"
+    user_id = update.effective_user.id
+    source = await _provider_source_status(user_id)
+    if source:
+        url = f"{config.backend_base_url}/provider-sources/telegram/extract"
+        headers = _registration_headers()
+        params = {"telegram_user_id": str(user_id)}
+    else:
+        # Local-demo legacy path only.
+        url = f"{config.backend_base_url}/signals/extract"
+        headers = _signal_provider_headers(user_id)
+        params = None
+
     try:
         async with httpx.AsyncClient(timeout=60.0) as http:
             resp = await http.post(
                 url,
-                headers=_signal_provider_headers(update.effective_user.id),
+                params=params,
+                headers=headers,
                 files={"file": ("signal", image_bytes, mime)},
             )
             if resp.status_code != 200:
@@ -366,8 +606,7 @@ async def _preview_screenshot(
     except Exception as exc:  # noqa: BLE001
         logger.warning("extract failed: %s", exc)
         await update.message.reply_text(
-            "Couldn't read that image (backend/extractor error). Try again, or "
-            "type the signal with /testsignal."
+            "Couldn't read that image (backend/extractor error). Try again."
         )
         return
 
@@ -387,8 +626,10 @@ async def on_signal_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Handle Confirm / Edit / Cancel on an extracted-signal preview."""
     query = update.callback_query
     await query.answer()
-    if not _require_signal_provider(update):
-        await query.edit_message_text("Signal provider only.")
+    if not await _can_submit_provider_signal(update):
+        await query.edit_message_text(
+            "Provider source is no longer connected. Nothing was sent."
+        )
         return
 
     action = query.data
@@ -425,7 +666,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Free-text handler. Only acts when the admin is editing an extracted signal."""
     if not context.user_data.get("awaiting_edit"):
         return  # ignore ordinary chatter
-    if not _require_signal_provider(update):
+    if not await _can_submit_provider_signal(update):
         return
     raw_text = (update.message.text or "").strip()
     if not raw_text:
@@ -437,18 +678,26 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(result)
 
 
-async def _active_recipients(update: Update) -> List[str]:
-    """Best-effort recipient list.
+async def _active_recipients(
+    update: Update,
+    source: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Return only eligible recipients for the provider source/feed."""
+    if source:
+        data = await _backend_get(
+            "/provider-sources/telegram/recipients",
+            params={"telegram_user_id": str(update.effective_user.id)},
+            headers=_registration_headers(),
+        )
+        recipients: set[str] = set()
+    else:
+        # Legacy local-demo behaviour includes the submitting provider chat.
+        data = await _backend_get(
+            "/signals/recipients",
+            headers=_signal_provider_headers(update.effective_user.id),
+        )
+        recipients = {str(update.effective_chat.id)}
 
-    The backend tracks registered testers by telegram id. In a private Telegram
-    chat, that id is also the chat id, so the bot can broadcast trade cards to
-    active testers without giving screenshot providers broad admin access.
-    """
-    recipients = {str(update.effective_chat.id)}
-    data = await _backend_get(
-        "/signals/recipients",
-        headers=_signal_provider_headers(update.effective_user.id),
-    )
     if data and data.get("recipients"):
         for recipient in data["recipients"]:
             telegram_id = recipient.get("telegram_user_id")

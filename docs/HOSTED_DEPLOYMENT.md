@@ -1,249 +1,192 @@
-# SignalGate — Hosted Deployment & Customer-Facing EA Changes
+# SignalGate — Hosted Provider Edition Deployment
 
-How to run the backend + Telegram bot once, centrally, so that each customer
-only installs the MetaTrader EA. **Demo-only posture is unchanged.** This is not
-legal or financial advice — see the regulation note at the end.
+This is the current hosted-deployment guide for the hardened **demo-only** Provider Edition.
 
-The code already supports this. The new pieces (added in the same change as this
-doc) are:
+It does not itself prove production acceptance. Use `SIGNALGATE-STATUS.md` and `docs/EXTERNAL_ACCEPTANCE_HANDOFF.md` for remaining gates.
 
-- `REQUIRE_LICENSE` env flag — when `true`, an EA must present a valid, ACTIVE
-  customer **license key** to receive commands.
-- Per-customer **license keys** (auto-issued on `/start`, or issued/rotated by
-  an admin endpoint).
-- Admin endpoints to **list / activate / deactivate** customers.
-- PostgreSQL support via `DATABASE_URL` (SQLite stays the local default).
+## 1. Deployment shape
 
-Nothing about the trading logic, parser, split-ticket management, ledger or
-safety guards changed. Locally, with `REQUIRE_LICENSE=false`, everything behaves
-exactly as before.
+Hosted SignalGate separates:
 
----
+- public TLS/reverse-proxy edge;
+- FastAPI backend;
+- shared Telegram bot service;
+- PostgreSQL;
+- provider tenants/feeds;
+- subscriber/customer demo EA clients.
 
-## 1. The shape of the hosted system
+Only the reverse proxy/hosting edge should be public. The backend should bind privately/loopback inside the deployment network.
 
-```
-                    ┌──────────────────────── YOUR SERVER (one VPS) ────────────────────────┐
-   Telegram  ◄────► │  Telegram bot  ──►  FastAPI backend  ──►  PostgreSQL                   │
-   (your ONE bot)   │                         ▲   ▲                                          │
-                    │                Caddy (HTTPS, :443)  ◄──── api.yoursite.com             │
-                    └──────────────────────────────▲───────────────────────────────────────┘
-                                                    │ HTTPS, license key
-                       ┌────────────────────────────┴───────────────┐
-                  Customer A's MetaTrader 5 + EA      Customer B's MetaTrader 5 + EA
-                  (their broker demo account)         (their broker demo account)
-```
+Use:
 
-You run the bot + backend + database. Each customer runs only MetaTrader with the
-EA, pointed at your HTTPS address and carrying their own license key. Trades
-happen in each customer's own broker account — you never touch their funds or
-broker login.
+- `.env.hosted.example`;
+- `docs/OPERATIONS.md`;
+- `docs/DATABASE_MIGRATIONS.md`;
+- `docs/BACKUP_RESTORE.md`;
+- `docs/OBSERVABILITY.md`.
 
----
+## 2. Hosted invariants
 
-## 2. Server setup (once)
+Hosted startup must preserve:
 
-A small Linux VPS (1–2 vCPU, 2 GB RAM) is plenty to start. Steps assume Ubuntu.
+- `DEMO_ONLY_MODE=true`;
+- `REQUIRE_LICENSE=true`;
+- PostgreSQL;
+- HTTPS public base URL;
+- strong independent admin, registration/bot and EA service secrets;
+- versioned Alembic schema at the exact current head.
 
-### 2a. System packages
+Provider/customer credentials are additional tenant/account credentials; do not reuse service secrets as provider/customer identity.
 
-```bash
-sudo apt update
-sudo apt install -y python3-venv python3-pip postgresql caddy git
-```
+The hosted Provider Edition does **not** use the historical shared `SIGNAL_PROVIDER_INVITE_CODE` / `/provider <code>` flow.
 
-### 2b. PostgreSQL database + user
+## 3. Secrets
 
-```bash
-sudo -u postgres psql <<'SQL'
-CREATE USER signalgate WITH PASSWORD 'CHANGE_ME_STRONG';
-CREATE DATABASE signalgate OWNER signalgate;
-SQL
-```
+Start from `.env.hosted.example` and place real values only in the deployment secret store.
 
-### 2c. Get the code and install (hosted requirements include the PG driver)
+Never commit:
 
-```bash
-cd /opt && sudo git clone <your-repo> signalgate && cd signalgate
-python3 -m venv backend/.venv
-backend/.venv/bin/pip install -r backend/requirements-hosted.txt
-python3 -m venv telegram_bot/.venv
-telegram_bot/.venv/bin/pip install -r telegram_bot/requirements.txt
-```
+- database password;
+- Telegram bot token;
+- admin service secret;
+- registration/bot service secret;
+- EA service secret;
+- provider API keys;
+- customer EA licences;
+- Anthropic/other extractor keys;
+- backup recovery private identity.
 
-### 2d. Environment (`/opt/signalgate/.env`)
+Provider API keys and customer EA licences are returned only at issuance/rotation and are stored by SignalGate only in hashed/last-four form according to `docs/CREDENTIALS.md`.
 
-```env
-# --- hosted database & mode ---
-DATABASE_URL=postgresql://signalgate:CHANGE_ME_STRONG@localhost:5432/signalgate
-REQUIRE_LICENSE=true
-DEMO_ONLY_MODE=true
+## 4. Database
 
-# --- backend ---
-BACKEND_BASE_URL=https://api.yoursite.com
+Do **not** initialise hosted PostgreSQL with `scripts/init_db.py` or application `create_all()`.
 
-# --- your single shared bot + your admin Telegram id(s) ---
-TELEGRAM_BOT_TOKEN=your_real_bot_token
-ADMIN_TELEGRAM_IDS=your_numeric_telegram_id
-
-# --- shared EA gate key (still required IN ADDITION to per-customer licenses) ---
-EA_API_KEY=generate_a_long_random_value
-
-DEFAULT_SIGNAL_EXPIRY_MINUTES=5
-SPLIT_TICKET_DEMO_PARTIAL_MODE=true
-```
-
-Initialise the database tables:
+From `backend/`:
 
 ```bash
-backend/.venv/bin/python scripts/init_db.py
+export DATABASE_URL='postgresql://...'
+alembic -c alembic.ini upgrade head
+alembic -c alembic.ini current
+alembic -c alembic.ini check
 ```
 
-### 2e. HTTPS reverse proxy (Caddy gives you a free auto-renewing certificate)
+Application startup independently fails closed if the hosted database is not at the exact migration head.
 
-`/etc/caddy/Caddyfile`:
+For an existing pre-Alembic database, follow `docs/DATABASE_MIGRATIONS.md`; never stamp a populated database without the isolated-restore baseline verification.
 
-```
-api.yoursite.com {
-    reverse_proxy 127.0.0.1:8000
-}
-```
+## 5. Build and deploy
 
-Point the DNS `A` record for `api.yoursite.com` at the server, then
-`sudo systemctl reload caddy`. Caddy fetches the TLS certificate automatically.
+Build from a reviewed candidate SHA.
 
-### 2f. Run backend + bot as always-on services
+The repository container is the reproducible hosted baseline. The sample staging Compose configuration keeps the application surface constrained and PostgreSQL separate.
 
-`/etc/systemd/system/signalgate-backend.service`:
+Before routing provider traffic:
 
-```ini
-[Unit]
-Description=SignalGate backend
-After=network.target postgresql.service
+1. migrate database to head;
+2. start backend/bot;
+3. verify `/livez`;
+4. verify `/readyz` performs the database round trip;
+5. verify `/health` reports demo-only mode;
+6. verify provider/feed pause controls;
+7. verify protected metrics access;
+8. run the accepted simulator/demo smoke path.
 
-[Service]
-WorkingDirectory=/opt/signalgate/backend
-EnvironmentFile=/opt/signalgate/.env
-ExecStart=/opt/signalgate/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
-Restart=always
+Do not use real-money accounts.
 
-[Install]
-WantedBy=multi-user.target
-```
+## 6. Provider onboarding
 
-`/etc/systemd/system/signalgate-bot.service`:
+Use `docs/FIRST_PROVIDER_RUNBOOK.md`.
 
-```ini
-[Unit]
-Description=SignalGate Telegram bot
-After=network.target signalgate-backend.service
+Current provider flow:
 
-[Service]
-WorkingDirectory=/opt/signalgate/telegram_bot
-EnvironmentFile=/opt/signalgate/.env
-ExecStart=/opt/signalgate/telegram_bot/.venv/bin/python run_bot.py
-Restart=always
+1. provision isolated organisation/provider/feed with `scripts/provision_provider.py` or equivalent authenticated admin workflow;
+2. deliver the one-time provider credential privately;
+3. provider logs into the Provider Portal and rotates the initial credential;
+4. configure feed policy while paused;
+5. generate a one-time feed-bound Telegram source token;
+6. provider sends `/connectprovider <token>` from the intended source identity;
+7. generate private subscriber feed invites;
+8. subscriber explicitly accepts with its own `/join sgi_...`;
+9. validate demo account/licence ownership;
+10. run mandatory failure scenarios before opening the cohort.
 
-[Install]
-WantedBy=multi-user.target
-```
+Providers cannot directly attach subscribers behind their backs.
+
+## 7. EA/customer boundary
+
+Hosted EA calls use:
+
+- server-held EA service credential; and
+- the customer's one-time licence as the account identity credential.
+
+Provider/customer credentials are sent in headers, not query strings.
+
+A customer licence authenticates only the owning customer/account. Do not guess user ids, reuse licences across customers or ship a universal customer credential.
+
+The EA remains demo-only and must refuse a real account.
+
+## 8. Provider Telegram source
+
+Hosted provider signal source is feed-bound.
+
+Use `docs/PROVIDER_TELEGRAM_SOURCE.md`.
+
+Do not configure a shared hosted provider API key or shared provider invite code in place of the one-time source binding flow.
+
+## 9. Backup and restore
+
+Do not deploy the old plaintext cron `pg_dump | gzip` recipe.
+
+Hosted backups use:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now signalgate-backend signalgate-bot
-curl https://api.yoursite.com/health     # {"status":"ok","demo_only_mode":true,...}
+export DATABASE_URL='postgresql://...'
+export BACKUP_AGE_RECIPIENT='age1...'
+bash scripts/backup_postgres.sh
 ```
 
-> Note: behind Caddy the backend binds `127.0.0.1` (not `0.0.0.0`) — only Caddy
-> needs to reach it, and Caddy is what faces the internet over HTTPS.
+The script encrypts with age, removes the plaintext temporary dump and writes a checksum.
 
-### 2g. Nightly database backup (cron)
+Restore only into an isolated empty database using `scripts/restore_postgres.sh` and the separately held recovery identity.
 
-```bash
-echo '0 3 * * * postgres pg_dump signalgate | gzip > /var/backups/signalgate-$(date +\%F).sql.gz' \
-  | sudo tee /etc/cron.d/signalgate-backup
-```
+See `docs/BACKUP_RESTORE.md`.
 
----
+## 10. Observability
 
-## 3. Customer lifecycle (the license workflow)
+Current repository baseline provides:
 
-1. **Customer messages your bot** `/start`. They are registered and a license
-   key (`SG-XXXX-XXXX-XXXX`) is auto-issued. `/status` shows it back to them.
-2. **(Optional) You issue or rotate a key manually** — e.g. after payment
-   clears:
-   ```bash
-   curl -X POST https://api.yoursite.com/admin/users/<telegram_id>/issue_license \
-        -H "X-Admin-Id: <your_admin_id>"
-   # -> {"license_key":"SG-AB12-CD34-EF56", ...}
-   ```
-3. **Customer pastes the key into their EA** (next section) and starts trading on
-   their demo account.
-4. **Suspend / restore access** (subscription lapsed, refund, abuse):
-   ```bash
-   curl -X POST .../admin/users/<telegram_id>/deactivate -H "X-Admin-Id: <id>"
-   curl -X POST .../admin/users/<telegram_id>/activate   -H "X-Admin-Id: <id>"
-   ```
-   A deactivated customer's EA simply receives no commands — cleanly, with no
-   error to chase.
-5. **See everyone**: `GET /admin/users` lists each customer's status + key.
+- request correlation IDs;
+- structured request logs that exclude query strings/headers/bodies;
+- readiness/liveness;
+- protected aggregate operational metrics;
+- pre-production SLO/alert targets.
 
----
+A provider beta still needs a real central log/metrics backend, alert routing, retention and on-call ownership. Do not claim measured SLO history until it exists.
 
-## 4. Customer-facing EA changes
+See `docs/OBSERVABILITY.md`.
 
-The EA already sends its license key on every poll
-(`/commands/pending?user_id=...&license_key=...`), so **no recompile is required
-for the protocol** — only the input values the customer sets when they attach the
-EA to a chart.
+## 11. Before the first real provider
 
-| EA input | Local/demo value (today) | Hosted value (what the customer sets) |
-|---|---|---|
-| `BackendURL` | `http://127.0.0.1:8000` | `https://api.yoursite.com` |
-| `LicenseKey` | `local-demo` (placeholder) | **their** `SG-XXXX-XXXX-XXXX` key |
-| `UserID` | `USER-000001` | leave as-is / ignored (license is authoritative in hosted mode) |
-| `EAApiKey` | `local-demo-ea-key` | the shared `EA_API_KEY` you set on the server |
-| `DemoOnlyMode` | `true` | `true` (keep it true) |
+Use:
 
-And the one MetaTrader setting that always trips people up:
+- `docs/BETA_ACCEPTANCE.md`;
+- `docs/ACCEPTANCE_EVIDENCE_INDEX.md`;
+- `docs/EXTERNAL_ACCEPTANCE_HANDOFF.md`;
+- `docs/FIRST_PROVIDER_RUNBOOK.md`.
 
-- **Tools → Options → Expert Advisors → Allow WebRequest for listed URL**, and
-  add `https://api.yoursite.com`. (HTTPS works with MT5 WebRequest; just whitelist
-  the exact address.)
+The controlled provider pilot remains demo-account only and explicit per-transaction authorisation remains required.
 
-In hosted mode (`REQUIRE_LICENSE=true`) the backend identifies the customer by
-the license key and ignores `UserID`, so two customers can run the same EA build
-and only their keys differ. If a key is wrong, missing, or deactivated, the EA
-receives no command (rather than someone else's) — that is the multi-tenant
-safety boundary.
+## 12. External gates
 
-### What you ship each customer
+A correct deployment does not close:
 
-- The compiled `SignalGateEA.ex5` (so they don't need MetaEditor), or the
-  `.mq5` if you want them to compile.
-- A one-page card: their license key, your `api.yoursite.com` address, the shared
-  EA key, and the WebRequest-whitelist step.
+- MetaEditor/demo acceptance;
+- independent pentest/security review;
+- UK regulatory/financial-promotion review;
+- privacy/contract review;
+- production-like recovery drill;
+- measured SLO history;
+- real-provider operating evidence.
 
-> Practical reality to disclose up front: to catch signals while away from their
-> PC, a customer's MetaTrader must run 24/7 — usually on a small MT5 VPS
-> (~$8–15/month) they provide. That cost is theirs, not yours, but be honest
-> about it when selling.
-
----
-
-## 5. Security checklist before charging anyone
-
-- `DEMO_ONLY_MODE=true` everywhere; do not build a live path for the first market.
-- Strong, unique `EA_API_KEY` and database password; never commit `.env`.
-- HTTPS only (Caddy handles certs); the backend itself stays bound to localhost.
-- Rotate a customer's license (`issue_license`) if it leaks; deactivate on abuse.
-- Keep nightly DB backups and test a restore once.
-- Consider per-IP rate limiting at Caddy if you grow.
-
-## 6. Regulation note (read before taking payment)
-
-Selling a tool that places trades — even demo-by-default — can trigger
-financial-promotion and licensing obligations that vary a lot by country and by
-who your customers are. Get a lawyer to review before you take money. Keep all
-language honest ("demo", "forward testing", "execution tracking"); make no
-profitability claims anywhere in the product, bot, or marketing.
+Do not enable UK retail real-money or automatic-copy execution merely because hosted deployment works.

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
 
 from dotenv import load_dotenv
 
@@ -75,6 +75,15 @@ class Settings:
         ]
 
         self.ea_api_key: str = os.getenv("EA_API_KEY", "local-demo-ea-key")
+        self.admin_api_key: str = os.getenv("ADMIN_API_KEY", "")
+        self.signal_provider_api_key: str = os.getenv("SIGNAL_PROVIDER_API_KEY", "")
+        self.registration_api_key: str = os.getenv("REGISTRATION_API_KEY", "")
+
+        symbols_raw = os.getenv("ALLOWED_SYMBOLS", "")
+        self.allowed_symbols: Optional[set[str]] = (
+            {s.strip().upper() for s in symbols_raw.split(",") if s.strip()}
+            or None
+        )
 
         # HOSTED MULTI-CUSTOMER: when true, an EA must present a valid, ACTIVE
         # customer license_key to receive commands; the local user_id fallback
@@ -97,6 +106,47 @@ class Settings:
         self.tp3_lot: float = _get_float("TP3_LOT", 0.01)
         self.max_spread_points: int = _get_int("MAX_SPREAD_POINTS", 500)
         self.max_slippage_points: int = _get_int("MAX_SLIPPAGE_POINTS", 100)
+
+    def validate_startup(self) -> None:
+        """Fail closed when a hosted deployment is configured unsafely.
+
+        Local demo mode intentionally remains frictionless. Hosted mode is
+        identified by REQUIRE_LICENSE=true and requires HTTPS, PostgreSQL and
+        non-placeholder server secrets. SignalGate remains demo-only in this
+        release; setting DEMO_ONLY_MODE=false is a hard startup error.
+        """
+        if not self.demo_only_mode:
+            raise RuntimeError(
+                "SignalGate hardening release is DEMO ONLY; DEMO_ONLY_MODE must be true."
+            )
+
+        if not self.require_license:
+            return
+
+        if self.database_url.startswith("sqlite"):
+            raise RuntimeError("Hosted mode requires PostgreSQL; SQLite is not supported.")
+        if not self.backend_base_url.lower().startswith("https://"):
+            raise RuntimeError("Hosted mode requires an HTTPS BACKEND_BASE_URL.")
+
+        weak = {
+            "",
+            "replace_me",
+            "changeme",
+            "change_me",
+            "local-demo-ea-key",
+            "test-ea-key",
+        }
+        required = {
+            "EA_API_KEY": self.ea_api_key,
+            "ADMIN_API_KEY": self.admin_api_key,
+            "REGISTRATION_API_KEY": self.registration_api_key,
+        }
+        for name, value in required.items():
+            normalised = value.strip().lower()
+            if normalised in weak or len(value.strip()) < 32:
+                raise RuntimeError(
+                    f"Hosted mode requires a strong {name} (minimum 32 characters)."
+                )
 
     def is_admin(self, telegram_user_id: str) -> bool:
         return str(telegram_user_id) in self.admin_telegram_ids

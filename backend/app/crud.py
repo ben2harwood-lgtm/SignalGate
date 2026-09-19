@@ -6,17 +6,19 @@ admin pause, one-command-per-approval) live here.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import secrets
 from typing import List, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import models
 from .config import get_settings
 from .models import utcnow
-from .parser import parse_signal
+from .parser import PAIR_CODES, parse_signal
 
 settings = get_settings()
 
@@ -24,6 +26,15 @@ settings = get_settings()
 # --- ID generation --------------------------------------------------------
 
 _PREFIXES = {
+    models.Organization: "ORG",
+    models.Provider: "PRV",
+    models.ProviderCredential: "PCR",
+    models.ProviderSourceInvite: "PSI",
+    models.ProviderSourceBinding: "PSB",
+    models.Feed: "FED",
+    models.SubscriptionInvite: "INV",
+    models.Subscription: "SUB",
+    models.TradingAccount: "ACC",
     models.User: "USER",
     models.Signal: "SIG",
     models.Approval: "APP",
@@ -37,13 +48,61 @@ _PREFIXES = {
 
 
 def _next_id(db: Session, model) -> str:
-    """Generate the next sequential prefixed ID for a model."""
+    """Generate a collision-resistant id.
+
+    Local demo users retain USER-000001 style ids because the bundled EA/demo
+    instructions rely on that convenience. Hosted mode and all safety-critical
+    entities use unpredictable ids so command/signal ids are not enumerable and
+    concurrent inserts do not derive the same id from a row count.
+    """
     prefix = _PREFIXES[model]
-    count = db.scalar(select(func.count()).select_from(model)) or 0
-    return f"{prefix}-{count + 1:06d}"
+    if model is models.User and not settings.require_license:
+        count = db.scalar(select(func.count()).select_from(model)) or 0
+        return f"{prefix}-{count + 1:06d}"
+    return f"{prefix}-{secrets.token_hex(8).upper()}"
 
 
 # --- Audit logging --------------------------------------------------------
+
+_AUDIT_LOCK_KEY = 44004401
+
+
+def _audit_record_hash(
+    *,
+    row_id: str,
+    event_type: str,
+    entity_type: Optional[str],
+    entity_id: Optional[str],
+    payload_json: Optional[str],
+    created_at: dt.datetime,
+    prev_hash: Optional[str],
+) -> str:
+    material = {
+        "id": row_id,
+        "event_type": event_type,
+        "entity_type": entity_type or "",
+        "entity_id": entity_id or "",
+        "payload_json": payload_json or "",
+        "created_at": created_at.isoformat(timespec="microseconds"),
+        "prev_hash": prev_hash or "",
+    }
+    encoded = json.dumps(
+        material,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _lock_audit_chain(db: Session) -> None:
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": _AUDIT_LOCK_KEY},
+        )
+
 
 def add_audit(
     db: Session,
@@ -52,16 +111,83 @@ def add_audit(
     entity_id: Optional[str] = None,
     payload: Optional[dict] = None,
 ) -> models.AuditLog:
-    log = models.AuditLog(
-        id=_next_id(db, models.AuditLog),
+    """Append a tamper-evident audit row.
+
+    PostgreSQL serialises chain-head updates with a transaction-scoped advisory
+    lock. The hash covers the exact stored payload string, timestamp and prior
+    hash; changing/deleting/reordering historical rows breaks verification.
+    """
+    _lock_audit_chain(db)
+    previous = db.scalar(
+        select(models.AuditLog)
+        .order_by(models.AuditLog.created_at.desc(), models.AuditLog.id.desc())
+        .limit(1)
+    )
+    prev_hash = previous.record_hash if previous is not None else None
+    row_id = _next_id(db, models.AuditLog)
+    created_at = utcnow()
+    payload_json = json.dumps(payload, default=str) if payload else None
+    record_hash = _audit_record_hash(
+        row_id=row_id,
         event_type=event_type,
         entity_type=entity_type,
         entity_id=entity_id,
-        payload_json=json.dumps(payload, default=str) if payload else None,
+        payload_json=payload_json,
+        created_at=created_at,
+        prev_hash=prev_hash,
+    )
+    log = models.AuditLog(
+        id=row_id,
+        event_type=event_type,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        payload_json=payload_json,
+        prev_hash=prev_hash,
+        record_hash=record_hash,
+        created_at=created_at,
     )
     db.add(log)
     db.flush()
     return log
+
+
+def verify_audit_chain(db: Session) -> dict:
+    rows = list(
+        db.scalars(
+            select(models.AuditLog)
+            .order_by(models.AuditLog.created_at.asc(), models.AuditLog.id.asc())
+        ).all()
+    )
+    prev_hash: Optional[str] = None
+    for index, row in enumerate(rows):
+        expected = _audit_record_hash(
+            row_id=row.id,
+            event_type=row.event_type,
+            entity_type=row.entity_type,
+            entity_id=row.entity_id,
+            payload_json=row.payload_json,
+            created_at=row.created_at,
+            prev_hash=prev_hash,
+        )
+        if row.prev_hash != prev_hash or not secrets.compare_digest(
+            row.record_hash or "",
+            expected,
+        ):
+            return {
+                "valid": False,
+                "count": len(rows),
+                "broken_index": index,
+                "broken_id": row.id,
+                "head_hash": prev_hash,
+            }
+        prev_hash = row.record_hash
+    return {
+        "valid": True,
+        "count": len(rows),
+        "broken_index": None,
+        "broken_id": None,
+        "head_hash": prev_hash,
+    }
 
 
 # --- Settings -------------------------------------------------------------
@@ -102,6 +228,963 @@ def get_setting_float(db: Session, key: str, default: float) -> float:
         return default
 
 
+# --- Provider tenancy -----------------------------------------------------
+
+def generate_provider_api_key() -> str:
+    return "sgp_" + secrets.token_urlsafe(32)
+
+
+def hash_provider_api_key(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+def create_organization(db: Session, name: str, slug: str) -> models.Organization:
+    existing = db.scalar(select(models.Organization).where(models.Organization.slug == slug))
+    if existing is not None:
+        raise ValueError("Organization slug already exists")
+    row = models.Organization(id=_next_id(db, models.Organization), name=name, slug=slug, status="ACTIVE")
+    db.add(row)
+    db.flush()
+    add_audit(db, "ORGANIZATION_CREATED", "organization", row.id, {"slug": slug})
+    return row
+
+
+def create_provider(
+    db: Session, organization_id: str, name: str, slug: str
+) -> models.Provider:
+    org = db.get(models.Organization, organization_id)
+    if org is None or org.status != "ACTIVE":
+        raise ValueError("Active organization not found")
+    existing = db.scalar(
+        select(models.Provider).where(
+            models.Provider.organization_id == organization_id,
+            models.Provider.slug == slug,
+        )
+    )
+    if existing is not None:
+        raise ValueError("Provider slug already exists in organization")
+    row = models.Provider(
+        id=_next_id(db, models.Provider),
+        organization_id=organization_id,
+        name=name,
+        slug=slug,
+        status="ACTIVE",
+        paused=False,
+    )
+    db.add(row)
+    db.flush()
+    add_audit(db, "PROVIDER_CREATED", "provider", row.id, {"organization_id": organization_id})
+    return row
+
+
+def issue_provider_credential(
+    db: Session, provider: models.Provider, label: str = "default"
+) -> tuple[models.ProviderCredential, str]:
+    if provider.status != "ACTIVE":
+        raise ValueError("Provider is not active")
+    raw_key = generate_provider_api_key()
+    row = models.ProviderCredential(
+        id=_next_id(db, models.ProviderCredential),
+        provider_id=provider.id,
+        label=label,
+        key_hash=hash_provider_api_key(raw_key),
+        status="ACTIVE",
+    )
+    db.add(row)
+    db.flush()
+    add_audit(db, "PROVIDER_CREDENTIAL_ISSUED", "provider", provider.id, {"credential_id": row.id, "label": label})
+    return row, raw_key
+
+
+def rotate_provider_credential(
+    db: Session, provider: models.Provider, label: str = "rotated"
+) -> tuple[models.ProviderCredential, str]:
+    credentials = db.scalars(
+        select(models.ProviderCredential).where(
+            models.ProviderCredential.provider_id == provider.id,
+            models.ProviderCredential.status == "ACTIVE",
+        )
+    ).all()
+    for credential in credentials:
+        credential.status = "REVOKED"
+    row, raw_key = issue_provider_credential(db, provider, label)
+    add_audit(
+        db,
+        "PROVIDER_CREDENTIALS_ROTATED",
+        "provider",
+        provider.id,
+        {"revoked_count": len(credentials), "new_credential_id": row.id},
+    )
+    return row, raw_key
+
+
+def generate_provider_source_token() -> str:
+    return "sgs_" + secrets.token_urlsafe(24)
+
+
+def hash_provider_source_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def create_provider_source_invite(
+    db: Session,
+    provider: models.Provider,
+    feed: models.Feed,
+    expires_minutes: int = 60,
+) -> tuple[models.ProviderSourceInvite, str]:
+    if feed.provider_id != provider.id:
+        raise ValueError("Feed does not belong to provider")
+    if provider.status != "ACTIVE" or feed.status != "ACTIVE":
+        raise ValueError("Provider/feed is not active")
+    raw_token = generate_provider_source_token()
+    row = models.ProviderSourceInvite(
+        id=_next_id(db, models.ProviderSourceInvite),
+        provider_id=provider.id,
+        feed_id=feed.id,
+        token_hash=hash_provider_source_token(raw_token),
+        status="PENDING",
+        expires_at=utcnow() + dt.timedelta(minutes=expires_minutes),
+    )
+    db.add(row)
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_SOURCE_INVITE_ISSUED",
+        "provider_source_invite",
+        row.id,
+        {
+            "provider_id": provider.id,
+            "feed_id": feed.id,
+            "expires_at": row.expires_at,
+        },
+    )
+    return row, raw_token
+
+
+def list_provider_source_invites(
+    db: Session,
+    provider_id: str,
+    limit: int = 100,
+) -> List[models.ProviderSourceInvite]:
+    return list(
+        db.scalars(
+            select(models.ProviderSourceInvite)
+            .where(models.ProviderSourceInvite.provider_id == provider_id)
+            .order_by(models.ProviderSourceInvite.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def revoke_provider_source_invite(
+    db: Session,
+    provider_id: str,
+    invite_id: str,
+) -> models.ProviderSourceInvite:
+    invite = db.scalar(
+        select(models.ProviderSourceInvite).where(
+            models.ProviderSourceInvite.id == invite_id,
+            models.ProviderSourceInvite.provider_id == provider_id,
+        )
+    )
+    if invite is None:
+        raise ValueError("Source invite not found")
+    if invite.status == "ACCEPTED":
+        raise ValueError("Accepted source invite cannot be revoked")
+    invite.status = "REVOKED"
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_SOURCE_INVITE_REVOKED",
+        "provider_source_invite",
+        invite.id,
+        {"provider_id": provider_id, "feed_id": invite.feed_id},
+    )
+    return invite
+
+
+def connect_telegram_provider_source(
+    db: Session,
+    raw_token: str,
+    telegram_user_id: str,
+) -> tuple[
+    models.ProviderSourceInvite,
+    models.ProviderSourceBinding,
+    models.Provider,
+    models.Feed,
+]:
+    token_hash = hash_provider_source_token(raw_token)
+    invite = db.scalar(
+        select(models.ProviderSourceInvite).where(
+            models.ProviderSourceInvite.token_hash == token_hash
+        )
+    )
+    if invite is None or not secrets.compare_digest(token_hash, invite.token_hash):
+        raise ValueError("Source invite not found")
+    if invite.status != "PENDING":
+        raise ValueError("Source invite is no longer active")
+    if invite.expires_at <= utcnow():
+        invite.status = "EXPIRED"
+        db.flush()
+        add_audit(
+            db,
+            "PROVIDER_SOURCE_INVITE_EXPIRED",
+            "provider_source_invite",
+            invite.id,
+            {"provider_id": invite.provider_id, "feed_id": invite.feed_id},
+        )
+        raise ValueError("Source invite has expired")
+
+    provider = db.get(models.Provider, invite.provider_id)
+    feed = db.scalar(
+        select(models.Feed).where(
+            models.Feed.id == invite.feed_id,
+            models.Feed.provider_id == invite.provider_id,
+        )
+    )
+    if provider is None or feed is None:
+        raise ValueError("Invite provider/feed no longer exists")
+    if provider.status != "ACTIVE" or feed.status != "ACTIVE":
+        raise ValueError("Invite provider/feed is not active")
+
+    external_identity = str(telegram_user_id)
+    binding = db.scalar(
+        select(models.ProviderSourceBinding).where(
+            models.ProviderSourceBinding.source_type == "TELEGRAM",
+            models.ProviderSourceBinding.external_identity == external_identity,
+        )
+    )
+    previous = None
+    if binding is None:
+        binding = models.ProviderSourceBinding(
+            id=_next_id(db, models.ProviderSourceBinding),
+            provider_id=provider.id,
+            feed_id=feed.id,
+            source_type="TELEGRAM",
+            external_identity=external_identity,
+            status="ACTIVE",
+        )
+        db.add(binding)
+    else:
+        previous = {
+            "provider_id": binding.provider_id,
+            "feed_id": binding.feed_id,
+            "status": binding.status,
+        }
+        binding.provider_id = provider.id
+        binding.feed_id = feed.id
+        binding.status = "ACTIVE"
+        binding.updated_at = utcnow()
+
+    invite.status = "ACCEPTED"
+    invite.accepted_telegram_user_id = external_identity
+    invite.accepted_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_SOURCE_CONNECTED",
+        "provider_source_binding",
+        binding.id,
+        {
+            "provider_id": provider.id,
+            "feed_id": feed.id,
+            "source_type": "TELEGRAM",
+            "rebound_from": previous,
+            "invite_id": invite.id,
+        },
+    )
+    return invite, binding, provider, feed
+
+
+def get_telegram_provider_source(
+    db: Session,
+    telegram_user_id: str,
+) -> Optional[tuple[models.ProviderSourceBinding, models.Provider, models.Feed]]:
+    binding = db.scalar(
+        select(models.ProviderSourceBinding).where(
+            models.ProviderSourceBinding.source_type == "TELEGRAM",
+            models.ProviderSourceBinding.external_identity == str(telegram_user_id),
+            models.ProviderSourceBinding.status == "ACTIVE",
+        )
+    )
+    if binding is None:
+        return None
+    provider = db.get(models.Provider, binding.provider_id)
+    feed = db.scalar(
+        select(models.Feed).where(
+            models.Feed.id == binding.feed_id,
+            models.Feed.provider_id == binding.provider_id,
+        )
+    )
+    if (
+        provider is None
+        or feed is None
+        or provider.status != "ACTIVE"
+        or feed.status != "ACTIVE"
+    ):
+        return None
+    return binding, provider, feed
+
+
+def list_provider_source_bindings(
+    db: Session,
+    provider_id: str,
+) -> List[models.ProviderSourceBinding]:
+    return list(
+        db.scalars(
+            select(models.ProviderSourceBinding)
+            .where(models.ProviderSourceBinding.provider_id == provider_id)
+            .order_by(models.ProviderSourceBinding.updated_at.desc())
+        ).all()
+    )
+
+
+def revoke_provider_source_binding(
+    db: Session,
+    provider_id: str,
+    binding_id: str,
+) -> models.ProviderSourceBinding:
+    binding = db.scalar(
+        select(models.ProviderSourceBinding).where(
+            models.ProviderSourceBinding.id == binding_id,
+            models.ProviderSourceBinding.provider_id == provider_id,
+        )
+    )
+    if binding is None:
+        raise ValueError("Source binding not found")
+    binding.status = "REVOKED"
+    binding.updated_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_SOURCE_REVOKED",
+        "provider_source_binding",
+        binding.id,
+        {
+            "provider_id": provider_id,
+            "feed_id": binding.feed_id,
+            "source_type": binding.source_type,
+        },
+    )
+    return binding
+
+
+def get_provider(db: Session, provider_id: str) -> Optional[models.Provider]:
+    return db.get(models.Provider, provider_id)
+
+
+def get_feed(db: Session, feed_id: str) -> Optional[models.Feed]:
+    return db.get(models.Feed, feed_id)
+
+
+def get_feed_for_provider(
+    db: Session, provider_id: str, feed_id: str
+) -> Optional[models.Feed]:
+    return db.scalar(
+        select(models.Feed).where(
+            models.Feed.id == feed_id,
+            models.Feed.provider_id == provider_id,
+        )
+    )
+
+
+def create_feed(
+    db: Session,
+    provider: models.Provider,
+    name: str,
+    source_namespace: str,
+    *,
+    paused: bool = False,
+) -> models.Feed:
+    if provider.status != "ACTIVE":
+        raise ValueError("Provider is not active")
+    existing = db.scalar(
+        select(models.Feed).where(
+            models.Feed.provider_id == provider.id,
+            models.Feed.source_namespace == source_namespace,
+        )
+    )
+    if existing is not None:
+        raise ValueError("Feed source namespace already exists for provider")
+    row = models.Feed(
+        id=_next_id(db, models.Feed),
+        provider_id=provider.id,
+        name=name,
+        source_namespace=source_namespace,
+        status="ACTIVE",
+        paused=paused,
+        allowed_symbols_json=None,
+        expiry_minutes=settings.default_signal_expiry_minutes,
+        default_lot_size=settings.default_lot_size,
+    )
+    db.add(row)
+    db.flush()
+    add_audit(
+        db,
+        "FEED_CREATED",
+        "feed",
+        row.id,
+        {"provider_id": provider.id, "paused": paused},
+    )
+    return row
+
+
+def _normalise_feed_symbols(symbols: Optional[list[str]]) -> Optional[list[str]]:
+    if symbols is None:
+        return None
+    normalised: list[str] = []
+    for raw in symbols:
+        symbol = str(raw).strip().upper().replace("/", "").replace("-", "")
+        if len(symbol) != 6:
+            raise ValueError(f"Unsupported symbol policy value: {raw}")
+        base, quote = symbol[:3], symbol[3:]
+        if base not in PAIR_CODES or quote not in PAIR_CODES:
+            raise ValueError(f"Unsupported symbol policy value: {raw}")
+        if symbol not in normalised:
+            normalised.append(symbol)
+    if len(normalised) > 100:
+        raise ValueError("Feed policy supports at most 100 symbols")
+    return sorted(normalised)
+
+
+def feed_allowed_symbols(feed: models.Feed) -> Optional[set[str]]:
+    if not feed.allowed_symbols_json:
+        return settings.allowed_symbols
+    try:
+        values = json.loads(feed.allowed_symbols_json)
+    except (TypeError, json.JSONDecodeError):
+        raise ValueError("Feed allowed-symbol policy is invalid")
+    return set(_normalise_feed_symbols(values) or [])
+
+
+def update_feed_policy(
+    db: Session,
+    feed: models.Feed,
+    changes: dict,
+) -> models.Feed:
+    if "name" in changes and changes["name"] is not None:
+        feed.name = changes["name"]
+    if "allowed_symbols" in changes:
+        symbols = _normalise_feed_symbols(changes["allowed_symbols"])
+        feed.allowed_symbols_json = json.dumps(symbols) if symbols is not None else None
+    if "expiry_minutes" in changes and changes["expiry_minutes"] is not None:
+        feed.expiry_minutes = int(changes["expiry_minutes"])
+    if "default_lot_size" in changes and changes["default_lot_size"] is not None:
+        feed.default_lot_size = float(changes["default_lot_size"])
+    feed.updated_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "FEED_POLICY_UPDATED",
+        "feed",
+        feed.id,
+        {"fields": sorted(changes.keys()), "provider_id": feed.provider_id},
+    )
+    return feed
+
+
+def set_provider_paused(db: Session, provider: models.Provider, paused: bool) -> models.Provider:
+    provider.paused = paused
+    provider.updated_at = utcnow()
+    db.flush()
+    add_audit(db, "PROVIDER_PAUSE_CHANGED", "provider", provider.id, {"paused": paused})
+    return provider
+
+
+def set_feed_paused(db: Session, feed: models.Feed, paused: bool) -> models.Feed:
+    feed.paused = paused
+    feed.updated_at = utcnow()
+    db.flush()
+    add_audit(db, "FEED_PAUSE_CHANGED", "feed", feed.id, {"paused": paused})
+    return feed
+
+
+def list_provider_feeds(db: Session, provider_id: str) -> List[models.Feed]:
+    return list(db.scalars(
+        select(models.Feed)
+        .where(models.Feed.provider_id == provider_id)
+        .order_by(models.Feed.created_at.asc())
+    ).all())
+
+
+def get_active_subscription(
+    db: Session, feed_id: str, user_id: str
+) -> Optional[models.Subscription]:
+    return db.scalar(
+        select(models.Subscription).where(
+            models.Subscription.feed_id == feed_id,
+            models.Subscription.user_id == user_id,
+            models.Subscription.status == "ACTIVE",
+        )
+    )
+
+
+def get_trading_account(
+    db: Session, provider_id: str, user_id: str
+) -> Optional[models.TradingAccount]:
+    return db.scalar(
+        select(models.TradingAccount).where(
+            models.TradingAccount.provider_id == provider_id,
+            models.TradingAccount.user_id == user_id,
+            models.TradingAccount.status == "ACTIVE",
+        )
+    )
+
+
+def generate_subscription_invite_token() -> str:
+    return "sgi_" + secrets.token_urlsafe(24)
+
+
+def hash_subscription_invite_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def create_subscription_invite(
+    db: Session,
+    provider: models.Provider,
+    feed: models.Feed,
+    expires_minutes: int = 1440,
+) -> tuple[models.SubscriptionInvite, str]:
+    if feed.provider_id != provider.id:
+        raise ValueError("Feed does not belong to provider")
+    if provider.status != "ACTIVE" or feed.status != "ACTIVE":
+        raise ValueError("Provider/feed is not active")
+    raw_token = generate_subscription_invite_token()
+    row = models.SubscriptionInvite(
+        id=_next_id(db, models.SubscriptionInvite),
+        provider_id=provider.id,
+        feed_id=feed.id,
+        token_hash=hash_subscription_invite_token(raw_token),
+        status="PENDING",
+        expires_at=utcnow() + dt.timedelta(minutes=expires_minutes),
+    )
+    db.add(row)
+    db.flush()
+    add_audit(
+        db,
+        "SUBSCRIPTION_INVITE_ISSUED",
+        "subscription_invite",
+        row.id,
+        {
+            "provider_id": provider.id,
+            "feed_id": feed.id,
+            "expires_at": row.expires_at,
+        },
+    )
+    return row, raw_token
+
+
+def list_provider_subscription_invites(
+    db: Session, provider_id: str, limit: int = 100
+) -> List[models.SubscriptionInvite]:
+    return list(
+        db.scalars(
+            select(models.SubscriptionInvite)
+            .where(models.SubscriptionInvite.provider_id == provider_id)
+            .order_by(models.SubscriptionInvite.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def revoke_subscription_invite(
+    db: Session,
+    provider_id: str,
+    invite_id: str,
+) -> models.SubscriptionInvite:
+    invite = db.scalar(
+        select(models.SubscriptionInvite).where(
+            models.SubscriptionInvite.id == invite_id,
+            models.SubscriptionInvite.provider_id == provider_id,
+        )
+    )
+    if invite is None:
+        raise ValueError("Invite not found")
+    if invite.status == "ACCEPTED":
+        raise ValueError("Accepted invite cannot be revoked")
+    invite.status = "REVOKED"
+    db.flush()
+    add_audit(
+        db,
+        "SUBSCRIPTION_INVITE_REVOKED",
+        "subscription_invite",
+        invite.id,
+        {"provider_id": provider_id, "feed_id": invite.feed_id},
+    )
+    return invite
+
+
+def accept_subscription_invite(
+    db: Session,
+    raw_token: str,
+    telegram_user_id: str,
+) -> tuple[
+    models.SubscriptionInvite,
+    models.Subscription,
+    models.TradingAccount,
+    models.Provider,
+    models.Feed,
+]:
+    token_hash = hash_subscription_invite_token(raw_token)
+    invite = db.scalar(
+        select(models.SubscriptionInvite).where(
+            models.SubscriptionInvite.token_hash == token_hash
+        )
+    )
+    if invite is None:
+        raise ValueError("Invite not found")
+    if not secrets.compare_digest(token_hash, invite.token_hash):
+        raise ValueError("Invite not found")
+    if invite.status != "PENDING":
+        raise ValueError("Invite is no longer active")
+    if invite.expires_at <= utcnow():
+        invite.status = "EXPIRED"
+        db.flush()
+        add_audit(
+            db,
+            "SUBSCRIPTION_INVITE_EXPIRED",
+            "subscription_invite",
+            invite.id,
+            {"provider_id": invite.provider_id, "feed_id": invite.feed_id},
+        )
+        raise ValueError("Invite has expired")
+
+    provider = get_provider(db, invite.provider_id)
+    feed = get_feed_for_provider(db, invite.provider_id, invite.feed_id)
+    if provider is None or feed is None:
+        raise ValueError("Invite provider/feed no longer exists")
+    if provider.status != "ACTIVE" or feed.status != "ACTIVE":
+        raise ValueError("Invite provider/feed is not active")
+
+    user = get_user_by_telegram(db, telegram_user_id)
+    if user is None or user.status != "ACTIVE":
+        raise ValueError("Subscriber must be registered and active")
+
+    subscription, account = subscribe_user_to_feed(db, provider, feed, user)
+    invite.status = "ACCEPTED"
+    invite.accepted_user_id = user.id
+    invite.accepted_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "SUBSCRIPTION_INVITE_ACCEPTED",
+        "subscription_invite",
+        invite.id,
+        {
+            "provider_id": provider.id,
+            "feed_id": feed.id,
+            "user_id": user.id,
+            "subscription_id": subscription.id,
+            "account_id": account.id,
+        },
+    )
+    return invite, subscription, account, provider, feed
+
+
+def subscribe_user_to_feed(
+    db: Session, provider: models.Provider, feed: models.Feed, user: models.User
+) -> tuple[models.Subscription, models.TradingAccount]:
+    if feed.provider_id != provider.id:
+        raise ValueError("Feed does not belong to provider")
+    if provider.status != "ACTIVE" or feed.status != "ACTIVE":
+        raise ValueError("Provider/feed is not active")
+    subscription = db.scalar(
+        select(models.Subscription).where(
+            models.Subscription.feed_id == feed.id,
+            models.Subscription.user_id == user.id,
+        )
+    )
+    if subscription is None:
+        subscription = models.Subscription(
+            id=_next_id(db, models.Subscription),
+            provider_id=provider.id,
+            feed_id=feed.id,
+            user_id=user.id,
+            status="ACTIVE",
+        )
+        db.add(subscription)
+    else:
+        subscription.provider_id = provider.id
+        subscription.status = "ACTIVE"
+        subscription.updated_at = utcnow()
+
+    account = db.scalar(
+        select(models.TradingAccount).where(
+            models.TradingAccount.provider_id == provider.id,
+            models.TradingAccount.user_id == user.id,
+        )
+    )
+    if account is None:
+        account = models.TradingAccount(
+            id=_next_id(db, models.TradingAccount),
+            provider_id=provider.id,
+            user_id=user.id,
+            label="Primary",
+            status="ACTIVE",
+        )
+        db.add(account)
+    else:
+        account.status = "ACTIVE"
+        account.updated_at = utcnow()
+
+    db.flush()
+    add_audit(db, "SUBSCRIPTION_ACTIVATED", "subscription", subscription.id, {
+        "provider_id": provider.id, "feed_id": feed.id, "user_id": user.id, "account_id": account.id
+    })
+    return subscription, account
+
+
+def list_active_users_for_feed(
+    db: Session, provider_id: str, feed_id: str
+) -> List[models.User]:
+    return list(db.scalars(
+        select(models.User)
+        .join(models.Subscription, models.Subscription.user_id == models.User.id)
+        .where(
+            models.Subscription.provider_id == provider_id,
+            models.Subscription.feed_id == feed_id,
+            models.Subscription.status == "ACTIVE",
+            models.User.status == "ACTIVE",
+        )
+        .order_by(models.User.created_at.asc())
+    ).all())
+
+
+def list_provider_signals(db: Session, provider_id: str, limit: int = 50) -> List[models.Signal]:
+    return list(db.scalars(
+        select(models.Signal)
+        .where(models.Signal.provider_id == provider_id)
+        .order_by(models.Signal.created_at.desc())
+        .limit(limit)
+    ).all())
+
+
+def list_provider_commands(db: Session, provider_id: str, limit: int = 50) -> List[models.Command]:
+    return list(db.scalars(
+        select(models.Command)
+        .where(models.Command.provider_id == provider_id)
+        .order_by(models.Command.created_at.desc())
+        .limit(limit)
+    ).all())
+
+
+def update_provider_branding(
+    db: Session,
+    provider: models.Provider,
+    changes: dict,
+) -> models.Provider:
+    """Update bounded provider-owned branding fields only."""
+    if "display_name" in changes:
+        provider.brand_display_name = changes["display_name"] or None
+    if "logo_url" in changes:
+        logo_url = changes["logo_url"] or None
+        if logo_url and not logo_url.lower().startswith(("https://", "http://")):
+            raise ValueError("logo_url must be http(s)")
+        provider.brand_logo_url = logo_url
+    if "primary_color" in changes:
+        provider.brand_primary_color = changes["primary_color"] or None
+    if "support_contact" in changes:
+        provider.support_contact = changes["support_contact"] or None
+    provider.updated_at = utcnow()
+    db.flush()
+    add_audit(
+        db,
+        "PROVIDER_BRANDING_UPDATED",
+        "provider",
+        provider.id,
+        {"fields": sorted(changes.keys())},
+    )
+    return provider
+
+
+def provider_overview(db: Session, provider_id: str) -> dict:
+    """Tenant-scoped operational counts for the Provider Edition dashboard."""
+    feed_count = db.scalar(
+        select(func.count()).select_from(models.Feed).where(
+            models.Feed.provider_id == provider_id
+        )
+    ) or 0
+    active_subscribers = db.scalar(
+        select(func.count()).select_from(models.Subscription).where(
+            models.Subscription.provider_id == provider_id,
+            models.Subscription.status == "ACTIVE",
+        )
+    ) or 0
+    active_accounts = db.scalar(
+        select(func.count()).select_from(models.TradingAccount).where(
+            models.TradingAccount.provider_id == provider_id,
+            models.TradingAccount.status == "ACTIVE",
+        )
+    ) or 0
+    signal_count = db.scalar(
+        select(func.count()).select_from(models.Signal).where(
+            models.Signal.provider_id == provider_id
+        )
+    ) or 0
+    command_count = db.scalar(
+        select(func.count()).select_from(models.Command).where(
+            models.Command.provider_id == provider_id
+        )
+    ) or 0
+    return {
+        "feed_count": int(feed_count),
+        "active_subscribers": int(active_subscribers),
+        "active_accounts": int(active_accounts),
+        "signal_count": int(signal_count),
+        "command_count": int(command_count),
+    }
+
+
+def _reconciliation_state(
+    command: models.Command,
+    execution: Optional[models.Execution],
+) -> str:
+    if command.status == "PENDING":
+        return "PENDING"
+    if command.status == "SENT_TO_EA":
+        return "AWAITING_EXECUTION_REPORT"
+    if execution is None:
+        return "REVIEW_REQUIRED"
+    if execution.status == "FAILED" and command.status == "FAILED":
+        return "RECONCILED_FAILED"
+    if execution.status == "SUCCESS" and command.status == "FULLY_CLOSED":
+        return "RECONCILED_CLOSED"
+    if execution.status == "SUCCESS" and command.status in {
+        "EXECUTED_OPEN",
+        "PARTIAL_TP1_DONE",
+        "PARTIAL_TP2_DONE",
+    }:
+        return "OPEN_OR_MANAGED"
+    return "REVIEW_REQUIRED"
+
+
+def provider_history(db: Session, provider_id: str, limit: int = 50) -> list[dict]:
+    rows: list[dict] = []
+    for command in list_provider_commands(db, provider_id, limit=limit):
+        execution = db.scalar(
+            select(models.Execution).where(models.Execution.command_id == command.id)
+        )
+        events = list(
+            db.scalars(
+                select(models.TradeManagementEvent)
+                .where(models.TradeManagementEvent.command_id == command.id)
+                .order_by(models.TradeManagementEvent.created_at.asc())
+            ).all()
+        )
+        ledger = db.scalar(
+            select(models.PerformanceLedger).where(
+                models.PerformanceLedger.command_id == command.id
+            )
+        )
+        signal = db.get(models.Signal, command.signal_id)
+        rows.append({
+            "command_id": command.id,
+            "signal_id": command.signal_id,
+            "feed_id": command.feed_id,
+            "account_id": command.account_id,
+            "user_id": command.user_id,
+            "symbol": command.symbol,
+            "direction": command.direction,
+            "command_status": command.status,
+            "created_at": command.created_at,
+            "processed_at": command.processed_at,
+            "reconciliation_state": _reconciliation_state(command, execution),
+            "signal": {
+                "parser_status": signal.parser_status if signal else None,
+                "source": signal.source if signal else None,
+                "created_at": signal.created_at if signal else None,
+            },
+            "execution": (
+                {
+                    "status": execution.status,
+                    "broker_ticket": execution.broker_ticket,
+                    "executed_symbol": execution.executed_symbol,
+                    "executed_price": execution.executed_price,
+                    "lot_size": execution.lot_size,
+                    "slippage": execution.slippage,
+                    "created_at": execution.created_at,
+                } if execution else None
+            ),
+            "management_events": [
+                {
+                    "event_type": event.event_type,
+                    "stage": event.stage,
+                    "result": event.result,
+                    "price": event.price,
+                    "created_at": event.created_at,
+                } for event in events
+            ],
+            "ledger": (
+                {
+                    "result_status": ledger.result_status,
+                    "r_result": ledger.r_result,
+                    "final_notes": ledger.final_notes,
+                } if ledger else None
+            ),
+        })
+    return rows
+
+
+def bootstrap_demo_tenant(db: Session) -> dict:
+    """Idempotently provision a provider/feed/subscriber demo bundle."""
+    org = db.scalar(
+        select(models.Organization).where(models.Organization.slug == "signalgate-demo")
+    )
+    if org is None:
+        org = create_organization(db, "SignalGate Demo", "signalgate-demo")
+    provider = db.scalar(
+        select(models.Provider).where(
+            models.Provider.organization_id == org.id,
+            models.Provider.slug == "demo-provider",
+        )
+    )
+    if provider is None:
+        provider = create_provider(db, org.id, "Demo Signal Provider", "demo-provider")
+        provider.brand_display_name = "Demo Signal Provider"
+        provider.brand_primary_color = "#111827"
+    feed = db.scalar(
+        select(models.Feed).where(
+            models.Feed.provider_id == provider.id,
+            models.Feed.source_namespace == "DEMO_FEED",
+        )
+    )
+    if feed is None:
+        feed = create_feed(db, provider, "Demo Feed", "DEMO_FEED")
+    user = get_user_by_telegram(db, "demo-subscriber")
+    if user is None:
+        user = register_user(
+            db,
+            telegram_user_id="demo-subscriber",
+            telegram_username="demo_subscriber",
+            first_name="Demo Subscriber",
+        )
+    subscription, account = subscribe_user_to_feed(db, provider, feed, user)
+    customer_license = issue_license(db, user)
+    credential, raw_key = issue_provider_credential(db, provider, "demo-bootstrap")
+    db.flush()
+    add_audit(
+        db,
+        "DEMO_TENANT_BOOTSTRAPPED",
+        "provider",
+        provider.id,
+        {
+            "feed_id": feed.id,
+            "user_id": user.id,
+            "account_id": account.id,
+            "subscription_id": subscription.id,
+            "credential_id": credential.id,
+        },
+    )
+    return {
+        "provider": provider,
+        "feed": feed,
+        "user": user,
+        "account": account,
+        "provider_api_key": raw_key,
+        "license_key": customer_license,
+    }
+
+
 # --- Users ----------------------------------------------------------------
 
 def register_user(
@@ -126,6 +1209,7 @@ def register_user(
         add_audit(db, "USER_UPDATED", "user", user.id)
         return user
 
+    raw_license = generate_license_key()
     user = models.User(
         id=_next_id(db, models.User),
         telegram_user_id=str(telegram_user_id),
@@ -133,11 +1217,21 @@ def register_user(
         first_name=first_name,
         status="ACTIVE",
         fixed_lot_size=settings.default_lot_size,
-        license_key=generate_license_key(),
+        legacy_license_key=None,
+        license_key_hash=hash_license_key(raw_license),
+        license_key_last4=raw_license[-4:],
     )
+    # Transient one-time response value; never mapped/persisted.
+    user._issued_license_key = raw_license
     db.add(user)
     db.flush()
-    add_audit(db, "USER_REGISTERED", "user", user.id)
+    add_audit(
+        db,
+        "USER_REGISTERED",
+        "user",
+        user.id,
+        {"license_key_last4": user.license_key_last4},
+    )
     return user
 
 
@@ -172,30 +1266,56 @@ def list_users(db: Session) -> List[models.User]:
 # none of this is required and the demo keeps working via the user_id path.
 
 def generate_license_key() -> str:
-    """Generate a human-readable, hard-to-guess license key, e.g. SG-AB12-CD34-EF56."""
-    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no ambiguous 0/O/1/I
-    groups = ["".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(3)]
+    """Generate a human-readable one-time customer licence (~80 bits entropy).
+
+    Existing shorter licences remain valid because authentication hashes the
+    presented value; only newly issued/rotated keys use the stronger format.
+    """
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    groups = ["".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(4)]
     return "SG-" + "-".join(groups)
+
+
+def hash_license_key(license_key: str) -> str:
+    return hashlib.sha256(license_key.encode("utf-8")).hexdigest()
 
 
 def get_user_by_license(db: Session, license_key: str) -> Optional[models.User]:
     if not license_key:
         return None
-    return db.scalar(
-        select(models.User).where(models.User.license_key == license_key)
+    candidate_hash = hash_license_key(license_key)
+    user = db.scalar(
+        select(models.User).where(models.User.license_key_hash == candidate_hash)
     )
+    if user is None or not user.license_key_hash:
+        return None
+    if not secrets.compare_digest(candidate_hash, user.license_key_hash):
+        return None
+    return user
 
 
 def issue_license(db: Session, user: models.User) -> str:
-    """Assign a fresh unique license key to a user and return it."""
-    # Loop guards against the astronomically unlikely collision.
+    """Rotate a customer licence. Raw value is returned once and never stored."""
     for _ in range(10):
         key = generate_license_key()
-        if get_user_by_license(db, key) is None:
-            user.license_key = key
+        key_hash = hash_license_key(key)
+        existing = db.scalar(
+            select(models.User).where(models.User.license_key_hash == key_hash)
+        )
+        if existing is None:
+            user.legacy_license_key = None
+            user.license_key_hash = key_hash
+            user.license_key_last4 = key[-4:]
             user.updated_at = utcnow()
+            user._issued_license_key = key
             db.flush()
-            add_audit(db, "LICENSE_ISSUED", "user", user.id, {"license_key": key})
+            add_audit(
+                db,
+                "LICENSE_ISSUED",
+                "user",
+                user.id,
+                {"rotated": True, "license_key_last4": user.license_key_last4},
+            )
             return key
     raise RuntimeError("Could not generate a unique license key")
 
@@ -244,22 +1364,95 @@ def resolve_ea_user(
 
 # --- Signals --------------------------------------------------------------
 
+class SignalReplayConflict(ValueError):
+    """Same provider-source message id was reused with different content."""
+
+
 def create_signal(
     db: Session,
     raw_text: str,
     source: str = "TELEGRAM_ADMIN_TEST",
     source_message_id: Optional[str] = None,
+    provider_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
 ) -> models.Signal:
-    """Store + deterministically parse a signal. Always creates a ledger row."""
+    """Store + deterministically parse a signal. Always creates a ledger row.
+
+    Hosted provider signals are explicitly tenant-bound. The persisted source
+    namespace includes the feed id so the legacy replay uniqueness constraint
+    cannot collide across providers.
+    """
     from . import ledger  # local import to avoid cycle
 
-    expiry_minutes = get_setting_int(
-        db, "default_signal_expiry_minutes", settings.default_signal_expiry_minutes
+    feed: Optional[models.Feed] = None
+    if provider_id or feed_id:
+        if not provider_id or not feed_id:
+            raise ValueError("provider_id and feed_id must be supplied together")
+        provider = get_provider(db, provider_id)
+        feed = get_feed_for_provider(db, provider_id, feed_id)
+        if provider is None or provider.status != "ACTIVE":
+            raise ValueError("Active provider not found")
+        if feed is None or feed.status != "ACTIVE":
+            raise ValueError("Active provider-owned feed not found")
+        if provider.paused or feed.paused:
+            raise ValueError("Provider/feed is paused")
+        source = f"FEED:{feed.id}:{source}"
+
+    # Deduplicate provider/webhook retries before parsing/broadcast. Returning
+    # the original Signal means downstream per-user approval idempotency still
+    # guarantees at most one command for that source message.
+    if source_message_id:
+        existing = db.scalar(
+            select(models.Signal).where(
+                models.Signal.source == source,
+                models.Signal.source_message_id == source_message_id,
+            )
+        )
+        if existing is not None:
+            if existing.raw_text != raw_text:
+                add_audit(
+                    db,
+                    "SIGNAL_REPLAY_CONFLICT",
+                    "signal",
+                    existing.id,
+                    {"source": source, "source_message_id": source_message_id},
+                )
+                raise SignalReplayConflict(
+                    "Source message id was already used with different signal content"
+                )
+            add_audit(
+                db,
+                "SIGNAL_REPLAY_IGNORED",
+                "signal",
+                existing.id,
+                {"source": source, "source_message_id": source_message_id},
+            )
+            return existing
+
+    expiry_minutes = (
+        feed.expiry_minutes
+        if feed is not None and feed.expiry_minutes is not None
+        else get_setting_int(
+            db,
+            "default_signal_expiry_minutes",
+            settings.default_signal_expiry_minutes,
+        )
     )
-    parsed = parse_signal(raw_text, expiry_minutes=expiry_minutes)
+    allowed_symbols = (
+        feed_allowed_symbols(feed)
+        if feed is not None
+        else settings.allowed_symbols
+    )
+    parsed = parse_signal(
+        raw_text,
+        expiry_minutes=expiry_minutes,
+        allowed_symbols=allowed_symbols,
+    )
 
     signal = models.Signal(
         id=_next_id(db, models.Signal),
+        provider_id=provider_id,
+        feed_id=feed_id,
         source=source,
         source_message_id=source_message_id,
         raw_text=raw_text,
@@ -277,14 +1470,57 @@ def create_signal(
         status="VALID" if parsed.is_valid else "REJECTED",
     )
     db.add(signal)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        if not source_message_id:
+            raise
+        # Another worker may have inserted the same provider message after our
+        # pre-check. Let the database uniqueness constraint arbitrate the race.
+        db.rollback()
+        existing = db.scalar(
+            select(models.Signal).where(
+                models.Signal.source == source,
+                models.Signal.source_message_id == source_message_id,
+            )
+        )
+        if existing is None:
+            raise
+        if existing.raw_text != raw_text:
+            add_audit(
+                db,
+                "SIGNAL_REPLAY_CONFLICT",
+                "signal",
+                existing.id,
+                {
+                    "source": source,
+                    "source_message_id": source_message_id,
+                    "raced": True,
+                },
+            )
+            raise SignalReplayConflict(
+                "Source message id was already used with different signal content"
+            )
+        add_audit(
+            db,
+            "SIGNAL_REPLAY_IGNORED",
+            "signal",
+            existing.id,
+            {"source": source, "source_message_id": source_message_id, "raced": True},
+        )
+        return existing
 
     add_audit(
         db,
         "SIGNAL_CREATED",
         "signal",
         signal.id,
-        {"parser_status": parsed.parser_status, "error": parsed.parser_error},
+        {
+            "parser_status": parsed.parser_status,
+            "error": parsed.parser_error,
+            "provider_id": provider_id,
+            "feed_id": feed_id,
+        },
     )
 
     # Every signal gets a performance ledger row, valid or not.
@@ -380,6 +1616,26 @@ def approve_signal(
             approval_id=existing.id,
             duplicate=True,
         )
+
+    # Tenant boundary: provider signals can only be approved by active
+    # subscribers, and provider/feed pause is a hard kill path.
+    if signal.provider_id is not None or signal.feed_id is not None:
+        if not signal.provider_id or not signal.feed_id:
+            return _decision_result("TENANT_INVALID", "Signal tenant ownership is incomplete.")
+        provider = get_provider(db, signal.provider_id)
+        feed = get_feed_for_provider(db, signal.provider_id, signal.feed_id)
+        if provider is None or feed is None:
+            return _decision_result("TENANT_INVALID", "Signal provider/feed no longer exists.")
+        if provider.status != "ACTIVE" or feed.status != "ACTIVE":
+            return _decision_result("TENANT_INACTIVE", "Provider/feed is inactive.")
+        if provider.paused:
+            return _decision_result("PROVIDER_PAUSED", "Provider is paused. No command created.")
+        if feed.paused:
+            return _decision_result("FEED_PAUSED", "Feed is paused. No command created.")
+        if get_active_subscription(db, signal.feed_id, user.id) is None:
+            return _decision_result("NOT_SUBSCRIBED", "User is not subscribed to this feed.")
+        if get_trading_account(db, signal.provider_id, user.id) is None:
+            return _decision_result("ACCOUNT_NOT_FOUND", "No active provider trading account exists.")
 
     # SAFETY: admin pause blocks command creation.
     if is_admin_paused(db):
@@ -502,15 +1758,39 @@ def _create_command(
     user: models.User,
 ) -> models.Command:
     """Create exactly one command from an approved valid signal."""
-    expiry_minutes = get_setting_int(
-        db, "default_signal_expiry_minutes", settings.default_signal_expiry_minutes
+    feed = (
+        get_feed_for_provider(db, signal.provider_id, signal.feed_id)
+        if signal.provider_id is not None and signal.feed_id is not None
+        else None
+    )
+    expiry_minutes = (
+        feed.expiry_minutes
+        if feed is not None and feed.expiry_minutes is not None
+        else get_setting_int(
+            db,
+            "default_signal_expiry_minutes",
+            settings.default_signal_expiry_minutes,
+        )
+    )
+    default_lot_size = (
+        feed.default_lot_size
+        if feed is not None and feed.default_lot_size is not None
+        else get_setting_float(db, "default_lot_size", settings.default_lot_size)
     )
     split_mode = (
         get_setting(db, "split_ticket_demo_partial_mode", "true") or "true"
     ).lower() == "true"
 
+    account = (
+        get_trading_account(db, signal.provider_id, user.id)
+        if signal.provider_id is not None
+        else None
+    )
     command = models.Command(
         id=_next_id(db, models.Command),
+        provider_id=signal.provider_id,
+        feed_id=signal.feed_id,
+        account_id=account.id if account is not None else None,
         signal_id=signal.id,
         approval_id=approval.id,
         user_id=user.id,
@@ -525,7 +1805,7 @@ def _create_command(
         tp1_close_percent=get_setting_int(db, "tp1_close_percent", 50),
         tp2_close_percent=get_setting_int(db, "tp2_close_percent", 25),
         tp3_close_percent=get_setting_int(db, "tp3_close_percent", 25),
-        lot_size=get_setting_float(db, "default_lot_size", settings.default_lot_size),
+        lot_size=default_lot_size,
         split_ticket_demo_partial_mode=split_mode,
         tp1_lot=get_setting_float(db, "tp1_lot", settings.tp1_lot),
         tp2_lot=get_setting_float(db, "tp2_lot", settings.tp2_lot),
@@ -544,33 +1824,41 @@ def _create_command(
 def get_pending_command_for_user(
     db: Session, user_id: str
 ) -> Optional[models.Command]:
-    """Return + claim the oldest pending non-expired command for a user.
+    """Atomically claim the oldest pending non-expired command for a user.
 
-    Marks the command SENT_TO_EA so it is never handed out twice. Expired
-    pending commands are transitioned to EXPIRED and skipped.
+    PostgreSQL uses SELECT ... FOR UPDATE SKIP LOCKED so two EA polls/workers
+    cannot claim the same command concurrently. SQLite keeps the simple local
+    demo path, where the test/demo process is single-worker.
     """
-    candidates = db.scalars(
-        select(models.Command)
-        .where(
-            models.Command.user_id == user_id,
-            models.Command.status == "PENDING",
+    while True:
+        query = (
+            select(models.Command)
+            .where(
+                models.Command.user_id == user_id,
+                models.Command.status == "PENDING",
+            )
+            .order_by(models.Command.created_at.asc())
+            .limit(1)
         )
-        .order_by(models.Command.created_at.asc())
-    ).all()
+        bind = db.get_bind()
+        if bind is not None and bind.dialect.name == "postgresql":
+            query = query.with_for_update(skip_locked=True)
 
-    for command in candidates:
+        command = db.scalar(query)
+        if command is None:
+            return None
+
         if _is_expired(command.expires_at):
             command.status = "EXPIRED"
             db.flush()
             add_audit(db, "COMMAND_EXPIRED", "command", command.id)
             continue
-        # Claim it.
+
         command.status = "SENT_TO_EA"
         command.sent_to_ea_at = utcnow()
         db.flush()
         add_audit(db, "COMMAND_SENT_TO_EA", "command", command.id)
         return command
-    return None
 
 
 def get_command(db: Session, command_id: str) -> Optional[models.Command]:
@@ -587,17 +1875,115 @@ def recent_commands(db: Session, limit: int = 20) -> List[models.Command]:
     )
 
 
+def recent_ledger(db: Session, limit: int = 20) -> List[models.PerformanceLedger]:
+    """Most-recent performance rows, including losses and unattributed closes."""
+    return list(
+        db.scalars(
+            select(models.PerformanceLedger)
+            .order_by(models.PerformanceLedger.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
 def mark_command_received(db: Session, command: models.Command) -> None:
     add_audit(db, "COMMAND_RECEIVED_BY_EA", "command", command.id)
 
 
 # --- Executions -----------------------------------------------------------
 
+class ExecutionReportConflict(ValueError):
+    """A retry disagrees with the already-recorded broker execution outcome."""
+
+
+_EXECUTION_REPORT_FIELDS = (
+    "status",
+    "broker_ticket",
+    "child_tickets_json",
+    "executed_symbol",
+    "executed_direction",
+    "requested_price",
+    "executed_price",
+    "lot_size",
+    "initial_stop_loss",
+    "tp1",
+    "tp2",
+    "tp3",
+    "spread_at_execution",
+    "slippage",
+    "error_code",
+    "error_message",
+)
+
+
+def _execution_report_mismatches(
+    existing: models.Execution, payload
+) -> list[str]:
+    return [
+        field
+        for field in _EXECUTION_REPORT_FIELDS
+        if getattr(existing, field) != getattr(payload, field)
+    ]
+
+
+def _existing_execution_or_conflict(
+    db: Session,
+    command: models.Command,
+    existing: models.Execution,
+    payload,
+    *,
+    raced: bool = False,
+) -> tuple[models.Execution, bool]:
+    mismatches = _execution_report_mismatches(existing, payload)
+    if mismatches:
+        add_audit(
+            db,
+            "EXECUTION_REPORT_CONFLICT",
+            "command",
+            command.id,
+            {
+                "execution_id": existing.id,
+                "mismatched_fields": mismatches,
+                "existing_status": existing.status,
+                "incoming_status": payload.status,
+                "raced": raced,
+            },
+        )
+        raise ExecutionReportConflict(
+            "Conflicting execution report for command; manual reconciliation required"
+        )
+
+    add_audit(
+        db,
+        "DUPLICATE_EXECUTION_REPORT_IGNORED",
+        "command",
+        command.id,
+        {"execution_id": existing.id, "raced": raced},
+    )
+    return existing, False
+
+
 def record_execution(
     db: Session, command: models.Command, payload
-) -> models.Execution:
-    """Record an EA execution result and update command status + ledger."""
+) -> tuple[models.Execution, bool]:
+    """Record an execution result exactly once.
+
+    EA/network retries are normal. A retry for a command that already has an
+    execution returns the original row and does not replay ledger/state changes.
+    """
     from . import ledger
+
+    existing = db.scalar(
+        select(models.Execution).where(models.Execution.command_id == command.id)
+    )
+    if existing is not None:
+        return _existing_execution_or_conflict(db, command, existing, payload)
+
+    if command.status != "SENT_TO_EA":
+        raise ValueError(
+            f"Cannot report first execution from command state {command.status}; "
+            "command must have been claimed by the EA first"
+        )
 
     execution = models.Execution(
         id=_next_id(db, models.Execution),
@@ -630,7 +2016,21 @@ def record_execution(
         command.last_error = payload.error_message or payload.error_code
         command.processed_at = utcnow()
 
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # A simultaneous retry may have won the unique(command_id) race after
+        # our initial lookup. Roll back this transaction and return the winner.
+        db.rollback()
+        existing = db.scalar(
+            select(models.Execution).where(models.Execution.command_id == command.id)
+        )
+        if existing is not None:
+            return _existing_execution_or_conflict(
+                db, command, existing, payload, raced=True
+            )
+        raise
+
     add_audit(
         db,
         "EXECUTION_RECORDED",
@@ -639,10 +2039,245 @@ def record_execution(
         {"status": payload.status, "command_id": command.id},
     )
     ledger.on_execution(db, command, execution)
-    return execution
+    return execution, True
+
+
+# --- Broker reconciliation ------------------------------------------------
+
+class BrokerReconciliationConflict(ValueError):
+    """Broker snapshot contradicts the command or stored execution state."""
+
+
+def _broker_symbol_matches(command_symbol: str, observed_symbol: str) -> bool:
+    command_symbol = (command_symbol or "").upper()
+    observed_symbol = (observed_symbol or "").upper()
+    return bool(
+        command_symbol
+        and observed_symbol
+        and (
+            observed_symbol == command_symbol
+            or observed_symbol.startswith(command_symbol)
+        )
+    )
+
+
+def _snapshot_tickets(payload) -> list[str]:
+    tickets = [str(ticket).strip() for ticket in payload.broker_tickets if str(ticket).strip()]
+    if not tickets:
+        raise BrokerReconciliationConflict("Broker snapshot contains no usable tickets")
+    return list(dict.fromkeys(tickets))
+
+
+def reconcile_open_position(
+    db: Session,
+    command: models.Command,
+    payload,
+) -> tuple[models.Execution, str]:
+    """Match or recover a lost execution report from authoritative broker state.
+
+    This path never sends an order. It only records an already-open position
+    after ownership and command fields agree.
+    """
+    from . import ledger
+
+    tickets = _snapshot_tickets(payload)
+    conflicts: list[str] = []
+    if not _broker_symbol_matches(command.symbol, payload.executed_symbol):
+        conflicts.append("symbol")
+    if command.direction != payload.executed_direction:
+        conflicts.append("direction")
+    existing = db.scalar(
+        select(models.Execution).where(models.Execution.command_id == command.id)
+    )
+    if existing is not None:
+        if existing.status != "SUCCESS":
+            conflicts.append("existing_execution_status")
+        if existing.executed_direction and existing.executed_direction != payload.executed_direction:
+            conflicts.append("existing_direction")
+        if existing.executed_symbol and not _broker_symbol_matches(
+            command.symbol, existing.executed_symbol
+        ):
+            conflicts.append("existing_symbol")
+        existing_tickets: set[str] = set()
+        if existing.broker_ticket:
+            existing_tickets.add(str(existing.broker_ticket))
+        if existing.child_tickets_json:
+            try:
+                existing_tickets.update(str(x) for x in json.loads(existing.child_tickets_json))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                conflicts.append("stored_ticket_payload")
+        if existing_tickets and not (existing_tickets & set(tickets)):
+            conflicts.append("broker_tickets")
+
+        if conflicts:
+            add_audit(
+                db,
+                "BROKER_RECONCILIATION_CONFLICT",
+                "command",
+                command.id,
+                {"conflicts": sorted(set(conflicts)), "tickets": tickets},
+            )
+            raise BrokerReconciliationConflict(
+                "Broker snapshot conflicts with stored execution: "
+                + ", ".join(sorted(set(conflicts)))
+            )
+
+        add_audit(
+            db,
+            "BROKER_RECONCILIATION_MATCHED",
+            "command",
+            command.id,
+            {"execution_id": existing.id, "tickets": tickets},
+        )
+        return existing, "matched"
+
+    if conflicts:
+        add_audit(
+            db,
+            "BROKER_RECONCILIATION_CONFLICT",
+            "command",
+            command.id,
+            {"conflicts": sorted(set(conflicts)), "tickets": tickets},
+        )
+        raise BrokerReconciliationConflict(
+            "Broker snapshot conflicts with command: "
+            + ", ".join(sorted(set(conflicts)))
+        )
+
+    recoverable_states = {
+        "SENT_TO_EA",
+        "EXECUTED_OPEN",
+        "PARTIAL_TP1_DONE",
+        "PARTIAL_TP2_DONE",
+    }
+    if command.status not in recoverable_states:
+        add_audit(
+            db,
+            "BROKER_RECONCILIATION_CONFLICT",
+            "command",
+            command.id,
+            {"conflicts": ["command_state"], "command_status": command.status},
+        )
+        raise BrokerReconciliationConflict(
+            f"Open broker position is incompatible with command state {command.status}"
+        )
+
+    previous_status = command.status
+    execution = models.Execution(
+        id=_next_id(db, models.Execution),
+        command_id=command.id,
+        user_id=command.user_id,
+        status="SUCCESS",
+        broker_ticket=tickets[0],
+        child_tickets_json=json.dumps(tickets),
+        executed_symbol=payload.executed_symbol,
+        executed_direction=payload.executed_direction,
+        requested_price=command.entry_price,
+        executed_price=payload.executed_price,
+        lot_size=payload.lot_size,
+        initial_stop_loss=command.initial_stop_loss,
+        tp1=command.tp1,
+        tp2=command.tp2,
+        tp3=command.tp3,
+    )
+    db.add(execution)
+    if command.status == "SENT_TO_EA":
+        command.status = "EXECUTED_OPEN"
+        command.processed_at = utcnow()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        existing = db.scalar(
+            select(models.Execution).where(models.Execution.command_id == command.id)
+        )
+        if existing is None:
+            raise
+        return reconcile_open_position(db, command, payload)
+
+    add_audit(
+        db,
+        "EXECUTION_RECOVERED_FROM_BROKER_SNAPSHOT",
+        "execution",
+        execution.id,
+        {
+            "command_id": command.id,
+            "previous_status": previous_status,
+            "tickets": tickets,
+        },
+    )
+    if previous_status in {"SENT_TO_EA", "EXECUTED_OPEN"}:
+        ledger.on_execution(db, command, execution)
+    return execution, "recovered"
 
 
 # --- Management events ----------------------------------------------------
+
+class ManagementEventConflict(ValueError):
+    """A retried lifecycle event disagrees with the stored event payload."""
+
+
+_MANAGEMENT_EVENT_FIELDS = (
+    "broker_ticket",
+    "event_type",
+    "stage",
+    "requested_action",
+    "result",
+    "price",
+    "lot_size_before",
+    "lot_size_after",
+    "stop_loss_before",
+    "stop_loss_after",
+    "error_code",
+    "error_message",
+)
+
+
+def _management_event_mismatches(
+    existing: models.TradeManagementEvent, payload
+) -> list[str]:
+    return [
+        field
+        for field in _MANAGEMENT_EVENT_FIELDS
+        if getattr(existing, field) != getattr(payload, field)
+    ]
+
+
+def _existing_management_event_or_conflict(
+    db: Session,
+    command: models.Command,
+    existing: models.TradeManagementEvent,
+    payload,
+    *,
+    raced: bool = False,
+) -> tuple[models.TradeManagementEvent, bool]:
+    mismatches = _management_event_mismatches(existing, payload)
+    if mismatches:
+        add_audit(
+            db,
+            "MANAGEMENT_EVENT_CONFLICT",
+            "command",
+            command.id,
+            {
+                "event_id": existing.id,
+                "event_type": payload.event_type,
+                "mismatched_fields": mismatches,
+                "raced": raced,
+            },
+        )
+        raise ManagementEventConflict(
+            "Conflicting management event retry; manual reconciliation required"
+        )
+
+    add_audit(
+        db,
+        "DUPLICATE_MANAGEMENT_EVENT_IGNORED",
+        "command",
+        command.id,
+        {"event_id": existing.id, "event_type": payload.event_type, "raced": raced},
+    )
+    return existing, False
+
 
 # Map of management event_type -> resulting command status (if any).
 _EVENT_TO_COMMAND_STATUS = {
@@ -656,15 +2291,39 @@ _EVENT_TO_COMMAND_STATUS = {
 }
 
 
+def _management_event_key(command: models.Command, payload) -> str:
+    parts = [
+        command.id,
+        payload.event_type or "",
+        payload.stage or "",
+        payload.result or "",
+        payload.broker_ticket or "",
+        payload.requested_action or "",
+    ]
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
 def record_management_event(
     db: Session, command: models.Command, payload
-) -> models.TradeManagementEvent:
-    """Store a management event and advance command status + ledger."""
+) -> tuple[models.TradeManagementEvent, bool]:
+    """Store a management event idempotently and advance state monotonically."""
     from . import ledger
+
+    event_key = _management_event_key(command, payload)
+    existing = db.scalar(
+        select(models.TradeManagementEvent).where(
+            models.TradeManagementEvent.idempotency_key == event_key
+        )
+    )
+    if existing is not None:
+        return _existing_management_event_or_conflict(
+            db, command, existing, payload
+        )
 
     event = models.TradeManagementEvent(
         id=_next_id(db, models.TradeManagementEvent),
         command_id=command.id,
+        idempotency_key=event_key,
         broker_ticket=payload.broker_ticket,
         event_type=payload.event_type,
         stage=payload.stage,
@@ -680,22 +2339,44 @@ def record_management_event(
     )
     db.add(event)
 
+    terminal = command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}
     new_status = _EVENT_TO_COMMAND_STATUS.get(payload.event_type)
-    if new_status:
+    if new_status and not terminal:
         command.status = new_status
         if new_status in {"FULLY_CLOSED", "FAILED"}:
             command.processed_at = utcnow()
 
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # Same event raced us. The unique idempotency key makes the DB the
+        # final arbiter even with multiple API workers.
+        db.rollback()
+        existing = db.scalar(
+            select(models.TradeManagementEvent).where(
+                models.TradeManagementEvent.idempotency_key == event_key
+            )
+        )
+        if existing is not None:
+            return _existing_management_event_or_conflict(
+                db, command, existing, payload, raced=True
+            )
+        raise
+
     add_audit(
         db,
         "MANAGEMENT_EVENT",
         "management_event",
         event.id,
-        {"event_type": payload.event_type, "command_id": command.id},
+        {
+            "event_type": payload.event_type,
+            "command_id": command.id,
+            "state_advanced": bool(new_status and not terminal),
+        },
     )
-    ledger.on_management_event(db, command, event)
-    return event
+    if not terminal:
+        ledger.on_management_event(db, command, event)
+    return event, True
 
 
 # --- helpers --------------------------------------------------------------

@@ -1,4 +1,4 @@
-# SignalGate — What a Sellable ("Hosted") Version Would Take
+> **Historical planning document — superseded.** Much of the hosted/multi-tenant work described here has now been implemented. For current architecture and remaining gates use `SIGNALGATE-STATUS.md`, `docs/HOSTED_DEPLOYMENT.md`, `docs/PROVIDER_EDITION.md`, and `docs/EXTERNAL_ACCEPTANCE_HANDOFF.md`. Figures and implementation gaps below are historical, not current claims.\n\n# SignalGate — What a Sellable ("Hosted") Version Would Take
 
 *Plain-English plan. Demo-only posture preserved throughout. Not legal or financial advice.*
 
