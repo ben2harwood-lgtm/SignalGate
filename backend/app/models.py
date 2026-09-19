@@ -51,6 +51,10 @@ class Provider(Base):
     slug: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
     paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    brand_display_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    brand_logo_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    brand_primary_color: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    support_contact: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -78,6 +82,9 @@ class Feed(Base):
     source_namespace: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
     paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    allowed_symbols_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    expiry_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    default_lot_size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
