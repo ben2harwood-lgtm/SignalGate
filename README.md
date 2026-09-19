@@ -159,6 +159,8 @@ backup/restore on an isolated PostgreSQL database.
 ## Evidence and operations
 
 - [Canonical Status](SIGNALGATE-STATUS.md)
+- [Release Candidate Evidence](docs/RELEASE_CANDIDATE_2026-09-19.md)
+- [External Acceptance Handoff](docs/EXTERNAL_ACCEPTANCE_HANDOFF.md)
 - [Release Gates](docs/RELEASE_GATES.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Safety Rules](docs/SAFETY_RULES.md)
