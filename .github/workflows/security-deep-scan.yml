@@ -51,6 +51,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build hosted image for security scan
         run: docker build --pull -t signalgate-security-scan .
+      - name: Inspect final Python package state
+        run: |
+          docker run --rm signalgate-security-scan python -m pip check
+          docker run --rm signalgate-security-scan python -c "import importlib.metadata as m; names=['setuptools','wheel','msgpack','jaraco.context']; [print(f'{n}={m.version(n)}') for n in names if any(d.metadata['Name'].lower()==n for d in m.distributions())]"
       - name: Scan hosted image for fixable high/critical vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
