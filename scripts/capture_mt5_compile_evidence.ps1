@@ -1,29 +1,30 @@
 <#
 .SYNOPSIS
-Compile the exact SignalGate EA with MetaEditor and write a candidate-bound evidence receipt.
+Compile a frozen SignalGate candidate with MetaEditor and write a source-bound evidence receipt.
 
 .DESCRIPTION
-This script is intentionally evidence-oriented:
-- the supplied candidate SHA must equal the checked-out Git HEAD;
-- the EA source SHA-256 is recorded before compilation;
-- MetaEditor is invoked with /compile and /log;
-- the generated compiler log must contain the final result line;
-- PASS requires exactly 0 errors and 0 warnings;
-- MetaEditor and optional MetaTrader terminal file versions are recorded;
-- the source file and raw compile log are copied into a timestamped evidence directory.
+The harness may live on a later tooling branch. It never compiles that later tree by accident.
+Instead it:
+- resolves CandidateRef to an exact Git commit and optionally checks CandidateSha;
+- creates a detached temporary Git worktree at that exact candidate;
+- compiles only mt5_ea\SignalGateEA.mq5 from that detached worktree;
+- records the EA SHA-256, MetaEditor/terminal versions and raw compiler log;
+- requires the final MetaEditor result to be exactly 0 errors / 0 warnings;
+- copies the exact source and compiler log into a timestamped evidence directory;
+- removes the temporary candidate worktree after evidence capture.
 
 It does not run trades and does not enable real-money mode.
 #>
 
 [CmdletBinding()]
 param(
+    [string]$CandidateRef = "release/signalgate-demo-rc2-2026-09-19",
+    [string]$CandidateSha = "",
     [string]$MetaEditorPath = "",
     [string]$Mql5Root = "",
     [string]$TerminalPath = "",
-    [string]$EAPath = "",
-    [string]$CandidateSha = "",
     [string]$EvidenceRoot = "",
-    [switch]$AllowDirtyWorktree
+    [switch]$KeepCandidateWorktree
 )
 
 $ErrorActionPreference = "Stop"
@@ -122,39 +123,31 @@ function Read-CompileLog {
     }
 }
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-
-if (-not $EAPath) {
-    $EAPath = Join-Path $repoRoot "mt5_ea\SignalGateEA.mq5"
-}
-$EAPath = (Resolve-Path -LiteralPath $EAPath -ErrorAction Stop).Path
-
+$toolRepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if (-not $EvidenceRoot) {
-    $EvidenceRoot = Join-Path $repoRoot "artifacts\mt5-acceptance"
+    $EvidenceRoot = Join-Path $toolRepoRoot "artifacts\mt5-acceptance"
 }
 
-$head = (& git -C $repoRoot rev-parse HEAD).Trim().ToLowerInvariant()
-if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$') {
-    throw "Could not resolve the repository HEAD commit."
+$resolvedSha = (& git -C $toolRepoRoot rev-parse "$CandidateRef^{commit}").Trim().ToLowerInvariant()
+if ($LASTEXITCODE -ne 0 -or $resolvedSha -notmatch '^[0-9a-f]{40}$') {
+    throw "Could not resolve CandidateRef '$CandidateRef' to an exact commit. Fetch/check the ref first."
 }
 
-if (-not $CandidateSha) {
-    $CandidateSha = $head
-}
-$CandidateSha = $CandidateSha.Trim().ToLowerInvariant()
-if ($CandidateSha -notmatch '^[0-9a-f]{40}$') {
-    throw "CandidateSha must be an exact 40-character Git SHA."
-}
-if ($CandidateSha -ne $head) {
-    throw "CandidateSha $CandidateSha does not match checked-out HEAD $head."
+if ($CandidateSha) {
+    $CandidateSha = $CandidateSha.Trim().ToLowerInvariant()
+    if ($CandidateSha -notmatch '^[0-9a-f]{40}$') {
+        throw "CandidateSha must be an exact 40-character Git SHA."
+    }
+    if ($CandidateSha -ne $resolvedSha) {
+        throw "CandidateRef '$CandidateRef' resolves to $resolvedSha, not expected CandidateSha $CandidateSha. Stop: the release ref may have moved."
+    }
+} else {
+    $CandidateSha = $resolvedSha
 }
 
-$dirty = (& git -C $repoRoot status --porcelain)
-if ($LASTEXITCODE -ne 0) {
-    throw "Could not inspect Git worktree status."
-}
-if ($dirty -and -not $AllowDirtyWorktree) {
-    throw "Working tree is dirty. Commit/stash changes or pass -AllowDirtyWorktree explicitly. A normal acceptance receipt must use the exact candidate tree."
+$harnessHead = (& git -C $toolRepoRoot rev-parse HEAD).Trim().ToLowerInvariant()
+if ($LASTEXITCODE -ne 0 -or $harnessHead -notmatch '^[0-9a-f]{40}$') {
+    throw "Could not resolve the harness repository HEAD commit."
 }
 
 $programRoots = @(
@@ -175,72 +168,99 @@ if ($TerminalPath) {
     $TerminalPath = (Resolve-Path -LiteralPath $TerminalPath -ErrorAction Stop).Path
 }
 
-$sourceHash = (Get-FileHash -LiteralPath $EAPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $metaEditorVersion = (Get-Item -LiteralPath $MetaEditorPath).VersionInfo.FileVersion
 $terminalVersion = $null
 if ($TerminalPath) {
     $terminalVersion = (Get-Item -LiteralPath $TerminalPath).VersionInfo.FileVersion
 }
 
-$compileLog = [System.IO.Path]::ChangeExtension($EAPath, ".log")
-if (Test-Path -LiteralPath $compileLog) {
-    Remove-Item -LiteralPath $compileLog -Force
+$tempBase = [System.IO.Path]::GetTempPath()
+$candidateWorktree = Join-Path $tempBase ("signalgate-mt5-{0}-{1}" -f $CandidateSha.Substring(0, 12), $PID)
+if (Test-Path -LiteralPath $candidateWorktree) {
+    throw "Temporary candidate worktree already exists: $candidateWorktree"
 }
 
-$arguments = @(
-    ('/compile:"{0}"' -f $EAPath),
-    ('/include:"{0}"' -f $Mql5Root),
-    '/log'
-)
+$worktreeAdded = $false
+try {
+    & git -C $toolRepoRoot worktree add --detach $candidateWorktree $CandidateSha
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not create detached candidate worktree at $CandidateSha."
+    }
+    $worktreeAdded = $true
 
-$startedUtc = [DateTime]::UtcNow
-$process = Start-Process -FilePath $MetaEditorPath -ArgumentList $arguments -Wait -PassThru -NoNewWindow
-$completedUtc = [DateTime]::UtcNow
+    $worktreeHead = (& git -C $candidateWorktree rev-parse HEAD).Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0 -or $worktreeHead -ne $CandidateSha) {
+        throw "Detached candidate worktree does not match the expected SHA."
+    }
 
-$result = Read-CompileLog -Path $compileLog
-$pass = ($result.Errors -eq 0 -and $result.Warnings -eq 0)
+    $candidateDirty = (& git -C $candidateWorktree status --porcelain)
+    if ($LASTEXITCODE -ne 0 -or $candidateDirty) {
+        throw "Detached candidate worktree is unexpectedly dirty."
+    }
 
-$stamp = $startedUtc.ToString("yyyyMMddTHHmmssZ")
-$evidenceDir = Join-Path $EvidenceRoot ("{0}-MT5-COMPILE-{1}" -f $stamp, $CandidateSha.Substring(0, 12))
-New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+    $EAPath = (Resolve-Path -LiteralPath (Join-Path $candidateWorktree "mt5_ea\SignalGateEA.mq5") -ErrorAction Stop).Path
+    $sourceHash = (Get-FileHash -LiteralPath $EAPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
-$sourceCopy = Join-Path $evidenceDir "SignalGateEA.mq5"
-$logCopy = Join-Path $evidenceDir "SignalGateEA.log"
-Copy-Item -LiteralPath $EAPath -Destination $sourceCopy -Force
-Copy-Item -LiteralPath $compileLog -Destination $logCopy -Force
+    $compileLog = [System.IO.Path]::ChangeExtension($EAPath, ".log")
+    if (Test-Path -LiteralPath $compileLog) {
+        Remove-Item -LiteralPath $compileLog -Force
+    }
 
-$receipt = [ordered]@{
-    schema                  = "signalgate-mt5-compile-receipt-v1"
-    generated_at_utc        = $completedUtc.ToString("o")
-    started_at_utc          = $startedUtc.ToString("o")
-    candidate_sha           = $CandidateSha
-    repository_head         = $head
-    working_tree_clean      = (-not [bool]$dirty)
-    ea_source_path          = $EAPath
-    ea_source_sha256        = $sourceHash
-    metaeditor_path         = $MetaEditorPath
-    metaeditor_file_version = $metaEditorVersion
-    mql5_root               = $Mql5Root
-    terminal_path           = $TerminalPath
-    terminal_file_version   = $terminalVersion
-    compiler_process_exit   = $process.ExitCode
-    compile_errors          = $result.Errors
-    compile_warnings        = $result.Warnings
-    result                  = $(if ($pass) { "PASS" } else { "FAIL" })
-    source_copy             = "SignalGateEA.mq5"
-    compile_log             = "SignalGateEA.log"
-}
+    $arguments = @(
+        ('/compile:"{0}"' -f $EAPath),
+        ('/include:"{0}"' -f $Mql5Root),
+        '/log'
+    )
 
-$jsonPath = Join-Path $evidenceDir "receipt.json"
-$receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+    $startedUtc = [DateTime]::UtcNow
+    $process = Start-Process -FilePath $MetaEditorPath -ArgumentList $arguments -Wait -PassThru -NoNewWindow
+    $completedUtc = [DateTime]::UtcNow
 
-$markdown = @"
+    $result = Read-CompileLog -Path $compileLog
+    $pass = ($result.Errors -eq 0 -and $result.Warnings -eq 0)
+
+    $stamp = $startedUtc.ToString("yyyyMMddTHHmmssZ")
+    $evidenceDir = Join-Path $EvidenceRoot ("{0}-MT5-COMPILE-{1}" -f $stamp, $CandidateSha.Substring(0, 12))
+    New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+
+    $sourceCopy = Join-Path $evidenceDir "SignalGateEA.mq5"
+    $logCopy = Join-Path $evidenceDir "SignalGateEA.log"
+    Copy-Item -LiteralPath $EAPath -Destination $sourceCopy -Force
+    Copy-Item -LiteralPath $compileLog -Destination $logCopy -Force
+
+    $receipt = [ordered]@{
+        schema                  = "signalgate-mt5-compile-receipt-v1"
+        generated_at_utc        = $completedUtc.ToString("o")
+        started_at_utc          = $startedUtc.ToString("o")
+        candidate_ref           = $CandidateRef
+        candidate_sha           = $CandidateSha
+        detached_worktree_head  = $worktreeHead
+        harness_repository_head = $harnessHead
+        ea_source_sha256        = $sourceHash
+        metaeditor_path         = $MetaEditorPath
+        metaeditor_file_version = $metaEditorVersion
+        mql5_root               = $Mql5Root
+        terminal_path           = $TerminalPath
+        terminal_file_version   = $terminalVersion
+        compiler_process_exit   = $process.ExitCode
+        compile_errors          = $result.Errors
+        compile_warnings        = $result.Warnings
+        result                  = $(if ($pass) { "PASS" } else { "FAIL" })
+        source_copy             = "SignalGateEA.mq5"
+        compile_log             = "SignalGateEA.log"
+    }
+
+    $jsonPath = Join-Path $evidenceDir "receipt.json"
+    $receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+
+    $markdown = @"
 # SignalGate MT5 Compile Receipt
 
 Result: **$($receipt.result)**
+Candidate ref: $CandidateRef
 Candidate SHA: $CandidateSha
-Repository HEAD: $head
-Working tree clean: $($receipt.working_tree_clean)
+Detached worktree HEAD: $worktreeHead
+Harness repository HEAD: $harnessHead
 EA SHA-256: $sourceHash
 MetaEditor version: $metaEditorVersion
 MetaTrader terminal version: $terminalVersion
@@ -255,21 +275,31 @@ Raw evidence:
 - SignalGateEA.log
 - receipt.json
 
-This receipt proves compilation of the recorded source/candidate only. It does not prove demo execution scenarios, security clearance, regulatory status, profitability, or real-money readiness.
+This receipt proves compilation of the recorded frozen source/candidate only. It does not prove demo execution scenarios, security clearance, regulatory status, profitability, or real-money readiness.
 "@
-$markdown | Set-Content -LiteralPath (Join-Path $evidenceDir "receipt.md") -Encoding UTF8
+    $markdown | Set-Content -LiteralPath (Join-Path $evidenceDir "receipt.md") -Encoding UTF8
 
-Write-Host ""
-Write-Host "SignalGate MT5 compile evidence"
-Write-Host "  Candidate:  $CandidateSha"
-Write-Host "  EA SHA256:  $sourceHash"
-Write-Host "  MetaEditor: $metaEditorVersion"
-Write-Host "  Errors:     $($result.Errors)"
-Write-Host "  Warnings:   $($result.Warnings)"
-Write-Host "  Result:     $($receipt.result)"
-Write-Host "  Evidence:   $evidenceDir"
+    Write-Host ""
+    Write-Host "SignalGate MT5 compile evidence"
+    Write-Host "  Candidate ref: $CandidateRef"
+    Write-Host "  Candidate SHA: $CandidateSha"
+    Write-Host "  EA SHA256:     $sourceHash"
+    Write-Host "  MetaEditor:    $metaEditorVersion"
+    Write-Host "  Errors:        $($result.Errors)"
+    Write-Host "  Warnings:      $($result.Warnings)"
+    Write-Host "  Result:        $($receipt.result)"
+    Write-Host "  Evidence:      $evidenceDir"
 
-if (-not $pass) {
-    exit 2
+    if (-not $pass) {
+        exit 2
+    }
 }
+finally {
+    if ($worktreeAdded -and -not $KeepCandidateWorktree) {
+        & git -C $toolRepoRoot worktree remove --force $candidateWorktree | Out-Null
+    } elseif ($worktreeAdded) {
+        Write-Host "Candidate worktree retained: $candidateWorktree"
+    }
+}
+
 exit 0
