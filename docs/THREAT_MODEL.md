@@ -34,7 +34,7 @@
 | Stolen credential | scoped credentials, rotation, revocation, audit |
 | Secret leaked in URL/log | headers only; secret-redaction tests |
 | Malformed/ambiguous signal | deterministic fail-closed parser |
-| Replay of source message | provider+source-message unique replay key |
+| Replay of source message | feed-scoped source namespace + source-message unique replay key |
 | Oversized image/body | request size and media-type limits |
 | Database unavailable mid-command | fail closed + durable queue/reconciliation |
 | Backend timeout after broker success | broker-side idempotency/reconciliation; never blindly resend |
@@ -45,7 +45,7 @@
 
 ## Open high-priority threats
 
-- Provider/organisation multi-tenancy is not yet implemented in the July data model.
+- Provider/organisation/feed/subscriber/account ownership is now implemented on the September hardening spine; keep cross-tenant tests mandatory for every provider-scoped change.
 - Broker acknowledgement/reconciliation across timeout-after-success needs a durable production design.
 - EA local processed-command memory is volatile across restart; backend/broker reconciliation must remain authoritative.
 - No production SSO/MFA/RBAC dashboard exists yet.
