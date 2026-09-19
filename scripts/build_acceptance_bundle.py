@@ -94,7 +94,6 @@ def build_bundle(
     paths: Iterable[str] | None = None,
 ) -> dict:
     """Build one deterministic ZIP and return its manifest."""
-    candidate_sha = candidate_sha.lower()
     if not FULL_SHA_RE.fullmatch(candidate_sha):
         raise ValueError("candidate_sha must be an exact 40-character lowercase hex commit SHA")
     if profile not in PROFILES and paths is None:
