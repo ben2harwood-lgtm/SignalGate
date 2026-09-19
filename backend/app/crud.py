@@ -11,7 +11,7 @@ import json
 import secrets
 from typing import List, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -64,6 +64,46 @@ def _next_id(db: Session, model) -> str:
 
 # --- Audit logging --------------------------------------------------------
 
+_AUDIT_LOCK_KEY = 44004401
+
+
+def _audit_record_hash(
+    *,
+    row_id: str,
+    event_type: str,
+    entity_type: Optional[str],
+    entity_id: Optional[str],
+    payload_json: Optional[str],
+    created_at: dt.datetime,
+    prev_hash: Optional[str],
+) -> str:
+    material = {
+        "id": row_id,
+        "event_type": event_type,
+        "entity_type": entity_type or "",
+        "entity_id": entity_id or "",
+        "payload_json": payload_json or "",
+        "created_at": created_at.isoformat(timespec="microseconds"),
+        "prev_hash": prev_hash or "",
+    }
+    encoded = json.dumps(
+        material,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _lock_audit_chain(db: Session) -> None:
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": _AUDIT_LOCK_KEY},
+        )
+
+
 def add_audit(
     db: Session,
     event_type: str,
@@ -71,16 +111,83 @@ def add_audit(
     entity_id: Optional[str] = None,
     payload: Optional[dict] = None,
 ) -> models.AuditLog:
-    log = models.AuditLog(
-        id=_next_id(db, models.AuditLog),
+    """Append a tamper-evident audit row.
+
+    PostgreSQL serialises chain-head updates with a transaction-scoped advisory
+    lock. The hash covers the exact stored payload string, timestamp and prior
+    hash; changing/deleting/reordering historical rows breaks verification.
+    """
+    _lock_audit_chain(db)
+    previous = db.scalar(
+        select(models.AuditLog)
+        .order_by(models.AuditLog.created_at.desc(), models.AuditLog.id.desc())
+        .limit(1)
+    )
+    prev_hash = previous.record_hash if previous is not None else None
+    row_id = _next_id(db, models.AuditLog)
+    created_at = utcnow()
+    payload_json = json.dumps(payload, default=str) if payload else None
+    record_hash = _audit_record_hash(
+        row_id=row_id,
         event_type=event_type,
         entity_type=entity_type,
         entity_id=entity_id,
-        payload_json=json.dumps(payload, default=str) if payload else None,
+        payload_json=payload_json,
+        created_at=created_at,
+        prev_hash=prev_hash,
+    )
+    log = models.AuditLog(
+        id=row_id,
+        event_type=event_type,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        payload_json=payload_json,
+        prev_hash=prev_hash,
+        record_hash=record_hash,
+        created_at=created_at,
     )
     db.add(log)
     db.flush()
     return log
+
+
+def verify_audit_chain(db: Session) -> dict:
+    rows = list(
+        db.scalars(
+            select(models.AuditLog)
+            .order_by(models.AuditLog.created_at.asc(), models.AuditLog.id.asc())
+        ).all()
+    )
+    prev_hash: Optional[str] = None
+    for index, row in enumerate(rows):
+        expected = _audit_record_hash(
+            row_id=row.id,
+            event_type=row.event_type,
+            entity_type=row.entity_type,
+            entity_id=row.entity_id,
+            payload_json=row.payload_json,
+            created_at=row.created_at,
+            prev_hash=prev_hash,
+        )
+        if row.prev_hash != prev_hash or not secrets.compare_digest(
+            row.record_hash or "",
+            expected,
+        ):
+            return {
+                "valid": False,
+                "count": len(rows),
+                "broken_index": index,
+                "broken_id": row.id,
+                "head_hash": prev_hash,
+            }
+        prev_hash = row.record_hash
+    return {
+        "valid": True,
+        "count": len(rows),
+        "broken_index": None,
+        "broken_id": None,
+        "head_hash": prev_hash,
+    }
 
 
 # --- Settings -------------------------------------------------------------
