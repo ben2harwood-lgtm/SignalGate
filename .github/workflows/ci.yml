@@ -92,6 +92,59 @@ jobs:
       - name: Prove hosted startup accepts current schema
         working-directory: backend
         run: python -c "from app.database import _assert_hosted_schema_current; _assert_hosted_schema_current()"
+      - name: Prove customer licence migration erases legacy plaintext
+        working-directory: backend
+        run: |
+          alembic -c alembic.ini downgrade 20260919_0006
+          python - <<'PY'
+          import hashlib
+          import os
+          import psycopg2
+
+          raw = "SG-ABCD-EFGH-JKLM"
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          try:
+              with conn, conn.cursor() as cur:
+                  cur.execute(
+                      """
+                      INSERT INTO users
+                        (id, telegram_user_id, status, fixed_lot_size, license_key,
+                         created_at, updated_at)
+                      VALUES
+                        ('USER-LEGACY-CI', 'legacy-ci', 'ACTIVE', 0.01, %s, NOW(), NOW())
+                      """,
+                      (raw,),
+                  )
+          finally:
+              conn.close()
+          print("legacy plaintext row inserted at 0006")
+          PY
+          alembic -c alembic.ini upgrade head
+          python - <<'PY'
+          import hashlib
+          import os
+          import psycopg2
+
+          raw = "SG-ABCD-EFGH-JKLM"
+          expected = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+          conn = psycopg2.connect(os.environ["DATABASE_URL"])
+          try:
+              with conn, conn.cursor() as cur:
+                  cur.execute(
+                      """
+                      SELECT license_key, license_key_hash, license_key_last4
+                      FROM users WHERE id='USER-LEGACY-CI'
+                      """
+                  )
+                  legacy, digest, last4 = cur.fetchone()
+                  assert legacy is None, "legacy plaintext licence survived migration"
+                  assert digest == expected
+                  assert last4 == raw[-4:]
+          finally:
+              conn.close()
+          print("legacy plaintext erased and hash backfill verified")
+          PY
+          alembic -c alembic.ini check
       - name: Verify historical baseline shape
         run: |
           cd backend
