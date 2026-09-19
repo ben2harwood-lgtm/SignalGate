@@ -49,27 +49,62 @@ def test_hosted_admin_id_alone_is_not_a_credential(client):
         _set_hosted_security(False)
 
 
-def test_hosted_provider_requires_provider_secret(client):
+def test_hosted_provider_requires_tenant_scoped_provider_secret(client):
+    from app import crud
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        org = crud.create_provider_organization(db, "Provider A")
+        feed = crud.create_provider_feed(
+            db, org.id, "Gold", "TELEGRAM_CHAT:777"
+        )
+        _credential, secret = crud.issue_provider_credential(db, org.id)
+        db.commit()
+    finally:
+        db.close()
+
     _set_hosted_security(True)
-    old = security.settings.signal_provider_api_key
-    security.settings.signal_provider_api_key = "p" * 40
     try:
         denied = client.post(
             "/signals/create",
-            json={"raw_text": "XAUUSD BUY SL 2343 TP1 2353"},
+            json={
+                "raw_text": "XAUUSD BUY SL 2343 TP1 2353",
+                "source": feed.source_namespace,
+                "source_message_id": "1",
+            },
             headers=PROVIDER_HEADERS,
         )
         assert denied.status_code == 403
 
-        headers = {**PROVIDER_HEADERS, "X-Signal-Provider-API-Key": "p" * 40}
+        # The old shared provider secret is deliberately not a hosted credential.
+        shared = {
+            **PROVIDER_HEADERS,
+            "X-Signal-Provider-API-Key": "p" * 40,
+        }
+        assert client.post(
+            "/signals/create",
+            json={
+                "raw_text": "XAUUSD BUY SL 2343 TP1 2353",
+                "source": feed.source_namespace,
+                "source_message_id": "2",
+            },
+            headers=shared,
+        ).status_code == 403
+
+        headers = {"X-Signal-Provider-API-Key": secret}
         allowed = client.post(
             "/signals/create",
-            json={"raw_text": "XAUUSD BUY SL 2343 TP1 2353"},
+            json={
+                "raw_text": "XAUUSD BUY SL 2343 TP1 2353",
+                "source": feed.source_namespace,
+                "source_message_id": "3",
+            },
             headers=headers,
         )
         assert allowed.status_code == 200
+        assert allowed.json()["feed_id"] == feed.id
     finally:
-        security.settings.signal_provider_api_key = old
         _set_hosted_security(False)
 
 
