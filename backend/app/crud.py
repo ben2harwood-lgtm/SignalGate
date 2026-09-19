@@ -1203,10 +1203,6 @@ def reconcile_open_position(
         conflicts.append("symbol")
     if command.direction != payload.executed_direction:
         conflicts.append("direction")
-    if payload.stop_loss is not None and command.initial_stop_loss is not None:
-        if abs(float(payload.stop_loss) - float(command.initial_stop_loss)) > 1e-8:
-            conflicts.append("stop_loss")
-
     existing = db.scalar(
         select(models.Execution).where(models.Execution.command_id == command.id)
     )
@@ -1296,7 +1292,7 @@ def reconcile_open_position(
         requested_price=command.entry_price,
         executed_price=payload.executed_price,
         lot_size=payload.lot_size,
-        initial_stop_loss=payload.stop_loss or command.initial_stop_loss,
+        initial_stop_loss=command.initial_stop_loss,
         tp1=command.tp1,
         tp2=command.tp2,
         tp3=command.tp3,
