@@ -178,3 +178,19 @@ Before expansion, reconcile:
 - external-assurance gates required for the next mode.
 
 A successful demo pilot does not itself authorise real-money or automatic-copy operation.
+
+### Portal operational observations
+
+The provider portal's **Daily operational checks** panel (authenticated
+`GET /providers/me/operations`) checks all commands in that tenant, independently
+of the recent-history display. It shows reconciliation review counts, expired
+pending commands, and commands awaiting an execution report for over five minutes.
+The oldest 20 outstanding command identifiers are shown; the total and an explicit
+truncation flag preserve visibility when there are more. Refresh checks before
+recording a daily observation; a failed refresh displays unavailable status.
+
+The five-minute report threshold is an operator investigation threshold, not
+permission to retry execution. Reconcile ambiguous outcomes against broker truth.
+Failed-command totals include historical reconciled failures; they are not all
+unresolved incidents. Setup/pause observations guide onboarding and do not replace
+MT5, security, legal, deployed telemetry, or cohort acceptance receipts.

@@ -109,3 +109,20 @@ These are **not software features to paper over**. They require external or depl
 7. Marketing must describe demonstrated capability, not target-state capability.
 8. External evidence must never be represented as complete until the actual receipt/report exists.
 9. A frozen candidate is not modified in place; material changes create a new candidate and require appropriate retest.
+
+## 20 October 2026 local build candidate (not frozen RC2)
+
+A new local candidate adds tenant-scoped daily operational observations to the
+Provider Portal. Counts cover the entire command history rather than the recent
+history window. Stale report, expired pending and reconciliation review alerts
+include oldest outstanding identifiers and explicit sample truncation. Setup and
+pause guidance is descriptive; this endpoint grants no pilot/live acceptance.
+
+The parent build run obtained a fresh MetaEditor compile receipt for the unchanged
+EA source on 20 October: 0 errors / 0 warnings and a newly generated EX5, with a
+negative-control compile that produced errors and no EX5. Working evidence reference:
+`work/provider-compile-8bb11393026d4bce925b51cc23d4284f/receipt.json`
+(in the coordinating build workspace; retain the packaged receipt with its source
+hash before candidate acceptance). This is compiler evidence only, not an MT5
+broker-demo scenario receipt or a declaration that frozen RC2's gate is complete.
+The new candidate still needs the full integration CI matrix and external gates.

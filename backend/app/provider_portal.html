@@ -43,6 +43,12 @@ code{font-size:12px}.error{background:#fef3f2;color:#b42318;padding:10px;border-
     <div id="notice"></div>
     <section class="grid metrics" id="metrics"></section>
 
+    <section class="card section" aria-live="polite">
+      <div class="row"><h2>Daily operational checks</h2><button id="refreshOperations" class="secondary">Refresh checks</button></div>
+      <p class="muted">Demo accounts only. These checks do not grant pilot or live-trading acceptance.</p>
+      <div id="operations">Checks have not loaded.</div>
+    </section>
+
     <section class="grid two section">
       <div class="card">
         <h2>Provider controls</h2>
@@ -140,22 +146,34 @@ async function connect(){
   }catch(err){ $("authError").innerHTML='<div class="error">'+esc(err.message)+'</div>'; providerId="";apiKey=""; }
 }
 async function refresh(){
-  const [overview,feedRows,history,bindingRows]=await Promise.all([
+  const [overview,feedRows,history,bindingRows,operations]=await Promise.all([
     api("/providers/me/overview"),
     api("/providers/me/feeds"),
     api("/providers/me/history?limit=100"),
-    api("/providers/me/source-bindings")
+    api("/providers/me/source-bindings"),
+    api("/providers/me/operations")
   ]);
   provider=overview.provider;
   feeds=feedRows;
   sourceBindings=bindingRows;
   applyBrand();
   renderMetrics(overview);
+  renderOperations(operations);
   renderProvider();
   renderFeeds();
   renderSourceBindings();
   renderHistory(history.history||[]);
 }
+function renderOperations(o){
+  const c=o.counts||{};
+  const counts=[["Need reconciliation review",c.review_required],["Expired while pending",c.expired_pending],["Awaiting report over 5 minutes",c.awaiting_report_over_5_minutes],["Failed commands (all time)",c.failed_commands]];
+  $("operations").innerHTML='<div class="muted">Observed '+esc(o.observed_at_utc)+' · All tenant commands checked</div>'+counts.map(([label,count])=>'<p><strong>'+esc(count)+'</strong> '+esc(label)+'</p>').join("")+(o.observations||[]).map(text=>'<p class="badge warn">'+esc(text)+'</p>').join("")+
+    (o.attention_count?'<h3>Oldest outstanding commands</h3>'+(o.oldest_attention_commands||[]).map(row=>'<p><code>'+esc(row.command_id)+'</code> · '+esc(row.status)+' · '+esc(row.created_at)+'</p>').join("")+(o.attention_commands_truncated?'<p class="muted">Showing oldest 20 of '+esc(o.attention_count)+'; retain full operator evidence.</p>':''):'<p>No outstanding command alerts observed.</p>');
+}
+$("refreshOperations").onclick=async()=>{
+  $("operations").textContent="Refreshing checks…";
+  try{renderOperations(await api("/providers/me/operations"))}catch(err){$("operations").textContent="Checks unavailable: "+err.message}
+};
 function applyBrand(){
   const color=provider.brand_primary_color||"#111827"; document.documentElement.style.setProperty("--brand",color);
   $("brandTitle").textContent=provider.brand_display_name||provider.name||"SignalGate Provider Portal";
@@ -228,7 +246,7 @@ $("downloadEvidence").onclick=async()=>{try{
 $("providerPause").onclick=async()=>{try{await api("/providers/me/pause?paused="+(!provider.paused),{method:"POST"});await refresh()}catch(err){notice(err.message,"error")}};
 $("rotateKey").onclick=async()=>{if(!confirm("Rotate this provider API key? The current key will stop working immediately."))return;try{const r=await api("/providers/me/credentials/rotate",{method:"POST"});apiKey=r.api_key;$("providerKey").value=apiKey;notice("API key rotated. Copy the new key now; SignalGate will not show it again.");await refresh()}catch(err){notice(err.message,"error")}};
 $("saveBrand").onclick=async()=>{try{provider=await api("/providers/me/branding",{method:"PUT",body:JSON.stringify({display_name:$("brandName").value.trim()||null,logo_url:$("brandLogoUrl").value.trim()||null,primary_color:$("brandColor").value.trim()||null,support_contact:$("supportContact").value.trim()||null})});applyBrand();notice("Branding saved.")}catch(err){notice(err.message,"error")}};
-$("createFeed").onclick=async()=>{try{await api("/providers/me/feeds",{method:"POST",body:JSON.stringify({name:$("feedName").value.trim(),source_namespace:$("feedNamespace").value.trim()})});$("feedName").value="";$("feedNamespace").value="";notice("Feed created.");await refresh()}catch(err){notice(err.message,"error")}};
+$("createFeed").onclick=async()=>{try{await api("/providers/me/feeds",{method:"POST",body:JSON.stringify({name:$("feedName").value.trim(),source_namespace:$("feedNamespace").value.trim(),paused:true})});$("feedName").value="";$("feedNamespace").value="";notice("Feed created paused. Configure its policy and complete setup before resuming.");await refresh()}catch(err){notice(err.message,"error")}};
 $("createSourceInvite").onclick=async()=>{try{
   const r=await api("/providers/me/source-invites",{method:"POST",body:JSON.stringify({feed_id:$("sourceFeed").value,expires_minutes:Number($("sourceExpiry").value)})});
   const command="/connectprovider "+r.connection_token;

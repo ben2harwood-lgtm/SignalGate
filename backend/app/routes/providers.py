@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from .. import crud
 from ..database import get_db
+from ..provider_operations import provider_operations
 from ..schemas import (
     DemoTenantOut,
     FeedCreate,
@@ -167,6 +168,19 @@ def provider_overview(
         raise HTTPException(status_code=404, detail="Provider not found")
     counts = crud.provider_overview(db, principal.provider_id)
     return ProviderOverview(provider=ProviderOut.model_validate(provider), **counts)
+
+
+@router.get("/providers/me/operations")
+def provider_operational_observations(
+    principal: ProviderPrincipal = Depends(require_provider_principal),
+    db: Session = Depends(get_db),
+) -> dict:
+    if principal is None:
+        raise HTTPException(status_code=400, detail="Tenant principal required")
+    provider = crud.get_provider(db, principal.provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    return provider_operations(db, provider)
 
 
 @router.put("/providers/me/branding", response_model=ProviderOut)
