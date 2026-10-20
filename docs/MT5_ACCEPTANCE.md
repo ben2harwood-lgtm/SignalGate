@@ -65,3 +65,37 @@ Linux CI asserts the source contains the fail-closed invariants above and backen
 ## Release rule
 
 No real-money mode is enabled by this gate. Until the actual MetaEditor compile + demo scenario receipts are attached to the release evidence, MT5 execution remains **machine-tested but not externally accepted**.
+
+## Broker-free candidate rehearsal
+
+Before arranging a demo-account operator session, run:
+
+```bash
+python scripts/run_broker_free_rehearsal.py \
+  --candidate-sha <full-40-character-commit-sha> \
+  --output /private/path/new-rehearsal-receipt
+```
+
+Use a Python environment with the backend requirements installed. The output
+folder must not already exist. The tool extracts the exact committed candidate
+into a temporary directory and runs named API/simulator and static-source checks
+against an isolated temporary SQLite database. Local uncommitted source is not
+used. It writes a timestamped JSON receipt, JUnit results, test log and artifact
+hashes, bound to the candidate SHA and EA-source hash. It also checks that the
+archived candidate files are unchanged after the tests, and hashes the exact
+JUnit bytes it validates. Every expected test must
+actually pass; skipped or missing scenarios cannot yield a rehearsal PASS.
+
+The ten scenario rows explicitly distinguish **synthetic API evidence** from
+**source-only checks**. The tenant API rehearsal obtains subscriber consent,
+claims an authorised command, omits a fabricated execution callback, recovers
+from a fabricated position snapshot, rejects a conflicting snapshot, and proves
+an unattributed manual close plus retry is exported once without an invented TP
+return or cross-tenant data.
+
+This tool does not launch MetaTrader, connect to a broker or place any orders.
+A `REHEARSAL_PASS` leaves **actual MT5 demo acceptance OPEN** and every real-broker
+scenario `NOT_RUN`. Suffix handling, LIMIT refusal, netting behaviour and restart
+poll blocking still require the exact EA in an authorised, positively identified
+demo terminal. Retain actual broker/terminal receipts separately; do not relabel a
+synthetic snapshot or source assertion as broker evidence.
