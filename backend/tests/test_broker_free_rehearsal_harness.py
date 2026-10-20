@@ -20,6 +20,8 @@ spec.loader.exec_module(harness)
     '<testsuite><testcase name="test_different"/></testsuite>',
     '<testsuite><testcase name="test_expected"/><testcase name="test_expected"/></testsuite>',
     'malformed',
+    '<!DOCTYPE testsuite [<!ENTITY payload "expanded">]><testsuite><testcase name="test_expected">&payload;</testcase></testsuite>',
+    '<!DOCTYPE testsuite SYSTEM "file:///etc/passwd"><testsuite><testcase name="test_expected"/></testsuite>',
 ])
 def test_junit_cannot_hide_absent_skipped_or_failed_scenarios(tmp_path, body):
     report = tmp_path / "report.xml"

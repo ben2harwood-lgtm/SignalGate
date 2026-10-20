@@ -16,7 +16,8 @@ import re
 import subprocess
 import sys
 import tempfile
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 import zipfile
 
 # Each row separates actual Python API exercises from static MQL source checks.
@@ -48,9 +49,9 @@ def junit_result(path: Path, expected: list[str]) -> dict:
     """A zero exit code alone is insufficient: require every named test, no skips."""
     try:
         report_bytes = path.read_bytes()
-        root = ET.fromstring(report_bytes)
+        root = ET.fromstring(report_bytes, forbid_dtd=True)
         cases = list(root.iter("testcase"))
-    except (OSError, ET.ParseError):
+    except (OSError, ET.ParseError, DefusedXmlException):
         return {"passed": False, "reason": "Missing or invalid JUnit evidence"}
     expected_names = {node.split("::", 1)[1] for node in expected}
     names = [case.get("name") for case in cases]
