@@ -1,6 +1,6 @@
 # SignalGate — Canonical Status
 
-**As of 19 September 2026.** This is the repository truth for release readiness.
+**Ledger updated 21 October 2026.** The RC2 section records the frozen 19 September 2026 candidate; post-RC integration and remaining acceptance gates are tracked below.
 
 ## Product position
 
@@ -12,7 +12,7 @@ SignalGate does not supply proprietary investment signals, does not promise prof
 
 ## Canonical engineering spine
 
-- `main`: July demo baseline; not the release candidate.
+- `main`: active post-RC integration branch (the July prototype has been superseded); it is not the frozen RC2 candidate and is not externally accepted.
 - Integration spine: `codex/signalgate-hardening-2026-09-18`.
 - Prior frozen RC1: `release/signalgate-demo-rc-2026-09-19` at `9499f4e7140b887d0a3c1d136bde8398dd276c9d`. Preserve it as historical evidence.
 - **RC2 runtime/tooling candidate:** `852a6bc9ca9f0651b34e87b63e86c65669130767`.
@@ -110,7 +110,7 @@ These are **not software features to paper over**. They require external or depl
 8. External evidence must never be represented as complete until the actual receipt/report exists.
 9. A frozen candidate is not modified in place; material changes create a new candidate and require appropriate retest.
 
-## 20 October 2026 local build candidate (not frozen RC2)
+## 20 October 2026 provider operations work (merged post-RC; not frozen RC2)
 
 A new local candidate adds tenant-scoped daily operational observations to the
 Provider Portal. Counts cover the entire command history rather than the recent
@@ -125,4 +125,18 @@ negative-control compile that produced errors and no EX5. Working evidence refer
 (in the coordinating build workspace; retain the packaged receipt with its source
 hash before candidate acceptance). This is compiler evidence only, not an MT5
 broker-demo scenario receipt or a declaration that frozen RC2's gate is complete.
-The new candidate still needs the full integration CI matrix and external gates.
+The provider operations update was merged in PR #71 with successful full integration CI. It does not close broker, independent assurance or real-provider gates.
+
+## 21 October 2026 post-RC integration — evidence only; not release acceptance
+
+The current `main` integration checkpoint is `d684ecf56bdfb5b1ba76ff56875d67db7f2bd7cf`. After PRs #57, #72 and #73 merged, **all 13 reported GitHub CI/security/compiler checks passed** at that exact checkpoint. As before, a future source/runtime change requires a new check. Frozen RC2 remains on its separate release branch and was not modified.
+
+- **Security hardening (#57):** full-history secret scanning, Trivy filesystem/container gates and a hosted image that removes unnecessary pip/setuptools runtime tooling. GitHub CI's image vulnerability scan is green; independent penetration testing remains open.
+- **Broker-free rehearsal (#72):** exact-commit archive validation, test/JUnit/source-integrity receipts and a CI job that runs synthetic backend/static-EA scenarios. Every actual broker result is `NOT_RUN`; this does not replace real MT5 scenario testing.
+- **Read-only provider preflight (#73):** checks demo-only state, readiness, provider authentication, wrong-key rejection, feed pause, tenant-scoped export and secret-field absence. Receipt candidate SHA is operator-declared, not cryptographically verified against the deployed backend. Conflicted historical PR #56 is closed as superseded.
+- **Provider operational observations (#71):** full-history stale execution/reconciliation visibility, tenant-scoped checks and initial feeds paused. This is operational preparation, not pilot acceptance.
+- **Safety branch (#60) is NOT merged:** 9/9 machine checks passed on its October 21 safety-test correction, but a reviewer recorded a TP-stage attribution hold: TP1/TP2 currently infer milestones from reduced open-position counts and TP3 can rely on an earlier child's TP exit. Specific broker exit proof and negative regressions remain required before merging.
+- **Repository controls:** `main` was unprotected at this checkpoint and the repository was public; issue #49 remains open for branch protection and source-access decisions.
+
+**Do not infer G3, G6, G8, G9 or G10 acceptance from these code/CI improvements.** In particular, the real MT5 demo scenario receipts, independent application/security review and pentest, UK regulatory/privacy/contracts work, deployed monitoring and restore evidence, and a controlled provider pilot remain outstanding. Real-money retail and automatic-copy operation stay blocked.
+
