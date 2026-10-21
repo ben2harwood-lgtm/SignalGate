@@ -23,7 +23,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    url = get_settings().database_url
+    url = sqlalchemy_driver_url(get_settings().database_url)
     context.configure(
         url=url,
         target_metadata=target_metadata,
