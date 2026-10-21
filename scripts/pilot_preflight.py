@@ -130,6 +130,32 @@ def _safe_summary(payload: dict) -> dict:
     }
 
 
+def _feed_inventory_matches(feed_list: list[dict], exported: dict) -> bool:
+    """Require identical unique feed identities in list and evidence export.
+
+    A correct provider_id at export root alone is insufficient: foreign/missing
+    feed records must fail the pre-cohort privacy/integrity preflight.
+    """
+    exported_feeds = exported.get("feeds")
+    if not isinstance(exported_feeds, list):
+        return False
+
+    def unique_ids(rows):
+        if not all(
+            isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and bool(item["id"])
+            for item in rows
+        ):
+            return None
+        ids = [item["id"] for item in rows]
+        return set(ids) if len(set(ids)) == len(ids) else None
+
+    listed = unique_ids(feed_list)
+    exported_ids = unique_ids(exported_feeds)
+    return listed is not None and exported_ids is not None and listed == exported_ids
+
+
 def _check(name: str, passed: bool, detail: str, checks: list[dict]) -> None:
     checks.append({"name": name, "passed": bool(passed), "detail": detail})
 
@@ -255,6 +281,16 @@ def run_preflight(
             "provider_export_secret_fields_absent",
             export_valid and not forbidden,
             "none" if not forbidden else ", ".join(forbidden[:20]),
+            checks,
+        )
+        _check(
+            "provider_export_feed_inventory_matches",
+            feeds_valid and export_valid
+            and _feed_inventory_matches(feeds_json, export_json),
+            "feed IDs and count match tenant feed list"
+            if feeds_valid and export_valid
+            and _feed_inventory_matches(feeds_json, export_json)
+            else "export feed inventory missing, duplicated or mismatched",
             checks,
         )
         if export_valid:
