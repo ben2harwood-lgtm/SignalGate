@@ -57,6 +57,45 @@ jobs:
           docker run --rm signalgate-security-scan python -m pip check
           docker run --rm signalgate-security-scan python -c "import importlib.metadata as m; names=['setuptools','wheel','msgpack','jaraco.context']; [print(f'{n}={m.version(n)}') for n in names if any((d.metadata.get('Name') or '').lower()==n for d in m.distributions())]"
           docker run --rm signalgate-security-scan python -c "import importlib.metadata as m,re; targets={'setuptools','wheel','msgpack','jaraco.context'}; rows=[]; [rows.extend((d.metadata.get('Name'),r) for r in (d.requires or []) if re.split(r'[ (<=>;\[]',r,1)[0].lower() in targets) for d in m.distributions()]; print('reverse-dependencies=',rows)"
+      - name: Capture high/critical finding provenance before the blocking scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: v0.74.0
+          image-ref: signalgate-security-scan
+          format: json
+          output: trivy-container-findings.json
+          exit-code: "0"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          cache: "true"
+      - name: Display restricted package finding origins
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("trivy-container-findings.json").read_text())
+          found = 0
+          for result in report.get("Results", []):
+              for issue in result.get("Vulnerabilities") or []:
+                  if issue.get("PkgName", "").lower() not in {"msgpack", "setuptools"}:
+                      continue
+                  found += 1
+                  # Do not publish raw image SBOMs, environment, credentials or secrets.
+                  details = {
+                      "target": result.get("Target"),
+                      "package": issue.get("PkgName"),
+                      "package_id": issue.get("PkgID"),
+                      "version": issue.get("InstalledVersion"),
+                      "fixed": issue.get("FixedVersion"),
+                      "severity": issue.get("Severity"),
+                      "pkg_path": issue.get("PkgPath"),
+                      "layer": (issue.get("Layer") or {}).get("DiffID"),
+                  }
+                  print(json.dumps(details, sort_keys=True))
+          print(f"Tracked package findings: {found}")
+          PY
       - name: Scan hosted image for fixable high/critical vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
