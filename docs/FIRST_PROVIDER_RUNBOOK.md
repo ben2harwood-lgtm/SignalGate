@@ -87,6 +87,12 @@ Keep provider/feed paused until the source and subscriber paths are verified.
 
 Do not use the deprecated direct subscriber-attachment path.
 
+### Read-only provider preflight (before unpausing)
+
+Run `scripts/pilot_preflight.py` after provisioning, consent onboarding and feed configuration while feeds remain paused. Supply the provider credential through the `SIGNALGATE_PROVIDER_API_KEY` environment variable, never a command-line argument or issue.
+
+See `docs/PILOT_PREFLIGHT.md`. Require a recorded PASS for demo-only mode, readiness, provider identity, wrong-key refusal, feed pause and tenant-scoped export privacy before the first cohort is activated. Its candidate SHA is **operator-declared**, not backend-verified; establish deployed source provenance independently. It cannot replace MT5 broker scenarios, assurance or signed agreements.
+
 ## 6. Connect demo execution
 
 Use the accepted demo MT5 setup or the simulator.
