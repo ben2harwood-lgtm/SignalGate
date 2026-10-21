@@ -42,6 +42,9 @@ site-mockups/demo-requests.jsonl
 # Local acceptance evidence (may contain machine/environment details)
 artifacts/mt5-acceptance/
 
+# Provider preflight receipts; contain operating metadata and stay local
+artifacts/pilot-preflight/
+
 # One-time provider onboarding credential exports
 *provider-credential*.json
 *provider-onboarding-secret*.json
