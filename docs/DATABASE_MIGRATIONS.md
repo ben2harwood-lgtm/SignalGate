@@ -19,6 +19,25 @@ closed unless the database is exactly at the single migration head. The
 migration command must still be run explicitly; application startup never
 applies schema changes.
 
+## SQLAlchemy 2.1 PostgreSQL driver compatibility
+
+Hosted SignalGate explicitly installs `psycopg2-binary` and its SQLAlchemy
+application/Alembic engines select the `postgresql+psycopg2` dialect.
+SQLAlchemy 2.1 otherwise defaults plain `postgresql://` URLs to `psycopg`
+(psycopg3), which is **not** part of this deployment.
+
+**Keep `DATABASE_URL` in the normal `postgresql://` form.** Do not change
+the deployment secret, PostgreSQL command-line/backup scripts, or DSN to
+`postgresql+psycopg2://`: the latter is SQLAlchemy-specific and not a
+portable libpq DSN. The application and Alembic select the installed driver
+only when constructing SQLAlchemy engines; `postgres://` aliases are also
+normalised. Explicit SQLAlchemy driver schemes are left unchanged.
+
+An ORM upgrade does not itself change the schema or authorise a production
+migration/rollout. Prove actual PostgreSQL tests, full Alembic smoke,
+encrypted backup/restore and deep-security scanning for the exact candidate
+before deciding to deploy it.
+
 ## Adopting an existing pre-Alembic database
 
 **Do not run the baseline migration over populated tables that already exist.**
