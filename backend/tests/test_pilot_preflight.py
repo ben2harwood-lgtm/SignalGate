@@ -105,6 +105,7 @@ def test_read_only_preflight_checks_real_provider_flow_without_leaking_key(monke
         if request.url.path == "/providers/me/export":
             return httpx.Response(200, json={
                 "provider": {"id": "PRV-1"},
+                "feeds": [{"id": "FED-1"}],
                 "summary": {"signal_count_in_export": 1},
             })
         return httpx.Response(404, json={"detail": "Unknown route"})
@@ -304,3 +305,69 @@ def test_preflight_summary_receipt_never_copies_unknown_or_non_count_fields():
     assert copied == {"feed_count": 2, "active_subscriber_count": 7}
     assert "DO_NOT_STORE_THIS_PERSONAL_DATA" not in str(copied)
     assert preflight._safe_summary({"summary": ["unexpected"]}) == {}
+
+
+@pytest.mark.parametrize(
+    ("listed", "exported", "expected"),
+    [
+        ([{"id": "FED-1"}], {"feeds": [{"id": "FED-1"}]}, True),
+        ([{"id": "FED-1"}], {"feeds": [{"id": "FED-OTHER"}]}, False),
+        ([{"id": "FED-1"}], {"feeds": []}, False),
+        ([{"id": "FED-1"}], {"feeds": [{"id": "FED-1"}, {"id": "FED-1"}]}, False),
+        ([{"id": "FED-1"}, {"id": "FED-1"}], {"feeds": [{"id": "FED-1"}]}, False),
+        ([{"id": "FED-1"}], {"feeds": [{"id": ""}]}, False),
+        ([{"id": "FED-1"}], {"feeds": ["FED-1"]}, False),
+        ([{"id": "FED-1"}], {"provider": {"id": "PRV-1"}}, False),
+    ],
+)
+def test_exported_feed_inventory_must_match_unique_authenticated_feed_ids(
+    listed, exported, expected
+):
+    assert preflight._feed_inventory_matches(listed, exported) is expected
+
+
+def test_preflight_rejects_mismatched_export_feeds_despite_correct_provider_id(
+    monkeypatch,
+):
+    import httpx
+    original_client = httpx.Client
+
+    def handle(request):
+        path = request.url.path
+        if path == "/health":
+            return httpx.Response(200, json={"demo_only_mode": True})
+        if path == "/readyz":
+            return httpx.Response(200, json={"status": "ready"})
+        if path == "/providers/me":
+            if request.headers.get("x-provider-api-key") != "safe-fixture-key":
+                return httpx.Response(401)
+            return httpx.Response(200, json={"id": "PRV-1"})
+        if path == "/providers/me/feeds":
+            return httpx.Response(200, json=[{"id": "FED-1", "paused": True}])
+        if path == "/providers/me/overview":
+            return httpx.Response(200, json={"provider": {"id": "PRV-1"}})
+        if path == "/providers/me/export":
+            return httpx.Response(200, json={
+                "provider": {"id": "PRV-1"},
+                "feeds": [{"id": "FED-FOREIGN"}],
+                "summary": {"feed_count": 1},
+            })
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handle)
+    monkeypatch.setattr(
+        preflight.httpx, "Client",
+        lambda *args, **kwargs: original_client(*args, transport=transport, **kwargs),
+    )
+    receipt = preflight.run_preflight(
+        backend="https://pilot.example.test",
+        provider_id="PRV-1",
+        provider_api_key="safe-fixture-key",
+        declared_candidate_sha="c" * 40,
+        require_feeds_paused=True,
+    )
+    assert receipt["result"] == "FAIL"
+    checks = {row["name"]: row["passed"] for row in receipt["checks"]}
+    assert checks["provider_export"] is True
+    assert checks["provider_export_feed_inventory_matches"] is False
+    assert "FED-FOREIGN" not in str(receipt)
