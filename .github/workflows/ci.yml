@@ -33,6 +33,12 @@ jobs:
       - name: Run backend tests
         working-directory: backend
         run: python -m pytest -q
+      - name: Exact-commit broker-free rehearsal (not broker acceptance)
+        run: |
+          python scripts/run_broker_free_rehearsal.py \
+            --candidate-sha "$(git rev-parse HEAD)" \
+            --output "$RUNNER_TEMP/signalgate-rehearsal"
+          python -c "import json,os,pathlib; p=pathlib.Path(os.environ['RUNNER_TEMP'])/'signalgate-rehearsal/receipt.json'; r=json.loads(p.read_text()); assert r['result']=='REHEARSAL_PASS'; assert r['actual_mt5_demo_acceptance']=='OPEN'; assert not r['broker_connected'] and not r['orders_placed']; assert all(x['real_broker_result']=='NOT_RUN' for x in r['scenarios'])"
       - name: Compile Python sources
         run: python -m compileall -q backend telegram_bot simulator scripts
 
