@@ -47,6 +47,18 @@ A non-local backend must use HTTPS. Credentials embedded in the URL are rejected
 
 The receipt is written under `artifacts/pilot-preflight/`, which should remain outside Git.
 
+## Failed or malformed responses
+
+The preflight treats a successful HTTP status with malformed JSON, an unexpected
+object/list shape, or an incorrectly typed provider identity as a failed check,
+not proof of readiness. It issues a `FAIL` receipt when it can safely complete
+the remaining read-only checks, rather than accepting an incorrect response.
+A transport error remains an incomplete preflight requiring operator review.
+
+To avoid storing unexpected provider/customer data, only nonnegative integer
+export-summary counters from an explicit allowlist are copied into receipts;
+the complete raw export remains in memory only and is not written to disk.
+
 ## Candidate identity limitation in RC2
 
 RC2 does not expose a deployment build-id endpoint. Therefore this preflight records the candidate SHA **declared by the operator**, but cannot cryptographically prove the deployed backend is that SHA.
