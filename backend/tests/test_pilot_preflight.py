@@ -176,3 +176,55 @@ def test_preflight_fails_closed_on_unpaused_feed_or_export_secret(monkeypatch, u
     failed = {item["name"] for item in receipt["checks"] if not item["passed"]}
     assert ("feeds_paused_before_cohort" if unpaused else
             "provider_export_secret_fields_absent") in failed
+
+
+def test_read_only_preflight_against_real_fastapi_routes(client, db, monkeypatch):
+    """Validate the operator tool against actual app routes, not stubbed JSON."""
+    import json
+    import httpx
+    from app import models
+    from .test_provider_export import _provider
+
+    provider, feed, secret = _provider(db, "preflight-real-routes")
+    assert feed.paused is True
+    original_http_client = httpx.Client
+    calls = []
+    initial_commands = db.query(models.Command).count()
+
+    def backend_transport(request):
+        calls.append((request.method, request.url.path))
+        assert request.method == "GET", "preflight must never mutate app state"
+        response = client.request(
+            request.method,
+            request.url.path,
+            headers=dict(request.headers),
+        )
+        return httpx.Response(
+            status_code=response.status_code,
+            content=response.content,
+            headers={"content-type": response.headers.get("content-type", "application/json")},
+        )
+
+    transport = httpx.MockTransport(backend_transport)
+    monkeypatch.setattr(
+        preflight.httpx,
+        "Client",
+        lambda *args, **kwargs: original_http_client(
+            *args, transport=transport, **kwargs
+        ),
+    )
+    receipt = preflight.run_preflight(
+        backend="https://pilot.example.test",
+        provider_id=provider.id,
+        provider_api_key=secret,
+        declared_candidate_sha="f" * 40,
+        require_feeds_paused=True,
+    )
+
+    assert receipt["result"] == "PASS", receipt["checks"]
+    assert receipt["candidate_sha_verified_by_backend"] is False
+    assert len(calls) == 7
+    assert all(method == "GET" for method, _ in calls)
+    assert receipt["evidence"]["feed_ids"] == [feed.id]
+    assert secret not in json.dumps(receipt)
+    assert db.query(models.Command).count() == initial_commands
