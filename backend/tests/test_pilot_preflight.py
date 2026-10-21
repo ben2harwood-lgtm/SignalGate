@@ -232,3 +232,75 @@ def test_read_only_preflight_against_real_fastapi_routes(client, db, monkeypatch
     assert receipt["evidence"]["feed_ids"] == [feed.id]
     assert secret not in json.dumps(receipt)
     assert db.query(models.Command).count() == initial_commands
+
+
+@pytest.mark.parametrize(
+    ("broken_path", "broken_body", "failed_gate"),
+    [
+        ("/health", "{broken", "health"),
+        ("/readyz", "[1, 2]", "readiness"),
+        ("/providers/me", "[]", "provider_auth"),
+        ("/providers/me/feeds", '["unexpected-item"]', "feed_list"),
+        ("/providers/me/overview", '{"provider":"unexpected-type"}', "provider_overview"),
+        ("/providers/me/export", '{"provider":[]}', "provider_export"),
+    ],
+)
+def test_malformed_readonly_api_responses_fail_closed_without_crashing(
+    monkeypatch, broken_path, broken_body, failed_gate
+):
+    """Invalid JSON/types must produce a FAIL receipt, never an operator crash."""
+    import httpx
+    import json
+
+    key = "dummy-provider-key"
+    original_client = httpx.Client
+    responses = {
+        "/health": {"demo_only_mode": True, "admin_paused": False},
+        "/readyz": {"status": "ready"},
+        "/providers/me": {"id": "PRV-MOCK", "status": "ACTIVE", "paused": False},
+        "/providers/me/feeds": [{"id": "FED-MOCK", "paused": True}],
+        "/providers/me/overview": {"provider": {"id": "PRV-MOCK"}},
+        "/providers/me/export": {"provider": {"id": "PRV-MOCK"}, "summary": {"feed_count": 1}},
+    }
+
+    def handle(request):
+        assert request.method == "GET"
+        path = request.url.path
+        if path == "/providers/me" and request.headers.get("x-provider-api-key") != key:
+            return httpx.Response(401)
+        if path == broken_path:
+            return httpx.Response(200, content=broken_body)
+        if path in responses:
+            return httpx.Response(200, json=responses[path])
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handle)
+    monkeypatch.setattr(
+        preflight.httpx, "Client",
+        lambda *args, **kwargs: original_client(*args, transport=transport, **kwargs),
+    )
+    receipt = preflight.run_preflight(
+        backend="https://pilot.example.test",
+        provider_id="PRV-MOCK",
+        provider_api_key=key,
+        declared_candidate_sha="f" * 40,
+        require_feeds_paused=True,
+    )
+    assert receipt["result"] == "FAIL"
+    failures = {c["name"] for c in receipt["checks"] if not c["passed"]}
+    assert failed_gate in failures
+    assert key not in json.dumps(receipt)
+
+
+def test_preflight_summary_receipt_never_copies_unknown_or_non_count_fields():
+    summary = {
+        "feed_count": 2,
+        "active_subscriber_count": 7,
+        "signal_count_in_export": True,
+        "command_count_in_export": -1,
+        "internal_notes": "DO_NOT_STORE_THIS_PERSONAL_DATA",
+    }
+    copied = preflight._safe_summary({"summary": summary})
+    assert copied == {"feed_count": 2, "active_subscriber_count": 7}
+    assert "DO_NOT_STORE_THIS_PERSONAL_DATA" not in str(copied)
+    assert preflight._safe_summary({"summary": ["unexpected"]}) == {}

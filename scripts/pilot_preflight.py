@@ -82,6 +82,54 @@ def _sha256_json(value) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _object_json(response: httpx.Response) -> tuple[dict, bool]:
+    """Do not treat HTTP 200 with malformed/non-object JSON as healthy."""
+    if response.status_code != 200:
+        return {}, False
+    try:
+        payload = response.json()
+    except ValueError:
+        return {}, False
+    return (payload, True) if isinstance(payload, dict) else ({}, False)
+
+
+def _object_list_json(response: httpx.Response) -> tuple[list[dict], bool]:
+    if response.status_code != 200:
+        return [], False
+    try:
+        payload = response.json()
+    except ValueError:
+        return [], False
+    valid = isinstance(payload, list) and all(isinstance(item, dict) for item in payload)
+    return (payload, True) if valid else ([], False)
+
+
+def _nested_provider_id(payload: dict):
+    provider = payload.get("provider")
+    return provider.get("id") if isinstance(provider, dict) else None
+
+
+# Only integer count fields from a provider export may be copied into a receipt.
+# An unrecognised summary key may contain personal data or secret material.
+_SAFE_SUMMARY_COUNTS = frozenset({
+    "feed_count", "active_subscriber_count",
+    "signal_count_in_export", "command_count_in_export",
+})
+
+
+def _safe_summary(payload: dict) -> dict:
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        return {}
+    return {
+        key: value
+        for key, value in summary.items()
+        if key in _SAFE_SUMMARY_COUNTS
+        and isinstance(value, int) and not isinstance(value, bool)
+        and value >= 0
+    }
+
+
 def _check(name: str, passed: bool, detail: str, checks: list[dict]) -> None:
     checks.append({"name": name, "passed": bool(passed), "detail": detail})
 
@@ -112,8 +160,8 @@ def run_preflight(
 
     with httpx.Client(base_url=backend, timeout=timeout, follow_redirects=False) as client:
         health = client.get("/health")
-        health_json = health.json() if health.status_code == 200 else {}
-        _check("health", health.status_code == 200, f"HTTP {health.status_code}", checks)
+        health_json, health_valid = _object_json(health)
+        _check("health", health_valid, f"HTTP {health.status_code}; object_json={health_valid}", checks)
         _check(
             "demo_only_mode",
             health_json.get("demo_only_mode") is True,
@@ -123,19 +171,19 @@ def run_preflight(
         evidence["admin_paused"] = health_json.get("admin_paused")
 
         ready = client.get("/readyz")
-        ready_json = ready.json() if ready.status_code == 200 else {}
+        ready_json, ready_valid = _object_json(ready)
         _check(
             "readiness",
-            ready.status_code == 200 and ready_json.get("status") == "ready",
+            ready_valid and ready_json.get("status") == "ready",
             f"HTTP {ready.status_code}; status={ready_json.get('status')!r}",
             checks,
         )
 
         me = client.get("/providers/me", headers=headers)
-        me_json = me.json() if me.status_code == 200 else {}
+        me_json, me_valid = _object_json(me)
         _check(
             "provider_auth",
-            me.status_code == 200 and me_json.get("id") == provider_id,
+            me_valid and me_json.get("id") == provider_id,
             f"HTTP {me.status_code}; provider_id={me_json.get('id')!r}",
             checks,
         )
@@ -155,14 +203,14 @@ def run_preflight(
         )
 
         feeds = client.get("/providers/me/feeds", headers=headers)
-        feeds_json = feeds.json() if feeds.status_code == 200 else []
+        feeds_json, feeds_valid = _object_list_json(feeds)
         _check(
             "feed_list",
-            feeds.status_code == 200 and isinstance(feeds_json, list),
+            feeds_valid,
             f"HTTP {feeds.status_code}; count={len(feeds_json) if isinstance(feeds_json, list) else 'invalid'}",
             checks,
         )
-        if isinstance(feeds_json, list):
+        if feeds_valid:
             evidence["feed_count"] = len(feeds_json)
             evidence["feed_ids"] = [row.get("id") for row in feeds_json]
             if require_feeds_paused:
@@ -175,11 +223,11 @@ def run_preflight(
                 )
 
         overview = client.get("/providers/me/overview", headers=headers)
-        overview_json = overview.json() if overview.status_code == 200 else {}
+        overview_json, overview_valid = _object_json(overview)
         _check(
             "provider_overview",
-            overview.status_code == 200
-            and overview_json.get("provider", {}).get("id") == provider_id,
+            overview_valid
+            and _nested_provider_id(overview_json) == provider_id,
             f"HTTP {overview.status_code}",
             checks,
         )
@@ -194,24 +242,24 @@ def run_preflight(
                 evidence[field] = overview_json[field]
 
         export = client.get("/providers/me/export", headers=headers)
-        export_json = export.json() if export.status_code == 200 else {}
-        forbidden = find_forbidden_keys(export_json) if export.status_code == 200 else []
+        export_json, export_valid = _object_json(export)
+        forbidden = find_forbidden_keys(export_json) if export_valid else []
         _check(
             "provider_export",
-            export.status_code == 200
-            and export_json.get("provider", {}).get("id") == provider_id,
+            export_valid
+            and _nested_provider_id(export_json) == provider_id,
             f"HTTP {export.status_code}",
             checks,
         )
         _check(
             "provider_export_secret_fields_absent",
-            export.status_code == 200 and not forbidden,
+            export_valid and not forbidden,
             "none" if not forbidden else ", ".join(forbidden[:20]),
             checks,
         )
-        if export.status_code == 200:
+        if export_valid:
             evidence["provider_export_sha256"] = _sha256_json(export_json)
-            evidence["provider_export_summary"] = export_json.get("summary", {})
+            evidence["provider_export_summary"] = _safe_summary(export_json)
 
     passed = all(item["passed"] for item in checks)
     return {
