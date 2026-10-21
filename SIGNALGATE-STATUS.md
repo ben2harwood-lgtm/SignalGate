@@ -129,7 +129,7 @@ The provider operations update was merged in PR #71 with successful full integra
 
 ## 21 October 2026 post-RC integration — evidence only; not release acceptance
 
-The current `main` integration checkpoint is `d684ecf56bdfb5b1ba76ff56875d67db7f2bd7cf`. After PRs #57, #72 and #73 merged, **all 13 reported GitHub CI/security/compiler checks passed** at that exact checkpoint. As before, a future source/runtime change requires a new check. Frozen RC2 remains on its separate release branch and was not modified.
+The initial 21 October post-RC integration checkpoint was `d684ecf56bdfb5b1ba76ff56875d67db7f2bd7cf`. After PRs #57, #72 and #73 merged, **all 13 reported GitHub CI/security/compiler checks passed** at that exact checkpoint. As before, a future source/runtime change requires a new check. Frozen RC2 remains on its separate release branch and was not modified.
 
 - **Security hardening (#57):** full-history secret scanning, Trivy filesystem/container gates and a hosted image that removes unnecessary pip/setuptools runtime tooling. GitHub CI's image vulnerability scan is green; independent penetration testing remains open.
 - **Broker-free rehearsal (#72):** exact-commit archive validation, test/JUnit/source-integrity receipts and a CI job that runs synthetic backend/static-EA scenarios. Every actual broker result is `NOT_RUN`; this does not replace real MT5 scenario testing.
@@ -140,3 +140,40 @@ The current `main` integration checkpoint is `d684ecf56bdfb5b1ba76ff56875d67db7f
 
 **Do not infer G3, G6, G8, G9 or G10 acceptance from these code/CI improvements.** In particular, the real MT5 demo scenario receipts, independent application/security review and pentest, UK regulatory/privacy/contracts work, deployed monitoring and restore evidence, and a controlled provider pilot remain outstanding. Real-money retail and automatic-copy operation stay blocked.
 
+## 21 October 2026 continued engineering bursts — current integrated source
+
+The newer `main` checkpoint after PR #83 is `8b2880e252e5fefa11f86279ef67dc013ca7aeb1`. Each PR below was tested
+on its own exact source head before merge. The combined main integration CI is
+separate evidence and must be checked at this SHA; nothing here declares a new
+frozen release candidate or closes external acceptance.
+
+- **#74:** reconciled stale repository status; historical RC2 is preserved.
+- **#75 and #64:** backend/Telegram dotenv and Uvicorn compatibility updates.
+- **#76:** provider preflight tested against real FastAPI routes using isolated synthetic credentials.
+- **#77:** Starlette 1.8.0 integrated after full backend, PostgreSQL and security checks.
+- **#78:** SQLAlchemy 2.1.5 explicitly uses the installed psycopg2 dialect for
+  app/Alembic/baseline-verifier connections while preserving the normal libpq
+  `postgresql://` deployment secret for backups. The prior Dependabot upgrade
+  without this fix failed PostgreSQL/migration/restore tests.
+- **#79:** checkout v7, setup-python v7 and upload-artifact v6 checked throughout CI.
+- **#80:** provider preflight fails closed on malformed responses; only allowlisted
+  integer aggregate export counters enter the operator receipt.
+- **#81:** isolated offline hosted Telegram bot handler-wiring job added to CI;
+  no real Telegram request, message or provider operation is performed.
+- **#82:** Telegram bot library and HTTP client upgraded together under the new
+  offline smoke gate; actual Telegram delivery remains unverified.
+- **#83:** single read-only operations snapshot for readiness/admin metrics
+  with locally private receipts, synthetic and real-route tests, cumulative-count
+  review labels, no secrets, no live alerts and no brokerage activity.
+- Redundant source/dependency PRs were closed as superseded, not accepted independently.
+  **#60 remains a draft HOLD**: exact per-child broker-exit proof is needed
+  before TP1/TP2/TP3 attribution can be trusted on partial/manual closes.
+
+**Still open, not substitutable with code:** exact EA demo-broker scenario
+receipts, independent app/security review and penetration test, written UK
+regulatory/privacy/contract review, central alert routing and measured SLOs,
+production-like restore with RTO/RPO, controlled actual provider demo pilot,
+and commercial operating evidence. The repository was still public and main
+unprotected at the checkpoint; protect release refs and make a proprietary
+source-access decision before distributing commercially (issue #49).
+The current source remains DEMO-ONLY; real-money and automatic-copy modes are BLOCKED.
