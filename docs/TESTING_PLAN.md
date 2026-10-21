@@ -37,7 +37,10 @@ A separate CI job installs `telegram_bot/requirements.txt` into an isolated
 Python environment and runs `scripts/verify_telegram_bot_wiring.py`. It
 creates a hosted-mode Telegram Application with a forced synthetic token,
 checks required command handlers and explicit YES/NO + screenshot callbacks,
-and verifies legacy shared-provider enrolment is absent. No bot polling,
+and verifies legacy shared-provider enrolment is absent. It also drives
+synthetic HTTP 403/404/500, invalid JSON and malformed approval callbacks
+through the actual bot helpers: non-2xx and invalid results must never be
+presented as confirmed approvals. No bot polling,
 network requests, user identities, broker connections or orders occur.
 
 This detects incompatible Telegram/httpx dependency upgrades that backend-only
