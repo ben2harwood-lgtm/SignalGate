@@ -155,6 +155,12 @@ At least once per operating day:
 - log support minutes and incidents;
 - record any configuration change.
 
+For a supplementary one-shot, read-only aggregate metrics record, use
+`scripts/pilot_ops_snapshot.py` with admin credentials supplied only through
+private environment variables. Treat its nonzero counters as historical review
+prompts, not proof of newly occurring incidents; it does not replace central
+alerting, broker reconciliation or actual operator investigation.
+
 Use `docs/evidence/PILOT_OPERATIONS_LOG_TEMPLATE.md`.
 
 ## 10. Incident rule
