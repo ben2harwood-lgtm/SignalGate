@@ -45,6 +45,9 @@ artifacts/mt5-acceptance/
 # Provider preflight receipts; contain operating metadata and stay local
 artifacts/pilot-preflight/
 
+# Read-only pilot operations receipts (aggregate counts and environment metadata)
+artifacts/pilot-ops/
+
 # One-time provider onboarding credential exports
 *provider-credential*.json
 *provider-onboarding-secret*.json
