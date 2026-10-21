@@ -119,7 +119,7 @@ def test_execution_report_uses_actual_broker_filled_volume_and_weighted_price():
     assert "weighted_exec_price / executed_lot" in split
     assert "trade.ResultVolume()" in single
     assert "const double executed_lot" in report
-    assert '"lot_size\":" + DoubleToString(executed_lot, 8)' in report
+    assert 'body += "\\\"lot_size\\\":" + DoubleToString(executed_lot, 8)' in report
     assert "TP1Lot + TP2Lot + TP3Lot" not in report
 
 
