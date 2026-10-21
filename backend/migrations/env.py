@@ -11,7 +11,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import create_engine, pool
 
-from app.config import get_settings
+from app.config import get_settings, sqlalchemy_driver_url
 from app.database import Base
 from app import models  # noqa: F401 - registers metadata
 
