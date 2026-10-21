@@ -186,6 +186,10 @@ def test_read_only_preflight_against_real_fastapi_routes(client, db, monkeypatch
     from .test_provider_export import _provider
 
     provider, feed, secret = _provider(db, "preflight-real-routes")
+    # Low-level fixture creation bypasses the HTTP onboarding route, so put the
+    # test feed into the same explicitly paused pre-cohort state as production.
+    feed.paused = True
+    db.commit()
     assert feed.paused is True
     original_http_client = httpx.Client
     calls = []
