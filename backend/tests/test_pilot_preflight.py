@@ -77,3 +77,102 @@ def test_candidate_sha_must_be_canonical_before_network_calls():
             declared_candidate_sha="not-a-sha",
             require_feeds_paused=True,
         )
+
+
+def test_read_only_preflight_checks_real_provider_flow_without_leaking_key(monkeypatch):
+    import json
+    import httpx
+
+    original_client = httpx.Client
+    provider_key = "secret-preflight-test-key"
+    seen = []
+
+    def handle(request):
+        seen.append((request.method, request.url.path))
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"demo_only_mode": True, "admin_paused": True})
+        if request.url.path == "/readyz":
+            return httpx.Response(200, json={"status": "ready"})
+        if request.url.path == "/providers/me":
+            supplied_key = request.headers.get("x-provider-api-key")
+            if supplied_key != provider_key:
+                return httpx.Response(401, json={"detail": "Unauthorized"})
+            return httpx.Response(200, json={"id": "PRV-1", "paused": False, "status": "ACTIVE"})
+        if request.url.path == "/providers/me/feeds":
+            return httpx.Response(200, json=[{"id": "FED-1", "paused": True}])
+        if request.url.path == "/providers/me/overview":
+            return httpx.Response(200, json={"provider": {"id": "PRV-1"}, "feed_count": 1})
+        if request.url.path == "/providers/me/export":
+            return httpx.Response(200, json={
+                "provider": {"id": "PRV-1"},
+                "summary": {"signal_count_in_export": 1},
+            })
+        return httpx.Response(404, json={"detail": "Unknown route"})
+
+    transport = httpx.MockTransport(handle)
+
+    def mock_client(*args, **kwargs):
+        return original_client(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr(preflight.httpx, "Client", mock_client)
+    receipt = preflight.run_preflight(
+        backend="https://api.example.test",
+        provider_id="PRV-1",
+        provider_api_key=provider_key,
+        declared_candidate_sha="a" * 40,
+        require_feeds_paused=True,
+    )
+    assert receipt["result"] == "PASS", receipt["checks"]
+    assert receipt["candidate_sha_verified_by_backend"] is False
+    assert all(method == "GET" for method, _ in seen)
+    assert len(seen) == 7
+    assert provider_key not in json.dumps(receipt)
+    assert receipt["evidence"]["feed_ids"] == ["FED-1"]
+
+
+@pytest.mark.parametrize(("unpaused", "leaks_secret"), [
+    (True, False),
+    (False, True),
+])
+def test_preflight_fails_closed_on_unpaused_feed_or_export_secret(monkeypatch, unpaused, leaks_secret):
+    import httpx
+
+    original_client = httpx.Client
+
+    def handle(request):
+        path = request.url.path
+        if path == "/health":
+            return httpx.Response(200, json={"demo_only_mode": True})
+        if path == "/readyz":
+            return httpx.Response(200, json={"status": "ready"})
+        if path == "/providers/me":
+            if request.headers.get("x-provider-api-key") != "provider-key":
+                return httpx.Response(401)
+            return httpx.Response(200, json={"id": "PRV-1"})
+        if path == "/providers/me/feeds":
+            return httpx.Response(200, json=[{"id": "FED-1", "paused": not unpaused}])
+        if path == "/providers/me/overview":
+            return httpx.Response(200, json={"provider": {"id": "PRV-1"}})
+        if path == "/providers/me/export":
+            record = {"provider": {"id": "PRV-1"}}
+            if leaks_secret:
+                record["history"] = [{"token_hash": "should-never-export"}]
+            return httpx.Response(200, json=record)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handle)
+    monkeypatch.setattr(
+        preflight.httpx, "Client",
+        lambda *args, **kwargs: original_client(*args, transport=transport, **kwargs),
+    )
+    receipt = preflight.run_preflight(
+        backend="https://api.example.test",
+        provider_id="PRV-1",
+        provider_api_key="provider-key",
+        declared_candidate_sha="b" * 40,
+        require_feeds_paused=True,
+    )
+    assert receipt["result"] == "FAIL"
+    failed = {item["name"] for item in receipt["checks"] if not item["passed"]}
+    assert ("feeds_paused_before_cohort" if unpaused else
+            "provider_export_secret_fields_absent") in failed
