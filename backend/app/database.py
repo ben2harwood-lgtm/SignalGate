@@ -18,7 +18,7 @@ _connect_args = (
 )
 
 engine = create_engine(
-    settings.database_url,
+    sqlalchemy_driver_url(settings.database_url),
     connect_args=_connect_args,
     future=True,
     pool_pre_ping=True,
