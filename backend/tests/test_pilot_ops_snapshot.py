@@ -140,3 +140,46 @@ def test_admin_credentials_and_candidate_identity_required_before_any_network():
             admin_api_key="secret-test-key",
             candidate_sha="not-a-sha",
         )
+
+
+def test_snapshot_against_real_fastapi_metrics_and_readiness(client, monkeypatch):
+    """Run the operator tool against actual app routes, not only fake JSON."""
+    original = httpx.Client
+    seen = []
+    secret = "synthetic-admin-secret"
+
+    def handle(request):
+        seen.append((request.method, request.url.path))
+        assert request.method == "GET"
+        response = client.request(
+            "GET",
+            request.url.path,
+            headers={
+                "X-Admin-Id": request.headers.get("x-admin-id", ""),
+                "X-Admin-API-Key": request.headers.get("x-admin-api-key", ""),
+            },
+        )
+        return httpx.Response(
+            response.status_code,
+            content=response.content,
+            headers={"content-type": response.headers.get("content-type", "application/json")},
+        )
+
+    transport = httpx.MockTransport(handle)
+    monkeypatch.setattr(
+        snapshot.httpx, "Client",
+        lambda *args, **kwargs: original(*args, transport=transport, **kwargs),
+    )
+    receipt = snapshot.collect(
+        backend="https://pilot.example.invalid",
+        admin_id="999",  # test-fixture admin, not a real user
+        admin_api_key=secret,
+        candidate_sha="c" * 40,
+    )
+    assert receipt["result"] == "COLLECTED", receipt["checks"]
+    assert seen == [
+        ("GET", "/readyz"), ("GET", "/health"), ("GET", "/admin/metrics"),
+    ]
+    assert receipt["counts"]["pipeline"]["commands_sent_to_ea_stale_60s"] == 0
+    assert secret not in json.dumps(receipt)
+    assert '"admin_id"' not in json.dumps(receipt)
