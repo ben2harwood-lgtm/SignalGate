@@ -38,6 +38,11 @@ EXTRA_TESTS = (
     "tests/test_commands.py::test_open_snapshot_cannot_override_failed_execution",
     "tests/test_commands.py::test_duplicate_execution_report_is_idempotent",
     "tests/test_commands.py::test_late_event_cannot_regress_terminal_command",
+    # Provider-bound failure paths that must hold before first demo onboarding.
+    "tests/test_provider_tenancy.py::test_wrong_provider_api_key_fails_closed",
+    "tests/test_provider_tenancy.py::test_provider_cannot_read_or_broadcast_other_provider_data",
+    "tests/test_provider_tenancy.py::test_unsubscribed_user_cannot_approve_provider_signal",
+    "tests/test_provider_tenancy.py::test_provider_pause_is_execution_kill_path",
 )
 
 
