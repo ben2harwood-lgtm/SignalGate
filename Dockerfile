@@ -8,8 +8,14 @@ RUN groupadd --system signalgate && useradd --system --gid signalgate --create-h
 WORKDIR /app
 
 COPY backend/requirements.txt backend/requirements-hosted.txt /tmp/backend/
+# Keep installation tooling and its vendored libraries out of the final runtime.
+# Install + verify dependencies before uninstalling non-runtime packaging tools;
+# dependency management happens when rebuilding the image, not inside production.
 RUN python -m pip install --upgrade pip \
-    && pip install -r /tmp/backend/requirements-hosted.txt
+    && pip install -r /tmp/backend/requirements-hosted.txt \
+    && python -m pip check \
+    && python -m pip uninstall -y pip setuptools \
+    && python -c "import fastapi, httpx, sqlalchemy, uvicorn, pydantic, psycopg2, alembic"
 
 COPY backend /app/backend
 WORKDIR /app/backend
