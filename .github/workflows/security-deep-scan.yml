@@ -52,11 +52,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build hosted image for security scan
         run: docker build --pull -t signalgate-security-scan .
-      - name: Inspect final Python package state
+      - name: Verify final image server imports and removed packaging tools
         run: |
-          docker run --rm signalgate-security-scan python -m pip check
-          docker run --rm signalgate-security-scan python -c "import importlib.metadata as m; names=['setuptools','wheel','msgpack','jaraco.context']; [print(f'{n}={m.version(n)}') for n in names if any((d.metadata.get('Name') or '').lower()==n for d in m.distributions())]"
-          docker run --rm signalgate-security-scan python -c "import importlib.metadata as m,re; targets={'setuptools','wheel','msgpack','jaraco.context'}; rows=[]; [rows.extend((d.metadata.get('Name'),r) for r in (d.requires or []) if re.split(r'[ (<=>;\[]',r,1)[0].lower() in targets) for d in m.distributions()]; print('reverse-dependencies=',rows)"
+          # A dependency consistency check ran in the Docker build before tool removal.
+          docker run --rm signalgate-security-scan python -c "import fastapi, httpx, sqlalchemy, uvicorn, pydantic, psycopg2, alembic; print('runtime imports OK')"
+          docker run --rm signalgate-security-scan python -c "import importlib.util as u; assert u.find_spec('pip') is None; assert u.find_spec('setuptools') is None; print('packaging tools absent')"
+          docker run --rm signalgate-security-scan python -c "import importlib.metadata as m; print('msgpack=', m.version('msgpack'))"
       - name: Capture high/critical finding provenance before the blocking scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
