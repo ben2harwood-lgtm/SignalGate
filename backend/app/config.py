@@ -16,6 +16,22 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def sqlalchemy_driver_url(database_url: str) -> str:
+    """Choose the installed psycopg2 dialect without changing the operator DSN.
+
+    SQLAlchemy 2.1 changes the default driver for postgresql://. Our hosted
+    dependency and migration/restore tooling still use psycopg2-binary. Keep
+    DATABASE_URL unchanged for libpq, psql and the backup/restore scripts;
+    only SQLAlchemy/Alembic engine construction needs an explicit dialect.
+    Explicit driver schemes and SQLite remain unchanged.
+    """
+    if database_url.startswith("postgres://"):
+        database_url = "postgresql://" + database_url[len("postgres://"):]
+    if database_url.startswith("postgresql://"):
+        return "postgresql+psycopg2://" + database_url[len("postgresql://"):]
+    return database_url
+
+
 def _get_bool(key: str, default: bool) -> bool:
     raw = os.getenv(key)
     if raw is None:

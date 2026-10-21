@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 from sqlalchemy import create_engine, inspect
+
+# The verifier runs from the repository root; share the same dialect choice as
+# application/Alembic without changing DATABASE_URL used by libpq tools.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+from app.config import sqlalchemy_driver_url  # noqa: E402
 
 EXPECTED_COLUMNS = {
     "users": {"id","telegram_user_id","telegram_username","first_name","status","risk_percent","fixed_lot_size","license_key","created_at","updated_at"},
@@ -44,7 +50,7 @@ def main() -> int:
     if not url:
         print("DATABASE_URL is required", file=sys.stderr)
         return 2
-    inspector = inspect(create_engine(url, future=True))
+    inspector = inspect(create_engine(sqlalchemy_driver_url(url), future=True))
     actual_tables = set(inspector.get_table_names())
     errors = []
 

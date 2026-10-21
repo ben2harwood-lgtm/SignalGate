@@ -11,7 +11,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import create_engine, pool
 
-from app.config import get_settings
+from app.config import get_settings, sqlalchemy_driver_url
 from app.database import Base
 from app import models  # noqa: F401 - registers metadata
 
@@ -23,7 +23,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    url = get_settings().database_url
+    url = sqlalchemy_driver_url(get_settings().database_url)
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -38,7 +38,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     connectable = create_engine(
-        get_settings().database_url,
+        sqlalchemy_driver_url(get_settings().database_url),
         poolclass=pool.NullPool,
         future=True,
     )
