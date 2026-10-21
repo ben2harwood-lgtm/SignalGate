@@ -80,6 +80,26 @@ At minimum show:
 5. backup/restore evidence;
 6. security/dependency scan status.
 
+## Operator snapshot (read-only, not alerting)
+
+`scripts/pilot_ops_snapshot.py` records a single, redacted observation from
+`/readyz`, `/health` and authenticated `/admin/metrics`. Set
+`SIGNALGATE_BACKEND`, `SIGNALGATE_ADMIN_ID`,
+`SIGNALGATE_ADMIN_API_KEY` and `SIGNALGATE_CANDIDATE_SHA` **via private
+environment configuration**, then run the script from the repository root.
+No secret is accepted as a command-line flag. The local
+`artifacts/pilot-ops/` receipt contains only read-only status, numeric
+aggregate counters, and operator-declared candidate SHA; it excludes raw
+credentials, user IDs, signal text and source exports.
+
+A `REVIEW_REQUIRED` observation indicates nonzero *historical cumulative*
+stale/conflict/failed-management counters to investigate, **not proof of a new
+incident** or a live trading loss. A `FAIL` observation fails readiness,
+demo-only, authorisation or metric-schema checks. The script cannot establish
+time-series SLOs, persistent alert routing, broker truth, receipt provenance or
+production monitoring. Use an independently configured central monitor and
+the release acceptance index before marking G6 complete.
+
 ## Remaining production work
 
 The current repository provides structured log events, correlation IDs and a protected metrics surface. A deployed environment still needs a central log/metrics backend, alert routing, retention rules, on-call ownership and measured SLO history before G6 is fully accepted.
