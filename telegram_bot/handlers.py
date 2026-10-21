@@ -38,9 +38,14 @@ async def _backend_get(path: str, **kwargs) -> Optional[Any]:
     try:
         async with httpx.AsyncClient(timeout=10.0) as http:
             resp = await http.get(url, **kwargs)
-            return resp.json()
+            if not 200 <= resp.status_code < 300:
+                logger.warning("backend GET %s returned HTTP %s", path, resp.status_code)
+                return None
+            data = resp.json()
+            return data if isinstance(data, (dict, list)) else None
     except Exception as exc:  # noqa: BLE001
-        logger.warning("backend GET %s failed: %s", path, exc)
+        # Never emit response bodies, query values or secret-bearing headers.
+        logger.warning("backend GET %s failed: %s", path, type(exc).__name__)
         return None
 
 
@@ -49,9 +54,14 @@ async def _backend_post(path: str, **kwargs) -> Optional[Any]:
     try:
         async with httpx.AsyncClient(timeout=10.0) as http:
             resp = await http.post(url, **kwargs)
-            return resp.json()
+            if not 200 <= resp.status_code < 300:
+                logger.warning("backend POST %s returned HTTP %s", path, resp.status_code)
+                return None
+            data = resp.json()
+            return data if isinstance(data, (dict, list)) else None
     except Exception as exc:  # noqa: BLE001
-        logger.warning("backend POST %s failed: %s", path, exc)
+        # Never emit response bodies, query values or secret-bearing headers.
+        logger.warning("backend POST %s failed: %s", path, type(exc).__name__)
         return None
 
 
@@ -367,6 +377,9 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.edit_message_text("Invalid action.")
         return
 
+    if decision not in {"YES", "NO"} or not signal_id:
+        await query.edit_message_text("Invalid action.")
+        return
     path = (
         f"/signals/{signal_id}/approve"
         if decision == "YES"
@@ -377,8 +390,11 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         json={"telegram_user_id": str(user.id)},
         headers=_registration_headers(),
     )
-    if result is None:
-        await query.edit_message_text("Backend unreachable. Try again.")
+    if not isinstance(result, dict) or not result.get("result"):
+        await query.edit_message_text(
+            "Decision could not be confirmed. Check the current trade state "
+            "before retrying; the backend may already have processed it."
+        )
         return
 
     code = result.get("result", "")
