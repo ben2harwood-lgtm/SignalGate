@@ -31,6 +31,19 @@ Coverage includes:
 - MT5 source-level fail-closed invariants;
 - simulator end-to-end behaviour.
 
+### Telegram hosted-bot offline wiring smoke
+
+A separate CI job installs `telegram_bot/requirements.txt` into an isolated
+Python environment and runs `scripts/verify_telegram_bot_wiring.py`. It
+creates a hosted-mode Telegram Application with a forced synthetic token,
+checks required command handlers and explicit YES/NO + screenshot callbacks,
+and verifies legacy shared-provider enrolment is absent. No bot polling,
+network requests, user identities, broker connections or orders occur.
+
+This detects incompatible Telegram/httpx dependency upgrades that backend-only
+tests cannot exercise. It is not evidence of real Telegram message delivery,
+provider identity or an accepted live pilot.
+
 ### 2. Backend suite — PostgreSQL
 
 Runs the same backend suite against PostgreSQL so locking, constraints, tenancy and database-specific behaviour are exercised on the hosted engine.
