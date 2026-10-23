@@ -4,8 +4,12 @@ set -euo pipefail
 : "${BACKUP_FILE:?BACKUP_FILE is required}"
 
 # A .sha256 manifest may name another file: bind integrity to this exact target.
-# Compare the entire sha256sum record, including the filename, in one hash pass.
-if ! cmp -s <(sha256sum "$BACKUP_FILE") "$BACKUP_FILE.sha256"; then
+# Capture the hash command status: process substitution alone can hide read errors.
+if ! actual_checksum_record="$(sha256sum "$BACKUP_FILE")"; then
+  echo "Unable to hash requested BACKUP_FILE; refusing restore" >&2
+  exit 2
+fi
+if ! cmp -s <(printf '%s\\n' "$actual_checksum_record") "$BACKUP_FILE.sha256"; then
   echo "Checksum manifest does not match requested BACKUP_FILE; refusing restore" >&2
   exit 2
 fi
