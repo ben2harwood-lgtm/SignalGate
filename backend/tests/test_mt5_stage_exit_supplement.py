@@ -54,3 +54,9 @@ def test_template_does_not_allow_ci_to_pass_external_acceptance():
         "whole supplement NOT ACCEPTED", "External application/security", "WhatsApp activation",
     ):
         assert required in text
+
+def test_evidence_index_links_supplement_without_approval_claim():
+    evidence_readme = RECEIPT.parent / "README.md"
+    text = evidence_readme.read_text(encoding="utf-8")
+    assert "MT5_STAGE_EXIT_SUPPLEMENT_TEMPLATE.md" in text
+    assert "nine NOT_RUN scenarios" in text
