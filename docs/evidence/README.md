@@ -9,6 +9,8 @@ Use `docs/ACCEPTANCE_EVIDENCE_INDEX.md` as the public control sheet and store se
 Templates:
 
 - `MT5_ACCEPTANCE_RECEIPT_TEMPLATE.md`
+- `MT5_STAGE_EXIT_SUPPLEMENT_TEMPLATE.md` — blank PR #60 TP-stage broker-DEMO
+  evidence supplement (nine NOT_RUN scenarios; not external acceptance)
 - `SECURITY_REVIEW_RECEIPT_TEMPLATE.md`
 - `REGULATORY_PRIVACY_RECEIPT_TEMPLATE.md`
 - `PILOT_OPERATIONS_LOG_TEMPLATE.md`
