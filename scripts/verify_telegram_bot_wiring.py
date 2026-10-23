@@ -249,6 +249,36 @@ def check_hosted_legacy_provider_status_never_grants_identity() -> None:
     assert "Provider Portal" in replies[1]
     assert "Role: screenshot provider" not in replies[1]
 
+
+def check_connectprovider_error_does_not_echo_backend_secrets() -> None:
+    """Backend error detail is untrusted and cannot enter Telegram replies."""
+    secret = "SYNTHETIC_BACKEND_SECRET_DO_NOT_ECHO"
+    replies = []
+    calls = []
+
+    async def reply_text(message, **_kwargs):
+        replies.append(message)
+
+    async def failed_connection(path, **kwargs):
+        calls.append((path, kwargs.get("json", {}).get("connection_token")))
+        return {"detail": f"internal token dump: {secret}"}
+
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123456),
+        message=SimpleNamespace(reply_text=reply_text),
+    )
+    context = SimpleNamespace(args=["SYNTHETIC-ONE-TIME-TOKEN"])
+    with patch.object(handlers, "_backend_post", failed_connection):
+        asyncio.run(handlers.connect_provider_source(update, context))
+    assert calls == [
+        ("/provider-sources/telegram/connect", "SYNTHETIC-ONE-TIME-TOKEN")
+    ]
+    assert len(replies) == 1
+    assert "not connected" in replies[0].lower()
+    assert "Provider Portal" in replies[0]
+    assert secret not in replies[0]
+    assert "SYNTHETIC-ONE-TIME-TOKEN" not in replies[0]
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -288,6 +318,7 @@ def main() -> int:
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()
     check_hosted_legacy_provider_status_never_grants_identity()
+    check_connectprovider_error_does_not_echo_backend_secrets()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")
     return 0
 
