@@ -3,7 +3,12 @@ set -euo pipefail
 : "${RESTORE_DATABASE_URL:?RESTORE_DATABASE_URL is required}"
 : "${BACKUP_FILE:?BACKUP_FILE is required}"
 
-sha256sum --check "$BACKUP_FILE.sha256"
+# A .sha256 manifest may name another file: bind integrity to this exact target.
+# Compare the entire sha256sum record, including the filename, in one hash pass.
+if ! cmp -s <(sha256sum "$BACKUP_FILE") "$BACKUP_FILE.sha256"; then
+  echo "Checksum manifest does not match requested BACKUP_FILE; refusing restore" >&2
+  exit 2
+fi
 
 restore_file="$BACKUP_FILE"
 temp=""
