@@ -47,6 +47,11 @@ A non-local backend must use HTTPS. Credentials embedded in the URL are rejected
 
 The receipt is written under `artifacts/pilot-preflight/`, which should remain outside Git.
 
+The evidence directory is created with owner-only `0700` permissions. Both JSON
+and Markdown receipt files are created atomically with owner-only `0600`
+permissions, even if the operator's process umask is permissive. Keep these
+receipts in controlled storage and never commit them to the repository.
+
 ## Failed or malformed responses
 
 The preflight treats a successful HTTP status with malformed JSON, an unexpected
