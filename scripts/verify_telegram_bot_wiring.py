@@ -191,6 +191,9 @@ def check_screenshot_extraction_fail_closed() -> None:
         ("long notes", {"parser_status": "VALID", "extracted_text": "BUY", "notes": "N" * 5000}, ""),
         ("bad number", {"parser_status": "VALID", "extracted_text": "BUY", "tp1": []}, ""),
         ("bool number", {"parser_status": "VALID", "extracted_text": "BUY", "tp1": True}, ""),
+        ("huge number", {"parser_status": "VALID", "extracted_text": "BUY", "tp1": 10 ** 400}, ""),
+        ("non-finite number", {"parser_status": "VALID", "extracted_text": "BUY", "tp1": float("nan")}, ""),
+        ("invalid unicode", {"parser_status": "VALID", "extracted_text": "\\ud800"}, ""),
         ("combined preview", {
             "parser_status": "VALID", "extracted_text": "B" * 1900, "notes": "N" * 1900
         }, ""),
