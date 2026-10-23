@@ -23,4 +23,6 @@ WORKDIR /app/backend
 USER signalgate
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+# The image must never launch with local demo identity-header authentication.
+# Keep the original Uvicorn CLI/flags via the reviewed Python preflight exec.
+CMD ["python", "-m", "app.hosted_entrypoint"]
