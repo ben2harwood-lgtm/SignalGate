@@ -294,8 +294,11 @@ async def connect_provider_source(
         )
         return
     if result.get("detail"):
+        # Backend diagnostics can contain token text or server internals.
+        # Never echo an arbitrary error detail to a Telegram conversation.
         await update.message.reply_text(
-            f"Provider source not connected: {result.get('detail')}"
+            "Provider source not connected. The token may be invalid, expired, "
+            "or already used. Generate a new feed-bound token in the Provider Portal."
         )
         return
     provider_name = (
