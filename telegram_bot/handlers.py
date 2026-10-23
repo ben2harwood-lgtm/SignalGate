@@ -602,6 +602,10 @@ async def _preview_screenshot(
     image_bytes: bytes,
     mime: str,
 ) -> None:
+    # Never leave an earlier unsent preview available when a new screenshot
+    # fails extraction or its provider source has been revoked.
+    context.user_data.pop("pending_signal_text", None)
+    context.user_data.pop("awaiting_edit", None)
     user_id = update.effective_user.id
     source = await _provider_source_status(user_id)
     if source:
@@ -609,6 +613,14 @@ async def _preview_screenshot(
         headers = _registration_headers()
         params = {"telegram_user_id": str(user_id)}
     else:
+        if config.require_license:
+            # The earlier photo permission check is not authority after a
+            # source revocation or backend lookup failure.
+            await update.message.reply_text(
+                "Provider source is no longer connected. Nothing was extracted. "
+                "Reconnect using a new token from the Provider Portal."
+            )
+            return
         # Local-demo legacy path only.
         url = f"{config.backend_base_url}/signals/extract"
         headers = _signal_provider_headers(user_id)
@@ -623,13 +635,17 @@ async def _preview_screenshot(
                 files={"file": ("signal", image_bytes, mime)},
             )
             if resp.status_code != 200:
+                # Backend error bodies may contain secrets or internal details.
+                logger.warning("backend screenshot extraction returned HTTP %s", resp.status_code)
                 await update.message.reply_text(
-                    f"Screenshot rejected by backend: {resp.text}"
+                    "Screenshot extraction was rejected by the backend. "
+                    "No signal was created."
                 )
                 return
             data = resp.json()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("extract failed: %s", exc)
+        # HTTP exceptions can include credential-bearing URLs or response text.
+        logger.warning("extract failed: %s", type(exc).__name__)
         await update.message.reply_text(
             "Couldn't read that image (backend/extractor error). Try again."
         )
