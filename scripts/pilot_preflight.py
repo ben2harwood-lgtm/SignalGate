@@ -280,14 +280,22 @@ def run_preflight(
     }
 
 
+def _write_receipt_owner_only(path: Path, content: str) -> None:
+    """Create a new receipt with owner-only permissions regardless of umask."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(content)
+
+
 def write_receipt(receipt: dict, evidence_root: Path) -> Path:
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     target = evidence_root / f"{stamp}-PILOT-PREFLIGHT-{receipt['declared_candidate_sha'][:12]}"
     target.mkdir(mode=0o700, parents=True, exist_ok=False)
 
-    (target / "receipt.json").write_text(
+    _write_receipt_owner_only(
+        target / "receipt.json",
         json.dumps(receipt, indent=2, sort_keys=True, ensure_ascii=True) + "\n",
-        encoding="utf-8",
     )
     lines = [
         "# SignalGate Provider Pilot Preflight",
@@ -309,7 +317,7 @@ def write_receipt(receipt: dict, evidence_root: Path) -> Path:
         "This receipt contains no provider API key, customer licence, invite token, raw signal text, or raw provider export.",
         "",
     ]
-    (target / "receipt.md").write_text("\n".join(lines), encoding="utf-8")
+    _write_receipt_owner_only(target / "receipt.md", "\n".join(lines))
     return target
 
 
