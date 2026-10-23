@@ -96,6 +96,108 @@ def check_unconfirmed_decision_does_not_claim_approval() -> None:
     assert not called
 
 
+
+def check_screenshot_extraction_fail_closed() -> None:
+    """No stale previews, credential-bearing errors, or hosted legacy fallback."""
+    original_client = httpx.AsyncClient
+    secret = "SYNTHETIC-SECRET-NOT-FOR-TELEGRAM"
+
+    async def connected(_user_id):
+        return {"feed_id": "FEED-OFFLINE"}
+
+    async def disconnected(_user_id):
+        return None
+
+    def exercise(*, status=500, body="", payload=None, fail=None, source=connected):
+        replies = []
+        warnings = []
+        requests = []
+        user_state = {"pending_signal_text": "OLD-NOT-APPROVED", "awaiting_edit": True}
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(reply_text=reply_text),
+        )
+        context = SimpleNamespace(user_data=user_state)
+
+        def respond(request):
+            requests.append(request.url.path)
+            if fail is not None:
+                raise RuntimeError(fail)
+            if payload is not None:
+                return httpx.Response(status, json=payload)
+            return httpx.Response(status, text=body)
+
+        transport = httpx.MockTransport(respond)
+        with (
+            patch.object(handlers, "_provider_source_status", source),
+            patch.object(
+                handlers.httpx,
+                "AsyncClient",
+                lambda *args, **kwargs: original_client(
+                    *args, transport=transport, **kwargs
+                ),
+            ),
+            patch.object(
+                handlers.logger,
+                "warning",
+                lambda fmt, *args: warnings.append(fmt % args),
+            ),
+        ):
+            asyncio.run(
+                handlers._preview_screenshot(
+                    update=update,
+                    context=context,
+                    image_bytes=b"SYNTHETIC-IMAGE-NO-USER-DATA",
+                    mime="image/jpeg",
+                )
+            )
+        return replies, warnings, requests, user_state
+
+    for status in (403, 500):
+        replies, warnings, requests, state = exercise(
+            status=status, body=f"upstream stack and token={secret}"
+        )
+        assert len(replies) == 1 and "rejected" in replies[0].lower()
+        assert requests == ["/provider-sources/telegram/extract"]
+        assert all(secret not in item for item in replies + warnings)
+        assert any(str(status) in warning for warning in warnings)
+        assert state == {}, "Failed extraction retained an earlier unsent preview"
+
+    replies, warnings, requests, state = exercise(fail=f"backend URL token={secret}")
+    assert len(replies) == 1 and "couldn't read" in replies[0].lower()
+    assert requests == ["/provider-sources/telegram/extract"]
+    assert all(secret not in item for item in replies + warnings)
+    assert any("RuntimeError" in warning for warning in warnings)
+    assert state == {}
+
+    replies, warnings, requests, state = exercise(source=disconnected)
+    assert len(replies) == 1 and "no longer connected" in replies[0].lower()
+    assert not requests, "Hosted source revocation fell through to legacy extraction"
+    assert not warnings
+    assert state == {}
+
+    replies, warnings, requests, state = exercise(
+        status=200,
+        payload={
+            "parser_status": "VALID",
+            "extracted_text": "EURUSD BUY SL 1.05 TP1 1.07",
+            "symbol": "EURUSD",
+            "direction": "BUY",
+            "initial_stop_loss": 1.05,
+            "tp1": 1.07,
+            "confidence": "HIGH",
+            "engine": "offline",
+        },
+    )
+    assert requests == ["/provider-sources/telegram/extract"]
+    assert len(replies) == 1 and "Read from your screenshot" in replies[0]
+    assert state == {"pending_signal_text": "EURUSD BUY SL 1.05 TP1 1.07"}
+    assert not warnings
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -133,6 +235,7 @@ def main() -> int:
     )
     check_backend_http_fail_closed()
     check_unconfirmed_decision_does_not_claim_approval()
+    check_screenshot_extraction_fail_closed()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")
     return 0
 
