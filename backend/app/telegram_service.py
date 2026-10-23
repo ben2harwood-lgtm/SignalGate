@@ -13,6 +13,9 @@ import httpx
 from .config import get_settings
 
 logger = logging.getLogger("signalgate.telegram")
+# httpx INFO emits full request URLs; Telegram embeds the bot credential in
+# its API URL path. Suppress the library's URL-bearing request logs globally.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 settings = get_settings()
 
 _API = "https://api.telegram.org/bot{token}/sendMessage"
