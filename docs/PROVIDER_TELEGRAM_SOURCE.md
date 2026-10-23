@@ -88,8 +88,12 @@ actions and lost in-memory preview state fail closed. An old button cannot
 confirm or cancel the newer screenshot's text. Confirmable state is consumed
 before the backend signal-creation call, so repeated taps cannot reuse it.
 
-The bot still rechecks provider-source permission before each valid callback;
-revoked sources clear the outstanding preview rather than forwarding it.
+The bot still rechecks provider-source permission before each valid callback,
+then rechecks the preview identifier **after** that asynchronous lookup, so a
+newer screenshot arriving during the lookup cannot be confirmed, edited or
+cancelled by the earlier button. Revoked sources clear the matching outstanding
+preview rather than forwarding it; a superseded preview is never cleared by
+the older request.
 The source's backend remains responsible for identity, tenant policy,
 subscriber consent and idempotent signal processing. The binding here is
 an **in-memory preview integrity guard**, not an authentication credential, a
