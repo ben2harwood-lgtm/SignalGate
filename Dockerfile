@@ -24,5 +24,5 @@ USER signalgate
 EXPOSE 8000
 
 # The image must never launch with local demo identity-header authentication.
-# Keep the original Uvicorn CLI/flags via the reviewed Python preflight exec.
+# Launch Uvicorn through the reviewed preflight; bind defaults to loopback.
 CMD ["python", "-m", "app.hosted_entrypoint"]
