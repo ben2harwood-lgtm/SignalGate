@@ -47,6 +47,11 @@ A non-local backend must use HTTPS. Credentials embedded in the URL are rejected
 
 The receipt is written under `artifacts/pilot-preflight/`, which should remain outside Git.
 
+The evidence directory is created with owner-only `0700` permissions. Both JSON
+and Markdown receipt files are created atomically with owner-only `0600`
+permissions, even if the operator's process umask is permissive. Keep these
+receipts in controlled storage and never commit them to the repository.
+
 ## Failed or malformed responses
 
 The preflight treats a successful HTTP status with malformed JSON, an unexpected
@@ -54,10 +59,27 @@ object/list shape, or an incorrectly typed provider identity as a failed check,
 not proof of readiness. It issues a `FAIL` receipt when it can safely complete
 the remaining read-only checks, rather than accepting an incorrect response.
 A transport error remains an incomplete preflight requiring operator review.
+For a CLI transport/validation/filesystem failure, stderr reports only the
+exception **class**, not the exception message: third-party errors may embed
+backend responses, private URLs, credentials or local paths. Diagnose these
+failures through controlled operator procedures; do not copy raw errors into
+public GitHub issues or CI logs. No FAIL/PASS receipt should be inferred if the
+preflight exits before recording one.
 
 To avoid storing unexpected provider/customer data, only nonnegative integer
 export-summary counters from an explicit allowlist are copied into receipts;
 the complete raw export remains in memory only and is not written to disk.
+
+The same rule applies to the other response bodies: readiness and provider-auth
+diagnostics record only Boolean match results/HTTP codes, never unexpected
+backend-provided strings. Provider status is recorded only as ACTIVE or
+INACTIVE_OR_UNKNOWN, pause fields must be Booleans if present, feed identifiers
+must match the expected FED- operational-id format, and overview counters must
+be nonnegative integers (not Booleans). Unexpected field types fail the
+preflight and their raw values are omitted from the JSON and Markdown
+receipts. A forbidden export key produces a count, not a potentially sensitive
+nested key path. Receipt redaction is a defensive control, not a guarantee of
+the external backend's security or pilot acceptance.
 
 ## Candidate identity limitation in RC2
 

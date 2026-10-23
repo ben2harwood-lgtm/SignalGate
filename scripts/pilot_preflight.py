@@ -19,6 +19,9 @@ from urllib.parse import urlparse
 import httpx
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+# Only recognised operational feed ids enter receipts; unexpected backend text
+# is excluded rather than being copied into a possibly shared evidence file.
+FEED_ID_RE = re.compile(r"^FED-[A-Za-z0-9_-]{1,64}$")
 FORBIDDEN_EXPORT_KEYS = {
     "api_key",
     "provider_api_key",
@@ -165,17 +168,25 @@ def run_preflight(
         _check(
             "demo_only_mode",
             health_json.get("demo_only_mode") is True,
-            f"demo_only_mode={health_json.get('demo_only_mode')!r}",
+            f"demo_only_mode_is_true={health_json.get('demo_only_mode') is True}",
             checks,
         )
-        evidence["admin_paused"] = health_json.get("admin_paused")
+        admin_paused = health_json.get("admin_paused")
+        admin_paused_typed = admin_paused is None or type(admin_paused) is bool
+        _check(
+            "health_metadata_types",
+            admin_paused_typed,
+            f"admin_paused_is_boolean_or_absent={admin_paused_typed}",
+            checks,
+        )
+        evidence["admin_paused"] = admin_paused if type(admin_paused) is bool else None
 
         ready = client.get("/readyz")
         ready_json, ready_valid = _object_json(ready)
         _check(
             "readiness",
             ready_valid and ready_json.get("status") == "ready",
-            f"HTTP {ready.status_code}; status={ready_json.get('status')!r}",
+            f"HTTP {ready.status_code}; ready={ready_json.get('status') == 'ready'}",
             checks,
         )
 
@@ -184,11 +195,21 @@ def run_preflight(
         _check(
             "provider_auth",
             me_valid and me_json.get("id") == provider_id,
-            f"HTTP {me.status_code}; provider_id={me_json.get('id')!r}",
+            f"HTTP {me.status_code}; provider_id_matches={me_json.get('id') == provider_id}",
             checks,
         )
-        evidence["provider_status"] = me_json.get("status")
-        evidence["provider_paused"] = me_json.get("paused")
+        active = me_json.get("status") == "ACTIVE"
+        _check("provider_active", me_valid and active, f"active={active}", checks)
+        provider_paused = me_json.get("paused")
+        provider_paused_typed = provider_paused is None or type(provider_paused) is bool
+        _check(
+            "provider_metadata_types",
+            provider_paused_typed,
+            f"provider_paused_is_boolean_or_absent={provider_paused_typed}",
+            checks,
+        )
+        evidence["provider_status"] = "ACTIVE" if active else "INACTIVE_OR_UNKNOWN"
+        evidence["provider_paused"] = provider_paused if type(provider_paused) is bool else None
 
         wrong_headers = {
             "X-Provider-Id": provider_id,
@@ -212,13 +233,28 @@ def run_preflight(
         )
         if feeds_valid:
             evidence["feed_count"] = len(feeds_json)
-            evidence["feed_ids"] = [row.get("id") for row in feeds_json]
+            safe_ids = [
+                row.get("id")
+                for row in feeds_json
+                if isinstance(row.get("id"), str)
+                and FEED_ID_RE.fullmatch(row["id"])
+            ]
+            metadata_valid = len(safe_ids) == len(feeds_json) and all(
+                type(row.get("paused")) is bool for row in feeds_json
+            )
+            _check(
+                "feed_metadata_types",
+                metadata_valid,
+                f"valid_records={len(safe_ids)}; total={len(feeds_json)}; typed={metadata_valid}",
+                checks,
+            )
+            evidence["feed_ids"] = safe_ids if metadata_valid else []
             if require_feeds_paused:
                 all_paused = bool(feeds_json) and all(row.get("paused") is True for row in feeds_json)
                 _check(
                     "feeds_paused_before_cohort",
                     all_paused,
-                    f"paused={[(row.get('id'), row.get('paused')) for row in feeds_json]}",
+                    f"all_paused={all_paused}; count={len(feeds_json)}",
                     checks,
                 )
 
@@ -231,6 +267,7 @@ def run_preflight(
             f"HTTP {overview.status_code}",
             checks,
         )
+        invalid_overview_counts = 0
         for field in (
             "feed_count",
             "active_subscribers",
@@ -239,7 +276,17 @@ def run_preflight(
             "command_count",
         ):
             if field in overview_json:
-                evidence[field] = overview_json[field]
+                value = overview_json[field]
+                if type(value) is int and value >= 0:
+                    evidence[field] = value
+                else:
+                    invalid_overview_counts += 1
+        _check(
+            "overview_count_types",
+            invalid_overview_counts == 0,
+            f"invalid_count_fields={invalid_overview_counts}",
+            checks,
+        )
 
         export = client.get("/providers/me/export", headers=headers)
         export_json, export_valid = _object_json(export)
@@ -254,7 +301,7 @@ def run_preflight(
         _check(
             "provider_export_secret_fields_absent",
             export_valid and not forbidden,
-            "none" if not forbidden else ", ".join(forbidden[:20]),
+            f"forbidden_key_count={len(forbidden)}",
             checks,
         )
         if export_valid:
@@ -280,14 +327,22 @@ def run_preflight(
     }
 
 
+def _write_receipt_owner_only(path: Path, content: str) -> None:
+    """Create a new receipt with owner-only permissions regardless of umask."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(content)
+
+
 def write_receipt(receipt: dict, evidence_root: Path) -> Path:
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     target = evidence_root / f"{stamp}-PILOT-PREFLIGHT-{receipt['declared_candidate_sha'][:12]}"
     target.mkdir(mode=0o700, parents=True, exist_ok=False)
 
-    (target / "receipt.json").write_text(
+    _write_receipt_owner_only(
+        target / "receipt.json",
         json.dumps(receipt, indent=2, sort_keys=True, ensure_ascii=True) + "\n",
-        encoding="utf-8",
     )
     lines = [
         "# SignalGate Provider Pilot Preflight",
@@ -309,7 +364,7 @@ def write_receipt(receipt: dict, evidence_root: Path) -> Path:
         "This receipt contains no provider API key, customer licence, invite token, raw signal text, or raw provider export.",
         "",
     ]
-    (target / "receipt.md").write_text("\n".join(lines), encoding="utf-8")
+    _write_receipt_owner_only(target / "receipt.md", "\n".join(lines))
     return target
 
 
@@ -359,7 +414,13 @@ def main() -> int:
         )
         target = write_receipt(receipt, args.evidence_root)
     except (ValueError, httpx.HTTPError, OSError, json.JSONDecodeError) as exc:
-        print(f"preflight error: {exc}", file=sys.stderr)
+        # Transport errors and exception messages can carry private URLs,
+        # response bodies, file paths or credentials; never echo them to logs.
+        print(
+            f"preflight error ({type(exc).__name__}): operation failed; "
+            "exception details withheld to protect private data",
+            file=sys.stderr,
+        )
         return 2
 
     print(f"result={receipt['result']}")
