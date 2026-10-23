@@ -362,6 +362,37 @@ def check_preview_callback_identity_and_single_use() -> None:
     assert state == {}
     assert calls == ["B-SIGNAL"]
 
+    # A newer preview can arrive while provider verification awaits HTTP.
+    # Old confirmation/edit/cancel must recheck identity after the await.
+    for old_action in ("SIGOK", "SIGEDIT", "SIGNO"):
+        state.clear()
+        state.update({"pending_signal_text": "OLD", "pending_preview_token": token_b})
+        async def superseded(_update):
+            await asyncio.sleep(0)
+            state.clear()
+            state.update({"pending_signal_text": "NEW", "pending_preview_token": token_a})
+            return True
+
+        replies.clear()
+        asyncio.run(click(f"{old_action}:{token_b}", authorised=superseded))
+        assert state == {"pending_signal_text": "NEW", "pending_preview_token": token_a}
+        assert calls == ["B-SIGNAL"]
+        assert len(replies) == 1 and "expired" in replies[0].lower()
+
+    # Revocation of the old source must not wipe a newer preview created during I/O.
+    state.clear()
+    state.update({"pending_signal_text": "OLD", "pending_preview_token": token_b})
+    async def revoked_after_supersession(_update):
+        await asyncio.sleep(0)
+        state.clear()
+        state.update({"pending_signal_text": "NEW", "pending_preview_token": token_a})
+        return False
+
+    asyncio.run(click(f"SIGOK:{token_b}", authorised=revoked_after_supersession))
+    assert state == {"pending_signal_text": "NEW", "pending_preview_token": token_a}
+    assert calls == ["B-SIGNAL"]
+
+    state.clear()
     state.update({"pending_signal_text": "D-SIGNAL", "pending_preview_token": token_b})
     asyncio.run(click(f"SIGOK:{token_b}", authorised=disconnected))
     assert state == {}, "Revocation left an old preview confirmable"
