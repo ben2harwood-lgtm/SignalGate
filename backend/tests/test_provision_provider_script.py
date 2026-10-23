@@ -294,3 +294,52 @@ def test_feed_failure_after_credential_issuance_does_not_leak_secret(
     assert api_secret not in captured.out + captured.err
     assert error_secret not in captured.out + captured.err
     assert "inspect tenant state" in captured.err.lower()
+
+
+def test_provider_credential_file_must_be_outside_public_checkout(
+    monkeypatch, tmp_path, capsys
+):
+    """Reject accidental Git-tracked secrets before making an admin API call."""
+    import sys
+
+    target = ROOT / "scripts" / f"synthetic-{tmp_path.name}-secret.json"
+    assert not target.exists()
+    with pytest.raises(ValueError, match="outside the SignalGate repository"):
+        provision.validate_credential_output(str(target))
+
+    clients = []
+    monkeypatch.setattr(
+        provision.httpx, "Client",
+        lambda *args, **kwargs: clients.append((args, kwargs)),
+    )
+    monkeypatch.delenv("SIGNALGATE_PROVIDER_CREDENTIAL_OUTPUT", raising=False)
+    monkeypatch.setattr(sys, "argv", [
+        str(SCRIPT), "--backend", "https://example.invalid",
+        "--admin-id", "TEST-ONLY", "--organization-name", "Fictional Org",
+        "--provider-name", "Fictional Provider",
+        "--credential-output", str(target),
+    ])
+    with pytest.raises(SystemExit) as failure:
+        provision.main()
+    assert failure.value.code == 2
+    assert clients == [], "No client may be constructed for checkout secrets"
+    assert not target.exists()
+    assert "outside the SignalGate repository" in capsys.readouterr().err
+
+
+def test_provider_credential_symlink_parent_cannot_route_secret_into_repo(tmp_path):
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(ROOT / "scripts", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Directory symlinks unsupported here")
+    target = alias / f"synthetic-{tmp_path.name}-credential.json"
+    assert not target.exists()
+    with pytest.raises(ValueError, match="outside the SignalGate repository"):
+        provision.validate_credential_output(str(target))
+
+
+def test_external_private_credential_output_remains_accepted(tmp_path):
+    target = tmp_path / "fresh-credential.json"
+    assert provision.validate_credential_output(str(target)) == target
+    assert not target.exists()
