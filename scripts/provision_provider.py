@@ -18,8 +18,29 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
+
+
+def validate_admin_backend_url(raw: str) -> str:
+    """Reject insecure or ambiguous admin API origins before any requests."""
+    if not raw or raw != raw.strip() or "\\" in raw:
+        raise ValueError("backend must be a clean absolute URL")
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("backend must be an absolute http(s) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("credentials must not be embedded in the backend URL")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ValueError("backend URL must be an origin without path, query or fragment")
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("invalid backend port") from exc
+    if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("non-local provider provisioning requires HTTPS")
+    return raw.rstrip("/")
 
 
 def slug(value: str) -> str:
@@ -163,6 +184,11 @@ def main() -> int:
             credential_output = validate_credential_output(args.credential_output)
         except ValueError as exc:
             parser.error(str(exc))
+
+    try:
+        args.backend = validate_admin_backend_url(args.backend)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     headers = {"X-Admin-Id": args.admin_id}
     if args.admin_api_key:
