@@ -266,6 +266,34 @@ def check_malformed_pending_confirmation_fails_closed() -> None:
     assert context.user_data == {}, "Malformed confirmation left pending state"
 
 
+def check_preview_keyboard_token_contract() -> None:
+    """Telegram markup must carry matching, short, preview-bound callback data."""
+    from keyboards import extract_preview_keyboard
+
+    token = "a" * 16
+    keyboard = extract_preview_keyboard(True, token)
+    actions = [
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+    ]
+    assert actions == [f"SIGOK:{token}", f"SIGEDIT:{token}", f"SIGNO:{token}"]
+    assert all(len(action.encode("utf-8")) <= 64 for action in actions)
+    invalid_keyboard = extract_preview_keyboard(False, token)
+    assert [
+        button.callback_data
+        for row in invalid_keyboard.inline_keyboard
+        for button in row
+    ] == [f"SIGEDIT:{token}", f"SIGNO:{token}"]
+    for bad in ("", "a" * 65, "INVALID"):
+        try:
+            extract_preview_keyboard(True, bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Unsafe preview identifier accepted")
+
+
 def check_preview_callback_identity_and_single_use() -> None:
     """Old A button must not act on B text; a valid B confirms only once."""
     calls = []
@@ -461,6 +489,7 @@ def main() -> int:
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()
     check_malformed_pending_confirmation_fails_closed()
+    check_preview_keyboard_token_contract()
     check_preview_callback_identity_and_single_use()
     check_hosted_legacy_provider_status_never_grants_identity()
     check_connectprovider_error_does_not_echo_backend_secrets()
