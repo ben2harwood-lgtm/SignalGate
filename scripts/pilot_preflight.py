@@ -414,7 +414,13 @@ def main() -> int:
         )
         target = write_receipt(receipt, args.evidence_root)
     except (ValueError, httpx.HTTPError, OSError, json.JSONDecodeError) as exc:
-        print(f"preflight error: {exc}", file=sys.stderr)
+        # Transport errors and exception messages can carry private URLs,
+        # response bodies, file paths or credentials; never echo them to logs.
+        print(
+            f"preflight error ({type(exc).__name__}): operation failed; "
+            "exception details withheld to protect private data",
+            file=sys.stderr,
+        )
         return 2
 
     print(f"result={receipt['result']}")
