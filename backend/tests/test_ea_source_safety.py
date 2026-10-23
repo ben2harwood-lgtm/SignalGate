@@ -99,6 +99,26 @@ def test_final_stop_reason_uses_latest_matching_child_exit_not_earlier_stop():
     assert "return(true)" not in helper
 
 
+def test_tied_latest_broker_exit_reasons_refuse_stop_out_attribution():
+    """Source guard only: actual equal-ms broker exit evidence is still required."""
+    helper = EA.split("bool CommandClosedByReason(", 1)[1].split(
+        "void ClearActiveCommand()", 1
+    )[0]
+    assert "DEAL_POSITION_ID" in helper
+    assert "IsChildPosition(position_id)" in helper
+    assert "HistoryDealGetInteger(deal, DEAL_TIME_MSC)" in helper
+    assert "bool latest_ambiguous = false;" in helper
+    assert "if(at_msc > latest_msc)" in helper
+    assert "latest_ambiguous = false;" in helper
+    assert "else if(at_msc == latest_msc && deal_reason != latest_reason)" in helper
+    assert "latest_ambiguous = true;" in helper
+    assert (
+        "return(latest_ticket != 0 && !latest_ambiguous && latest_reason == reason);"
+        in helper
+    )
+    assert "deal > latest_ticket" not in helper
+
+
 def test_server_confirmed_stop_move_requires_readback_and_a_matching_child():
     guard = EA.split("bool MoveRemainingSL(", 1)[1].split(
         "//| Close all children", 1
