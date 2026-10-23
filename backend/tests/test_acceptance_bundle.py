@@ -156,7 +156,7 @@ def _committed_fixture(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "Synthetic Evidence Test"], cwd=root, check=True)
-    (root / "evidence.txt").write_text("COMMITTED_SOURCE\\n", encoding="utf-8")
+    (root / "evidence.txt").write_text("COMMITTED_SOURCE\n", encoding="utf-8")
     subprocess.run(["git", "add", "evidence.txt"], cwd=root, check=True)
     subprocess.run(["git", "commit", "-qm", "frozen synthetic fixture"], cwd=root, check=True)
     sha = subprocess.run(
@@ -168,7 +168,7 @@ def _committed_fixture(tmp_path):
 
 def test_verified_bundle_contains_committed_not_dirty_worktree_bytes(tmp_path):
     root, sha = _committed_fixture(tmp_path)
-    (root / "evidence.txt").write_text("UNCOMMITTED_PRIVATE_BYTES\\n", encoding="utf-8")
+    (root / "evidence.txt").write_text("UNCOMMITTED_PRIVATE_BYTES\n", encoding="utf-8")
     output = tmp_path / "verified.zip"
     manifest = bundle.build_bundle(
         repo_root=root, output_path=output, candidate_sha=sha,
@@ -176,7 +176,7 @@ def test_verified_bundle_contains_committed_not_dirty_worktree_bytes(tmp_path):
     )
     assert manifest["source_tree_verified"] is True
     with zipfile.ZipFile(output) as archive:
-        assert archive.read("evidence.txt") == b"COMMITTED_SOURCE\\n"
+        assert archive.read("evidence.txt") == b"COMMITTED_SOURCE\n"
         assert b"UNCOMMITTED_PRIVATE_BYTES" not in archive.read("evidence.txt")
 
 
@@ -193,7 +193,7 @@ def test_verified_bundle_does_not_follow_replaced_worktree_symlink(tmp_path):
         profile="test", paths=("evidence.txt",),
     )
     with zipfile.ZipFile(output) as archive:
-        assert archive.read("evidence.txt") == b"COMMITTED_SOURCE\\n"
+        assert archive.read("evidence.txt") == b"COMMITTED_SOURCE\n"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlinks can require Windows privileges")
@@ -238,4 +238,4 @@ def test_verified_bundle_can_read_committed_blob_after_worktree_deletion(tmp_pat
         profile="test", paths=("evidence.txt",),
     )
     with zipfile.ZipFile(output) as archive:
-        assert archive.read("evidence.txt") == b"COMMITTED_SOURCE\\n"
+        assert archive.read("evidence.txt") == b"COMMITTED_SOURCE\n"
