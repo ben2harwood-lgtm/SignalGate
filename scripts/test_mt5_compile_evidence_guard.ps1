@@ -13,8 +13,9 @@ try {
     $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
 
     $cases = @(
-        @{ Label = "valid"; Exit = 0; Errors = 0; Warnings = 0; Binary = "nonempty"; SourceHash = $sourceHash; ExpectedPass = $true; Reason = "clean_log_zero_exit_fresh_ex5_source_unchanged" },
-        @{ Label = "nonzero-exit"; Exit = 2; Errors = 0; Warnings = 0; Binary = "nonempty"; SourceHash = $sourceHash; ExpectedPass = $false; Reason = "compiler_nonzero_exit" },
+        @{ Label = "valid-exit-zero"; Exit = 0; Errors = 0; Warnings = 0; Binary = "nonempty"; SourceHash = $sourceHash; ExpectedPass = $true; Reason = "clean_log_fresh_ex5_source_unchanged" },
+        @{ Label = "valid-exit-one"; Exit = 1; Errors = 0; Warnings = 0; Binary = "nonempty"; SourceHash = $sourceHash; ExpectedPass = $true; Reason = "clean_log_fresh_ex5_source_unchanged" },
+        @{ Label = "unexpected-exit-two"; Exit = 2; Errors = 0; Warnings = 0; Binary = "nonempty"; SourceHash = $sourceHash; ExpectedPass = $false; Reason = "compiler_unexpected_exit_code" },
         @{ Label = "compile-errors"; Exit = 0; Errors = 1; Warnings = 0; Binary = "nonempty"; SourceHash = $sourceHash; ExpectedPass = $false; Reason = "compiler_diagnostics_not_clean" },
         @{ Label = "compile-warnings"; Exit = 0; Errors = 0; Warnings = 1; Binary = "nonempty"; SourceHash = $sourceHash; ExpectedPass = $false; Reason = "compiler_diagnostics_not_clean" },
         @{ Label = "missing-ex5"; Exit = 0; Errors = 0; Warnings = 0; Binary = "missing"; SourceHash = $sourceHash; ExpectedPass = $false; Reason = "compiled_ex5_missing" },
