@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import math
+import secrets
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -653,6 +654,7 @@ async def _preview_screenshot(
     # fails extraction or its provider source has been revoked.
     context.user_data.pop("pending_signal_text", None)
     context.user_data.pop("awaiting_edit", None)
+    context.user_data.pop("pending_preview_token", None)
     user_id = update.effective_user.id
     source = await _provider_source_status(user_id)
     if source:
@@ -731,11 +733,15 @@ async def _preview_screenshot(
         )
         return
 
-    # Set confirmable state only after every validation and format check passed.
+    # Old message buttons must never authorise the current screenshot.
+    preview_token = secrets.token_hex(8)
     context.user_data["pending_signal_text"] = data.get("extracted_text", "")
+    context.user_data["pending_preview_token"] = preview_token
     await update.message.reply_text(
         preview,
-        reply_markup=extract_preview_keyboard(data.get("parser_status") == "VALID"),
+        reply_markup=extract_preview_keyboard(
+            data.get("parser_status") == "VALID", preview_token
+        ),
     )
 
 
@@ -743,16 +749,32 @@ async def on_signal_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Handle Confirm / Edit / Cancel on an extracted-signal preview."""
     query = update.callback_query
     await query.answer()
+    callback_data = query.data if isinstance(query.data, str) else ""
+    action, separator, token = callback_data.partition(":")
+    active_token = context.user_data.get("pending_preview_token")
+    if (
+        separator != ":"
+        or not isinstance(active_token, str)
+        or not secrets.compare_digest(token, active_token)
+    ):
+        # An old button cannot confirm/edit/cancel a newer candidate.
+        await query.edit_message_text(
+            "This screenshot preview has expired. Nothing was sent."
+        )
+        return
     if not await _can_submit_provider_signal(update):
+        context.user_data.pop("pending_signal_text", None)
+        context.user_data.pop("awaiting_edit", None)
+        context.user_data.pop("pending_preview_token", None)
         await query.edit_message_text(
             "Provider source is no longer connected. Nothing was sent."
         )
         return
 
-    action = query.data
     if action == "SIGNO":
         context.user_data.pop("pending_signal_text", None)
         context.user_data.pop("awaiting_edit", None)
+        context.user_data.pop("pending_preview_token", None)
         await query.edit_message_text("❌ Cancelled. Nothing was sent.")
         return
 
@@ -772,13 +794,16 @@ async def on_signal_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if not raw_text:
             context.user_data.pop("pending_signal_text", None)
             context.user_data.pop("awaiting_edit", None)
+            context.user_data.pop("pending_preview_token", None)
             await query.edit_message_text(
                 "Nothing to send — I couldn't read any text. Tap Edit next time."
             )
             return
-        result = await _create_and_broadcast(update, context, raw_text)
+        # Consume the preview before awaiting I/O: a second tap cannot reuse it.
         context.user_data.pop("pending_signal_text", None)
         context.user_data.pop("awaiting_edit", None)
+        context.user_data.pop("pending_preview_token", None)
+        result = await _create_and_broadcast(update, context, raw_text)
         await query.edit_message_text(f"{query.message.text}\n\n➡️ {result}")
 
 
@@ -794,6 +819,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     context.user_data.pop("awaiting_edit", None)
     context.user_data.pop("pending_signal_text", None)
+    context.user_data.pop("pending_preview_token", None)
     result = await _create_and_broadcast(update, context, raw_text)
     await update.message.reply_text(result)
 
