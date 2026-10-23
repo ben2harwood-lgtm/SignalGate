@@ -36,7 +36,7 @@ input long   MagicNumber                = 440044;
 input bool   DemoOnlyMode               = true;
 input int    MaxSpreadPoints            = 500;
 input int    MaxSlippagePoints          = 100;
-input bool   EnableTrading              = true;
+input bool   EnableTrading              = false;
 input string SymbolOverride             = "";
 
 //--- Globals -------------------------------------------------------------
@@ -57,6 +57,8 @@ double  g_active_tp2          = 0.0;
 double  g_active_tp3          = 0.0;
 ulong   g_child_tickets[3];               // opening deal tickets
 ulong   g_child_pos_ids[3];               // broker position ids for close-reason lookup
+int     g_child_tp_levels[3];             // TP stage actually assigned to each child
+double  g_child_open_volumes[3];          // actual broker-filled volume per child
 int     g_child_count         = 0;
 datetime g_open_time          = 0;
 bool    g_tp1_done            = false;
@@ -337,6 +339,8 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
 
       g_child_tickets[g_child_count] = trade.ResultDeal();
       g_child_pos_ids[g_child_count] = PositionIdOfDeal(trade.ResultDeal());
+      g_child_tp_levels[g_child_count] = i + 1;
+      g_child_open_volumes[g_child_count] = filled_volume;
       executed_lot += filled_volume;
       weighted_exec_price += filled_price * filled_volume;
       g_child_count++;
@@ -398,6 +402,8 @@ bool ExecuteSingleTicket(const string command_id, const string symbol,
 
    g_child_tickets[0] = trade.ResultDeal();
    g_child_pos_ids[0] = PositionIdOfDeal(trade.ResultDeal());
+   g_child_tp_levels[0] = (tp3 > 0.0) ? 3 : ((tp2 > 0.0) ? 2 : 1);
+   g_child_open_volumes[0] = executed_lot;
    g_child_count = 1;
    g_open_time = TimeCurrent();
    g_active_entry = trade.ResultPrice();
@@ -415,12 +421,12 @@ bool ExecuteSingleTicket(const string command_id, const string symbol,
 void ManageActiveCommand()
 {
    string cid = g_active_command_id;
-
    int open_children = CountOpenChildren(g_active_symbol, cid);
+   bool fully_closed = (open_children == 0 && AllTrackedChildrenClosedWithEvidence());
 
-   // Broker deal history is authoritative for why a position closed. Never
-   // infer a take-profit merely because the position disappeared.
-   if(open_children == 0 && CommandClosedByReason(DEAL_REASON_SL))
+   // Only the final, position-bound broker exit may establish a stop-out.
+   // A historical SL on a different child cannot classify a later manual exit.
+   if(fully_closed && CommandClosedByReason(DEAL_REASON_SL))
    {
       ReportManagementEvent(cid, "STOP_LOSS_HIT", "FULLY_CLOSED", "", "SUCCESS",
                             g_effective_sl, 0,0, g_active_sl, g_effective_sl);
@@ -430,15 +436,17 @@ void ManageActiveCommand()
       return;
    }
 
-   // TP1 stage: when the first child has closed (TP1 hit).
-   if(!g_tp1_done && open_children <= (g_child_count - 1) && g_child_count >= 2)
+   // An absent/closed child count is never proof of TP. Each milestone needs
+   // the exact child's opening deal, position id and complete TP exit history.
+   int tp1_child = ChildIndexForTpLevel(1);
+   if(!g_tp1_done && g_split_mode && g_child_count >= 2 &&
+      tp1_child >= 0 && ChildClosedByReason(tp1_child, DEAL_REASON_TP))
    {
       g_tp1_done = true;
       ReportManagementEvent(cid, "TP1_REACHED", "OPENED", "", "SUCCESS",
                             g_active_tp1, 0,0,0,0);
       ReportManagementEvent(cid, "TP1_CLOSE_SUCCESS", "TP1_DONE", "CLOSE_TP1",
                             "SUCCESS", g_active_tp1, 0,0,0,0);
-      // Move remaining SLs to breakeven (open price).
       bool moved = MoveRemainingSL(g_active_symbol, cid, g_active_entry);
       if(moved) g_effective_sl = g_active_entry;
       ReportManagementEvent(cid,
@@ -447,9 +455,9 @@ void ManageActiveCommand()
          g_active_entry, 0,0, g_active_sl, g_active_entry);
    }
 
-   // TP2 stage.
-   if(g_tp1_done && !g_tp2_done && g_active_tp2 > 0 &&
-      open_children <= (g_child_count - 2) && g_child_count >= 3)
+   int tp2_child = ChildIndexForTpLevel(2);
+   if(g_tp1_done && !g_tp2_done && g_split_mode && g_child_count >= 3 &&
+      tp2_child >= 0 && ChildClosedByReason(tp2_child, DEAL_REASON_TP))
    {
       g_tp2_done = true;
       ReportManagementEvent(cid, "TP2_REACHED", "TP1_DONE", "", "SUCCESS",
@@ -464,12 +472,17 @@ void ManageActiveCommand()
          g_active_tp1, 0,0, g_active_entry, g_active_tp1);
    }
 
-   // Full close. Only attribute TP3 when broker history says the final close
-   // was a take-profit. A manual/unknown close remains unattributed in the
-   // backend ledger rather than being fabricated as a win.
-   if(open_children == 0)
+   // Full close: TP3 is credited only to its own child and only with all
+   // prior configured TP stages proven (single-ticket fallback is distinct).
+   // Manual or unknown exits remain unattributed, including after earlier TPs.
+   if(fully_closed)
    {
-      if(!g_tp3_done && g_active_tp3 > 0 && CommandClosedByReason(DEAL_REASON_TP))
+      int tp3_child = ChildIndexForTpLevel(3);
+      bool preceding_tps = (g_child_count == 1 ||
+                            (g_tp1_done &&
+                             (ChildIndexForTpLevel(2) < 0 || g_tp2_done)));
+      if(!g_tp3_done && g_active_tp3 > 0.0 && tp3_child >= 0 &&
+         preceding_tps && ChildClosedByReason(tp3_child, DEAL_REASON_TP))
       {
          g_tp3_done = true;
          ReportManagementEvent(cid, "TP3_CLOSE_SUCCESS", "TP3_DONE",
@@ -546,24 +559,124 @@ bool IsChildPosition(const ulong position_id)
    return(false);
 }
 
-bool CommandClosedByReason(const long reason)
+int ChildIndexForTpLevel(const int level)
 {
-   datetime from = (g_open_time > 0) ? g_open_time - 5 : 0;
-   if(!HistorySelect(from, TimeCurrent() + 60))
-      return(false);
-   int total = HistoryDealsTotal();
-   for(int i = total - 1; i >= 0; i--)
+   for(int i = 0; i < g_child_count; i++)
+      if(g_child_tp_levels[i] == level)
+         return(i);
+   return(-1);
+}
+
+// Return TRUE on unknown position enumeration as well as an open child.
+// That intentionally prevents optimistic closure attribution on API failure.
+bool ChildPositionStillOpen(const ulong position_id)
+{
+   if(position_id == 0) return(true);
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      ulong deal = HistoryDealGetTicket(i);
-      if(deal == 0) continue;
-      if(HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber) continue;
-      if(HistoryDealGetInteger(deal, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
-      ulong posid = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
-      if(!IsChildPosition(posid)) continue;
-      if(HistoryDealGetInteger(deal, DEAL_REASON) == reason)
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         return(true);
+      if((ulong)PositionGetInteger(POSITION_IDENTIFIER) == position_id)
          return(true);
    }
    return(false);
+}
+
+// required_reason = -1 permits any broker-confirmed exit for FULLY_CLOSED,
+// but TP milestones require every exit on this exact child to be broker TP.
+// The opening deal, original volume, broker position id and symbol must match.
+bool ChildClosedByReason(const int child_index, const long required_reason)
+{
+   if(child_index < 0 || child_index >= g_child_count)
+      return(false);
+   ulong position_id = g_child_pos_ids[child_index];
+   if(position_id == 0 || g_child_tickets[child_index] == 0 ||
+      g_child_open_volumes[child_index] <= 0.0 ||
+      ChildPositionStillOpen(position_id))
+      return(false);
+
+   datetime from = (g_open_time > 0) ? g_open_time - 60 : 0;
+   if(!HistorySelect(from, TimeCurrent() + 60))
+      return(false);
+
+   bool opening_verified = false;
+   bool exit_seen = false;
+   double exited_volume = 0.0;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+   {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0) continue;
+      if((ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID) != position_id)
+         continue;
+      if(HistoryDealGetString(deal, DEAL_SYMBOL) != g_active_symbol)
+         return(false);
+
+      long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
+      if(deal == g_child_tickets[child_index])
+      {
+         if(entry != DEAL_ENTRY_IN ||
+            HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber)
+            return(false);
+         opening_verified = true;
+      }
+      else if(entry == DEAL_ENTRY_IN || entry == DEAL_ENTRY_INOUT)
+         return(false); // externally increased or reversed exposure
+
+      if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_OUT_BY)
+      {
+         if(required_reason >= 0 &&
+            (entry != DEAL_ENTRY_OUT ||
+             HistoryDealGetInteger(deal, DEAL_REASON) != required_reason))
+            return(false);
+         double volume = HistoryDealGetDouble(deal, DEAL_VOLUME);
+         if(volume <= 0.0) return(false);
+         exited_volume += volume;
+         exit_seen = true;
+      }
+   }
+   return(opening_verified && exit_seen &&
+          exited_volume >= g_child_open_volumes[child_index] - 1e-8);
+}
+
+bool AllTrackedChildrenClosedWithEvidence()
+{
+   if(g_child_count <= 0) return(false);
+   for(int i = 0; i < g_child_count; i++)
+      if(!ChildClosedByReason(i, -1))
+         return(false);
+   return(true);
+}
+
+// The most recent bound exit, not ANY earlier TP/SL on ANY child, determines
+// the reason of the final close. Same-millisecond ties use deal-ticket order.
+bool CommandClosedByReason(const long reason)
+{
+   datetime from = (g_open_time > 0) ? g_open_time - 60 : 0;
+   if(!HistorySelect(from, TimeCurrent() + 60))
+      return(false);
+   long latest_msc = -1;
+   ulong latest_ticket = 0;
+   long latest_reason = -1;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+   {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0) continue;
+      ulong position_id = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+      if(!IsChildPosition(position_id)) continue;
+      long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY)
+         continue;
+      long at_msc = HistoryDealGetInteger(deal, DEAL_TIME_MSC);
+      if(at_msc > latest_msc ||
+         (at_msc == latest_msc && deal > latest_ticket))
+      {
+         latest_msc = at_msc;
+         latest_ticket = deal;
+         latest_reason = HistoryDealGetInteger(deal, DEAL_REASON);
+      }
+   }
+   return(latest_ticket != 0 && latest_reason == reason);
 }
 
 void ClearActiveCommand()
@@ -573,6 +686,9 @@ void ClearActiveCommand()
    g_open_time = 0;
    g_effective_sl = 0.0;
    ArrayInitialize(g_child_pos_ids, 0);
+   ArrayInitialize(g_child_tickets, 0);
+   ArrayInitialize(g_child_tp_levels, 0);
+   ArrayInitialize(g_child_open_volumes, 0.0);
 }
 
 //+------------------------------------------------------------------+
@@ -601,21 +717,58 @@ int CountOpenChildren(const string symbol, const string command_id)
 bool MoveRemainingSL(const string symbol, const string command_id,
                      const double new_sl)
 {
+   double tick_size = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tick_size <= 0.0 || new_sl <= 0.0) return(false);
+   double tolerance = tick_size * 0.25;
    bool all_ok = true;
+   int seen = 0;
+
+   // Inspect bound position identifiers first: broker-mutated comments must
+   // not make an unchanged SL count as successful or broaden ownership.
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(!PositionSelectByTicket(ticket)) continue;
-      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
-      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
-      if(PositionGetString(POSITION_COMMENT) != "SG:" + command_id) continue;
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+      {
+         all_ok = false;
+         continue;
+      }
+      ulong position_id = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      if(!IsChildPosition(position_id)) continue;
+      seen++;
 
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber ||
+         PositionGetString(POSITION_SYMBOL) != symbol ||
+         PositionGetString(POSITION_COMMENT) != "SG:" + command_id)
+      {
+         all_ok = false;
+         continue;
+      }
+
+      double current_sl = PositionGetDouble(POSITION_SL);
       double tp = PositionGetDouble(POSITION_TP);
-      if(!trade.PositionModify(ticket, new_sl, tp))
+      if(MathAbs(current_sl - new_sl) > tolerance)
+      {
+         bool request_ok = trade.PositionModify(ticket, new_sl, tp);
+         uint retcode = trade.ResultRetcode();
+         // CTrade returning true is only structural validation, not broker OK.
+         if(!request_ok || retcode != TRADE_RETCODE_DONE)
+         {
+            Print("SignalGate SL modify rejected/unknown for ticket ", ticket,
+                  " retcode ", retcode);
+            all_ok = false;
+            continue;
+         }
+      }
+
+      // Reselect after the server response: cached pre-call SL is not proof.
+      if(!PositionSelectByTicket(ticket) ||
+         (ulong)PositionGetInteger(POSITION_IDENTIFIER) != position_id ||
+         PositionGetString(POSITION_COMMENT) != "SG:" + command_id ||
+         MathAbs(PositionGetDouble(POSITION_SL) - new_sl) > tolerance)
          all_ok = false;
    }
-   return(all_ok);
+   return(all_ok && seen > 0);
 }
 
 //+------------------------------------------------------------------+
