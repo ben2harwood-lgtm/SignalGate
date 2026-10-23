@@ -130,7 +130,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "wait for Confirm before any subscriber card is sent."
         )
         return
-    if config.is_signal_provider(user.id):
+    if not config.require_license and config.is_signal_provider(user.id):
         await update.message.reply_text(
             "SignalGate screenshot provider ready.\n"
             f"Your Telegram id is {user.id}.\n\n"
@@ -160,6 +160,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"{license_key}\n"
                 "Keep it private. SignalGate cannot display this key again; "
                 "if it is lost, an admin must rotate it."
+            )
+        if config.require_license:
+            message += (
+                "\n\nTo submit provider signals, generate a feed-bound source token "
+                "in the Provider Portal and send /connectprovider TOKEN."
             )
         await update.message.reply_text(message)
 
@@ -253,6 +258,11 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"Provider: {source.get('provider_display_name') or source.get('provider_name')}",
                 f"Feed: {source.get('feed_name')} ({source.get('feed_id')})",
             ]
+        )
+    elif config.require_license:
+        lines.append(
+            "Provider submissions require a feed-bound token from the "
+            "Provider Portal: /connectprovider TOKEN."
         )
     await update.message.reply_text("\n".join(lines))
 
@@ -415,7 +425,7 @@ def _require_signal_provider(update: Update) -> bool:
 def _role_name(telegram_user_id: int | str) -> str:
     if config.is_admin(telegram_user_id):
         return "admin"
-    if config.is_signal_provider(telegram_user_id):
+    if not config.require_license and config.is_signal_provider(telegram_user_id):
         return "screenshot provider"
     return "tester"
 
