@@ -649,7 +649,8 @@ bool AllTrackedChildrenClosedWithEvidence()
 }
 
 // The most recent bound exit, not ANY earlier TP/SL on ANY child, determines
-// the reason of the final close. Same-millisecond ties use deal-ticket order.
+// the final close reason. Broker deal tickets are NOT chronological proof when
+// different exits share DEAL_TIME_MSC: conflicting latest reasons fail closed.
 bool CommandClosedByReason(const long reason)
 {
    datetime from = (g_open_time > 0) ? g_open_time - 60 : 0;
@@ -658,6 +659,7 @@ bool CommandClosedByReason(const long reason)
    long latest_msc = -1;
    ulong latest_ticket = 0;
    long latest_reason = -1;
+   bool latest_ambiguous = false;
    for(int i = 0; i < HistoryDealsTotal(); i++)
    {
       ulong deal = HistoryDealGetTicket(i);
@@ -668,15 +670,20 @@ bool CommandClosedByReason(const long reason)
       if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY)
          continue;
       long at_msc = HistoryDealGetInteger(deal, DEAL_TIME_MSC);
-      if(at_msc > latest_msc ||
-         (at_msc == latest_msc && deal > latest_ticket))
+      long deal_reason = HistoryDealGetInteger(deal, DEAL_REASON);
+      if(at_msc > latest_msc)
       {
          latest_msc = at_msc;
          latest_ticket = deal;
-         latest_reason = HistoryDealGetInteger(deal, DEAL_REASON);
+         latest_reason = deal_reason;
+         latest_ambiguous = false;
+      }
+      else if(at_msc == latest_msc && deal_reason != latest_reason)
+      {
+         latest_ambiguous = true;
       }
    }
-   return(latest_ticket != 0 && latest_reason == reason);
+   return(latest_ticket != 0 && !latest_ambiguous && latest_reason == reason);
 }
 
 void ClearActiveCommand()
