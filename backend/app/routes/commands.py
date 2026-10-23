@@ -107,6 +107,11 @@ def command_received(
 ) -> SimpleStatus:
     command = _get_command_or_404(db, command_id)
     _require_command_owner(db, command, x_sg_license_key)
+    # The EA treats a 2xx acknowledgement as the final pre-order gate.
+    # Never authorise a command that has not been atomically claimed, has
+    # expired since polling, or has already reached a terminal state.
+    if command.status != "SENT_TO_EA" or crud._is_expired(command.expires_at):
+        raise HTTPException(status_code=409, detail="Command is not eligible for receipt")
     crud.mark_command_received(db, command)
     db.commit()
     return SimpleStatus(status="received")
