@@ -32,7 +32,7 @@ python scripts/provision_provider.py \
   --credential-output /secure/private/provider-onboarding-secret.json
 ```
 
-The secret file is created without overwrite and with owner-only mode where the operating system supports POSIX permissions. Delete it from the operator machine after confirmed secure delivery/rotation according to the agreed secret-handling process.
+The secret file is created without overwrite and with owner-only mode where the operating system supports POSIX permissions. The CLI refuses output paths inside the SignalGate source checkout (including symlinked parents), reducing accidental commits of raw one-time credentials to the public repository. Use a separate private directory, not the repository tree; still protect all other backup/sync locations. Delete the file from the operator machine after confirmed secure delivery/rotation according to the agreed secret-handling process.
 
 For an attended emergency/demo terminal only, `--show-secret` explicitly opts into displaying the one-time secret. Do not use that mode in captured CI/session logs.
 
