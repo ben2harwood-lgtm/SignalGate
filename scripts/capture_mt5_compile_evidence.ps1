@@ -202,8 +202,13 @@ try {
     $sourceHash = (Get-FileHash -LiteralPath $EAPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
     $compileLog = [System.IO.Path]::ChangeExtension($EAPath, ".log")
+    $compiledBinary = [System.IO.Path]::ChangeExtension($EAPath, ".ex5")
+    # Evidence requires output from THIS compile, not a stale generated binary.
     if (Test-Path -LiteralPath $compileLog) {
         Remove-Item -LiteralPath $compileLog -Force
+    }
+    if (Test-Path -LiteralPath $compiledBinary) {
+        Remove-Item -LiteralPath $compiledBinary -Force
     }
 
     $arguments = @(
@@ -217,7 +222,12 @@ try {
     $completedUtc = [DateTime]::UtcNow
 
     $result = Read-CompileLog -Path $compileLog
-    $pass = ($result.Errors -eq 0 -and $result.Warnings -eq 0)
+    . (Join-Path $PSScriptRoot "verify_mt5_compile_artifact.ps1")
+    $evidenceGate = Test-SignalGateCompileEvidence `
+        -CompilerExitCode $process.ExitCode -Errors $result.Errors -Warnings $result.Warnings `
+        -SourcePath $EAPath -ExpectedSourceSha256 $sourceHash `
+        -CompiledBinaryPath $compiledBinary
+    $pass = [bool]$evidenceGate.Passed
 
     $stamp = $startedUtc.ToString("yyyyMMddTHHmmssZ")
     $evidenceDir = Join-Path $EvidenceRoot ("{0}-MT5-COMPILE-{1}" -f $stamp, $CandidateSha.Substring(0, 12))
@@ -245,6 +255,10 @@ try {
         compiler_process_exit   = $process.ExitCode
         compile_errors          = $result.Errors
         compile_warnings        = $result.Warnings
+        source_sha256_after     = $evidenceGate.SourceSha256After
+        compiled_ex5_sha256     = $evidenceGate.CompiledEx5Sha256
+        compiled_ex5_size_bytes = $evidenceGate.CompiledEx5SizeBytes
+        evidence_gate_reason    = $evidenceGate.Reason
         result                  = $(if ($pass) { "PASS" } else { "FAIL" })
         source_copy             = "SignalGateEA.mq5"
         compile_log             = "SignalGateEA.log"
@@ -267,6 +281,10 @@ MetaTrader terminal version: $terminalVersion
 Compile errors: **$($result.Errors)**
 Compile warnings: **$($result.Warnings)**
 Compiler process exit code: $($process.ExitCode)
+EX5 SHA-256 (fresh output): $($evidenceGate.CompiledEx5Sha256)
+EX5 size (bytes): $($evidenceGate.CompiledEx5SizeBytes)
+Source SHA-256 after compile: $($evidenceGate.SourceSha256After)
+Evidence gate reason: $($evidenceGate.Reason)
 Started UTC: $($startedUtc.ToString("o"))
 Completed UTC: $($completedUtc.ToString("o"))
 
@@ -287,6 +305,7 @@ This receipt proves compilation of the recorded frozen source/candidate only. It
     Write-Host "  MetaEditor:    $metaEditorVersion"
     Write-Host "  Errors:        $($result.Errors)"
     Write-Host "  Warnings:      $($result.Warnings)"
+    Write-Host "  Evidence gate: $($evidenceGate.Reason)"
     Write-Host "  Result:        $($receipt.result)"
     Write-Host "  Evidence:      $evidenceDir"
 
