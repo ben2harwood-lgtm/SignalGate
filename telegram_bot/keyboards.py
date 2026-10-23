@@ -20,19 +20,23 @@ def trade_card_keyboard(signal_id: str) -> InlineKeyboardMarkup:
     )
 
 
-def extract_preview_keyboard(can_confirm: bool = True) -> InlineKeyboardMarkup:
-    """Confirm / Edit / Cancel buttons for a signal extracted from a screenshot.
+def extract_preview_keyboard(can_confirm: bool, preview_token: str) -> InlineKeyboardMarkup:
+    """Bind actions to one preview; older Telegram messages cannot authorise another.
 
-    No id is encoded: the candidate text is held in the bot's per-user state
-    until the provider confirms, edits, or cancels.
+    The token is an opaque, per-preview hex identifier, not an authentication
+    credential. Callback data stays below Telegram's 64-byte limit.
     """
+    if len(preview_token) != 16 or any(ch not in "0123456789abcdef" for ch in preview_token):
+        raise ValueError("Invalid preview identifier")
     rows = []
     if can_confirm:
-        rows.append([InlineKeyboardButton("✅ Confirm & Send", callback_data="SIGOK")])
+        rows.append([
+            InlineKeyboardButton("✅ Confirm & Send", callback_data=f"SIGOK:{preview_token}")
+        ])
     rows.append(
         [
-            InlineKeyboardButton("✏️ Edit", callback_data="SIGEDIT"),
-            InlineKeyboardButton("❌ Cancel", callback_data="SIGNO"),
+            InlineKeyboardButton("✏️ Edit", callback_data=f"SIGEDIT:{preview_token}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"SIGNO:{preview_token}"),
         ]
     )
     return InlineKeyboardMarkup(rows)
