@@ -15,6 +15,19 @@ Record:
 
 Do not change runtime code during an acceptance run. A runtime change creates a new candidate and invalidates receipts that depend on the old binary/source.
 
+When producing assessor ZIPs with `scripts/build_acceptance_bundle.py`, use its
+default verified-source mode. The declared candidate must match checkout HEAD,
+and every packaged file is read from that commit's immutable, regular Git blob,
+**not** from mutable working-tree content. Uncommitted edits, untracked files,
+and replaced local symlinks cannot be represented as SHA-verified source.
+Committed symlinks and non-regular tree entries are refused. Review the
+`MANIFEST.json` and its per-file hashes before sharing the bundle.
+
+`--allow-unverified-source` is only for explicitly labelled local draft
+packages and **does not** establish candidate provenance or release acceptance.
+To provide altered source for review, create a new candidate commit and rerun
+the appropriate build, compiler and acceptance checks.
+
 ## 2. MetaEditor + MT5 demo acceptance
 
 Primary instructions:
