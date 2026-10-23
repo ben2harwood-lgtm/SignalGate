@@ -58,7 +58,7 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.PHOTO, handlers.on_photo))
     app.add_handler(MessageHandler(filters.Document.IMAGE, handlers.on_document))
     app.add_handler(
-        CallbackQueryHandler(handlers.on_signal_preview, pattern=r"^SIG(OK|EDIT|NO)$")
+        CallbackQueryHandler(handlers.on_signal_preview, pattern=r"^SIG(OK|EDIT|NO)(?::[0-9a-f]{16})?$")
     )
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.on_text)
