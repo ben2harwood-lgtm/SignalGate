@@ -5,6 +5,8 @@ import io
 import os
 from pathlib import Path
 
+import pytest
+
 from app import crud, models, security
 
 from .conftest import register_user
@@ -386,3 +388,57 @@ def test_portal_and_bot_are_wired_to_tenant_source_routes(client):
     assert '"/provider-sources/telegram/signals"' in handler_source
     assert "/provider-sources/telegram/extract" in handler_source
     assert '"/provider-sources/telegram/recipients"' in handler_source
+
+
+@pytest.mark.parametrize("engine_setting", ["fake", ""])
+def test_hosted_screenshot_previews_never_return_fabricated_fake_signal(
+    client, db, monkeypatch, engine_setting,
+):
+    """Hosted previews must refuse canned data even if its parser status would be VALID."""
+    from app.vision_extractor import FakeExtractor
+
+    provider, feed, key = _provider(db, f"fake-guard-{engine_setting or 'default'}")
+    invite = _source_invite(client, provider, feed, key)
+    _connect(client, invite, "9388")
+
+    monkeypatch.setenv("SIGNAL_EXTRACTOR", engine_setting)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    def forbidden_fake_extract(*args, **kwargs):
+        raise AssertionError("Synthetic model was called in hosted mode")
+
+    monkeypatch.setattr(FakeExtractor, "extract", forbidden_fake_extract)
+    prior_hosted = security.settings.require_license
+    prior_bot_key = security.settings.registration_api_key
+    security.settings.require_license = True
+    security.settings.registration_api_key = "r" * 40
+    try:
+        generic = client.post(
+            "/signals/extract",
+            headers=_headers(provider, key),
+            files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+        )
+        source_bound = client.post(
+            "/provider-sources/telegram/extract",
+            params={"telegram_user_id": "9388"},
+            headers={"X-Registration-API-Key": "r" * 40},
+            files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+        )
+        for response in (generic, source_bound):
+            assert response.status_code == 503, response.text
+            assert "synthetic screenshot extraction" in response.text.lower()
+            assert "extracted_text" not in response.text
+
+        # Neither route wrote a fabricated extraction-success audit receipt.
+        rows = (
+            db.query(models.AuditLog)
+            .filter(models.AuditLog.event_type.in_([
+                "SIGNAL_IMAGE_EXTRACTED",
+                "PROVIDER_SOURCE_IMAGE_EXTRACTED",
+            ]))
+            .all()
+        )
+        assert not rows
+    finally:
+        security.settings.require_license = prior_hosted
+        security.settings.registration_api_key = prior_bot_key
