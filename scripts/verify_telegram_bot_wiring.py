@@ -180,6 +180,33 @@ def check_screenshot_extraction_fail_closed() -> None:
     assert not warnings
     assert state == {}
 
+    # A nominal HTTP 200 is not sufficient: JSON type and all fields are untrusted.
+    malformed = [
+        ("array root", [], ""),
+        ("null root", None, "null"),
+        ("non-string text", {"parser_status": "VALID", "extracted_text": []}, ""),
+        ("non-string status", {"parser_status": ["VALID"], "extracted_text": "BUY"}, ""),
+        ("empty valid signal", {"parser_status": "VALID", "extracted_text": "  "}, ""),
+        ("long text", {"parser_status": "VALID", "extracted_text": "B" * 5000}, ""),
+        ("long notes", {"parser_status": "VALID", "extracted_text": "BUY", "notes": "N" * 5000}, ""),
+        ("bad number", {"parser_status": "VALID", "extracted_text": "BUY", "tp1": []}, ""),
+        ("bool number", {"parser_status": "VALID", "extracted_text": "BUY", "tp1": True}, ""),
+        ("combined preview", {
+            "parser_status": "VALID", "extracted_text": "B" * 1900, "notes": "N" * 1900
+        }, ""),
+        ("UTF16 preview", {
+            "parser_status": "VALID", "extracted_text": "🚀" * 1400, "notes": "🚀" * 600
+        }, ""),
+    ]
+    for label, payload, body in malformed:
+        replies, warnings, requests, state = exercise(
+            status=200, payload=payload, body=body
+        )
+        assert requests == ["/provider-sources/telegram/extract"], label
+        assert len(replies) == 1 and "nothing was saved" in replies[0].lower(), label
+        assert state == {}, f"{label} retained stale or confirmable text"
+        assert not any("B" * 64 in item or "N" * 64 in item for item in replies + warnings)
+
     replies, warnings, requests, state = exercise(
         status=200,
         payload={
@@ -197,6 +224,39 @@ def check_screenshot_extraction_fail_closed() -> None:
     assert len(replies) == 1 and "Read from your screenshot" in replies[0]
     assert state == {"pending_signal_text": "EURUSD BUY SL 1.05 TP1 1.07"}
     assert not warnings
+
+
+def check_malformed_pending_confirmation_fails_closed() -> None:
+    """Legacy/corrupt pending user state can never be submitted as a signal."""
+    replies = []
+    calls = []
+
+    async def connected(_update):
+        return True
+
+    async def broadcast(*_args, **_kwargs):
+        calls.append("create")
+        return "created"
+
+    class Query:
+        data = "SIGOK"
+
+        async def answer(self):
+            return None
+
+        async def edit_message_text(self, message):
+            replies.append(message)
+
+    context = SimpleNamespace(user_data={"pending_signal_text": ["bad"], "awaiting_edit": True})
+    update = SimpleNamespace(callback_query=Query())
+    with (
+        patch.object(handlers, "_can_submit_provider_signal", connected),
+        patch.object(handlers, "_create_and_broadcast", broadcast),
+    ):
+        asyncio.run(handlers.on_signal_preview(update, context))
+    assert len(replies) == 1 and "nothing to send" in replies[0].lower()
+    assert calls == [], "Malformed user state reached signal creation"
+    assert context.user_data == {}, "Malformed confirmation left pending state"
 
 
 def check_hosted_legacy_provider_status_never_grants_identity() -> None:
@@ -317,6 +377,7 @@ def main() -> int:
     check_backend_http_fail_closed()
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()
+    check_malformed_pending_confirmation_fails_closed()
     check_hosted_legacy_provider_status_never_grants_identity()
     check_connectprovider_error_does_not_echo_backend_secrets()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")
