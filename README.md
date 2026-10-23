@@ -93,6 +93,15 @@ Those are release blockers, not hidden limitations.
 7. **Pause:** new command creation can be stopped.
 8. **Audit:** signal, decision, command and lifecycle events are recorded.
 
+The EA's command-received HTTP response is a **pre-order safety gate**: after EA
+service authentication and owning-licence checks, only an unexpired command in
+`SENT_TO_EA` may be acknowledged with HTTP 2xx. Unclaimed, expired and terminal
+commands are rejected (409), not silently re-authorised. This backend guard
+alone does **not** recover an already claimed command when an acknowledgement
+request times out or a response is lost; that separate PR #60 review finding
+remains a demo-execution HOLD pending a reviewed recovery design and actual
+MT5 DEMO receipts. No real-account or automatic-copy mode is enabled.
+
 See [Safety Rules](docs/SAFETY_RULES.md) and
 [Threat Model](docs/THREAT_MODEL.md).
 
