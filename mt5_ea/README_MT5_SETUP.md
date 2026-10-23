@@ -31,7 +31,11 @@ URL is whitelisted:
 
 ## 3. Enable algo trading
 
-- Click the **Algo Trading** toolbar button so it is green/enabled.
+- Keep the **Algo Trading** toolbar switch OFF while inspecting inputs. Enable
+  it only for an independently reviewed, exact-commit build on a positively
+  identified **DEMO** account, after the MT5 demo-scenario gate is satisfied.
+- `EnableTrading` also defaults to **false**. This per-EA input and the MT5
+  toolbar switch are separate; neither bypasses the demo-only guard.
 
 ## 4. Attach to a chart
 
@@ -43,7 +47,8 @@ URL is whitelisted:
    - `EAApiKey` = the server's EA service credential supplied through the approved onboarding channel;
    - `UserID` = local-demo compatibility only; hosted ownership is resolved from `LicenseKey`;
    - `DemoOnlyMode` = `true` (leave as-is);
-   - `SplitTicketDemoPartialMode` = `true` on a hedging demo account (the EA safely falls back on non-hedging/netting accounts).
+   - `SplitTicketDemoPartialMode` = `true` on a hedging demo account (the EA safely falls back on non-hedging/netting accounts);
+   - `EnableTrading` = `false` until independent EA review, exact MetaEditor compile and controlled MT5 broker-DEMO acceptance are complete.
 4. Click OK. A smiley face in the top-right of the chart means it is running.
 
 ## 5. Inputs reference
@@ -62,7 +67,7 @@ URL is whitelisted:
 | `DemoOnlyMode` | `true` | Hard safety; EA won't run if false/live |
 | `MaxSpreadPoints` | `500` | Reject if spread above this |
 | `MaxSlippagePoints` | `100` | Deviation allowance |
-| `EnableTrading` | `true` | Master on/off |
+| `EnableTrading` | `false` | **OFF by default.** Per-EA input; explicitly enable only for an accepted demo build. Not an emergency position-flattening switch. |
 | `SymbolOverride` | `""` | Force a chart symbol name if broker differs |
 
 ## 6. How it trades (split-ticket demo partial mode)
@@ -76,13 +81,17 @@ positions** that together emulate partial profit-taking:
 - TP3 child: `TP3Lot` (0.01), TP = TP3
 - Total demo exposure: ~0.04 lots, all sharing the same initial SL.
 
-Management:
-- When the TP1 child closes → report `TP1_CLOSE_SUCCESS`, move remaining child
-  SLs to **breakeven** (open price).
-- When the TP2 child closes → report `TP2_CLOSE_SUCCESS`, move TP3 child SL to
-  **TP1**.
-- When the TP3 child closes → report `TP3_CLOSE_SUCCESS` then `FULLY_CLOSED`.
-- If price hits SL on remaining tickets → `STOP_LOSS_HIT`.
+Management (pending independent review and real demo-broker validation):
+- TP-stage success requires the **assigned child's** original opening deal and
+  position identifier, and full-volume TP exit history. A child count or an
+  earlier child's TP exit cannot establish another milestone.
+- Following verified TP1/TP2 exits, remaining stops are moved to breakeven/TP1
+  respectively, but success is reported only after broker `DONE` and confirmed
+  current-position stop-loss readback. Rejections/unknowns are failures.
+- TP3 is credited only for its own broker TP exit and proven earlier milestones.
+  Manual or unknown full closes are never fabricated as TP successes.
+- `STOP_LOSS_HIT` uses the **final matching broker exit**, not an earlier SL.
+- These are source changes awaiting MetaEditor and actual broker-demo proof.
 
 Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
 0.01 lot, full close at the final TP, no impossible partials).
@@ -96,8 +105,13 @@ Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
 - **Demo/live detection** relies on `ACCOUNT_TRADE_MODE`. Most brokers report
   this correctly, but if a broker misreports it, keep `DemoOnlyMode = true`
   and only attach to a known demo account.
-- TP-hit detection is inferred from child positions closing (broker-side TP),
-  which is robust for the demo split-ticket design.
+- Broker history, position identifiers and live stop-loss readbacks can be
+  unavailable or incomplete. Stage/SL checks must fail closed in these cases.
+  Test rejected modifications, manual partial/final closes and broker-modified
+  comments on a controlled **demo** terminal before accepting the candidate.
+- `EnableTrading = false` pauses timer processing, including management and
+  reconciliation; it **does not flatten positions** or cancel broker-side
+  stops/targets. Check positions and manage them separately before pausing.
 
 ## 8. Error codes the EA reports
 
