@@ -58,6 +58,10 @@ is neither registered in hosted mode nor accepted by its handler. Local-demo
 compatibility remains unchanged; these are offline UI/authority-boundary checks,
 not a real Telegram or broker acceptance receipt.
 
+A failed `/connectprovider` request produces a generic token-reissue message,
+not an arbitrary backend `detail` string. The bot never reflects one-time
+token text or server diagnostics from that failure into Telegram.
+
 ## Screenshot extraction failures
 
 Each new screenshot attempt invalidates any earlier unconfirmed preview. Hosted mode
