@@ -38,6 +38,15 @@ For an attended emergency/demo terminal only, `--show-secret` explicitly opts in
 
 Treat an unexpectedly unpaused new feed as a setup failure and pause it before continuing.
 
+If the provisioning CLI reports a non-2xx response, transport failure, malformed JSON
+or an unexpected response shape, it intentionally suppresses backend response
+bodies and detailed exception strings in terminal/CI logs. **Do not retry blindly**:
+earlier organisation/provider/credential mutations may already have succeeded.
+Inspect tenant state through the authenticated admin interface and reconcile or
+rotate any issued credential before retrying. A private secret file may exist
+if failure occurred after credential issuance; handle it under the same secure
+credential-delivery/rotation procedure.
+
 Record:
 
 - organisation/provider ids;
