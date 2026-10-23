@@ -99,3 +99,21 @@ scenario `NOT_RUN`. Suffix handling, LIMIT refusal, netting behaviour and restar
 poll blocking still require the exact EA in an authorised, positively identified
 demo terminal. Retain actual broker/terminal receipts separately; do not relabel a
 synthetic snapshot or source assertion as broker evidence.
+
+
+### Candidate-test execution trust boundary
+
+The broker-free rehearsal executes Python/pytest code **from the selected candidate
+commit** on the operator's host. It is **not a sandbox or network isolation**:
+a malicious candidate can still read host files or attempt network access.
+Run it only on an inspected candidate in an isolated, disposable environment
+without developer, production, cloud or broker credentials; use external network
+restrictions if untrusted code must be evaluated.
+
+The test subprocess receives only a small operating-system runtime environment
+allowlist, a private temporary home/tmp directory, synthetic SQLite database
+configuration and demo-only settings. It does **not** inherit operator
+`GITHUB_TOKEN`, cloud credentials, provider secrets, `PYTHONPATH`,
+`PYTEST_ADDOPTS` or proxy variables. This reduces accidental exposure, but
+does not elevate synthetic rehearsal to real MetaEditor compilation, MT5
+broker-demo testing, security review or external release acceptance.
