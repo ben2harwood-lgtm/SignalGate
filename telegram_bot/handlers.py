@@ -762,7 +762,19 @@ async def on_signal_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "This screenshot preview has expired. Nothing was sent."
         )
         return
-    if not await _can_submit_provider_signal(update):
+    authorised = await _can_submit_provider_signal(update)
+    # The permission lookup awaits HTTP. Another screenshot can supersede this
+    # preview while it is suspended: check the nonce again after the await.
+    refreshed_token = context.user_data.get("pending_preview_token")
+    if (
+        not isinstance(refreshed_token, str)
+        or not secrets.compare_digest(token, refreshed_token)
+    ):
+        await query.edit_message_text(
+            "This screenshot preview has expired. Nothing was sent."
+        )
+        return
+    if not authorised:
         context.user_data.pop("pending_signal_text", None)
         context.user_data.pop("awaiting_edit", None)
         context.user_data.pop("pending_preview_token", None)
