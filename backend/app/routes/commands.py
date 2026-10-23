@@ -105,7 +105,14 @@ def command_received(
     db: Session = Depends(get_db),
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
-    command = _get_command_or_404(db, command_id)
+    # Serialize eligibility with concurrent execution-state transitions.
+    # PostgreSQL SELECT FOR UPDATE holds this row until our transaction commits.
+    # populate_existing prevents a cached ORM instance from masking updates.
+    command = db.get(
+        Command, command_id, populate_existing=True, with_for_update=True
+    )
+    if command is None:
+        raise HTTPException(status_code=404, detail="Command not found")
     _require_command_owner(db, command, x_sg_license_key)
     # The EA treats a 2xx acknowledgement as the final pre-order gate.
     # Never authorise a command that has not been atomically claimed, has
