@@ -198,6 +198,57 @@ def check_screenshot_extraction_fail_closed() -> None:
     assert state == {"pending_signal_text": "EURUSD BUY SL 1.05 TP1 1.07"}
     assert not warnings
 
+
+def check_hosted_legacy_provider_status_never_grants_identity() -> None:
+    """Even a stale local-provider flag cannot claim hosted provider authority."""
+    assert config.require_license is True
+    replies = []
+    calls = []
+
+    async def disconnected(_user_id):
+        return None
+
+    async def register(path, **_kwargs):
+        calls.append(("POST", path))
+        return {"license_key": None}
+
+    async def health(path, **_kwargs):
+        calls.append(("GET", path))
+        return {"admin_paused": True, "demo_only_mode": True}
+
+    async def reply_text(message, **_kwargs):
+        replies.append(message)
+
+    user = SimpleNamespace(
+        id=123456, username="offline-only", first_name="Test"
+    )
+    update = SimpleNamespace(
+        effective_user=user,
+        message=SimpleNamespace(reply_text=reply_text),
+    )
+    with (
+        patch.object(config, "is_signal_provider", lambda _user_id: True),
+        patch.object(config, "is_admin", lambda _user_id: False),
+        patch.object(handlers, "_provider_source_status", disconnected),
+        patch.object(handlers, "_backend_post", register),
+        patch.object(handlers, "_backend_get", health),
+    ):
+        asyncio.run(handlers.start(update, None))
+        asyncio.run(handlers.status(update, None))
+        assert handlers._role_name(user.id) == "tester"
+
+    assert calls == [
+        ("POST", "/register_user"), ("GET", "/health"),
+    ]
+    assert len(replies) == 2
+    assert "demo tester registered" in replies[0]
+    assert "Provider Portal" in replies[0]
+    assert "/connectprovider TOKEN" in replies[0]
+    assert "screenshot provider ready" not in replies[0].lower()
+    assert "Role: tester" in replies[1]
+    assert "Provider Portal" in replies[1]
+    assert "Role: screenshot provider" not in replies[1]
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -236,6 +287,7 @@ def main() -> int:
     check_backend_http_fail_closed()
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()
+    check_hosted_legacy_provider_status_never_grants_identity()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")
     return 0
 
