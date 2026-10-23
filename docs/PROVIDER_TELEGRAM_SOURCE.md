@@ -78,6 +78,24 @@ backend payload echoed into logs or Telegram. Offline mocked-transport checks
 exercise these boundaries; they are **not** actual Telegram delivery or MT5
 demo-account acceptance evidence.
 
+## Screenshot preview confirmation integrity
+
+Each rendered screenshot preview gets a fresh, short callback identifier; Confirm,
+Edit and Cancel buttons carry that identifier. Only the **current** matching
+preview can be acted on. Buttons in older Telegram messages, previous fixed
+`SIGOK`/`SIGEDIT`/`SIGNO` messages, malformed callbacks, repeated Confirm
+actions and lost in-memory preview state fail closed. An old button cannot
+confirm or cancel the newer screenshot's text. Confirmable state is consumed
+before the backend signal-creation call, so repeated taps cannot reuse it.
+
+The bot still rechecks provider-source permission before each valid callback;
+revoked sources clear the outstanding preview rather than forwarding it.
+The source's backend remains responsible for identity, tenant policy,
+subscriber consent and idempotent signal processing. The binding here is
+an **in-memory preview integrity guard**, not an authentication credential, a
+persistent queue or broker execution acceptance evidence. Restarting the bot
+invalidates old preview buttons; providers must send a new screenshot.
+
 ## Security properties
 
 - one-time token stored only as SHA-256 hash;
