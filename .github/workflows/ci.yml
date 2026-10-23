@@ -391,3 +391,6 @@ jobs:
             exit 1
           }
           Write-Host "PowerShell syntax OK"
+      - name: Test MT5 compiler evidence gate with offline adverse fixtures
+        shell: pwsh
+        run: .\scripts\test_mt5_compile_evidence_guard.ps1
