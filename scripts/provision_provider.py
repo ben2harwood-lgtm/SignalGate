@@ -204,14 +204,42 @@ def main() -> int:
     ) as client:
 
         def post(path: str, payload: dict | None = None) -> dict:
-            response = client.post(path, json=payload or {})
-            if response.status_code >= 400:
+            try:
+                response = client.post(path, json=payload or {})
+            except httpx.RequestError as exc:
+                # Exception strings can include request URLs or private headers.
                 print(
-                    f"Provisioning failed at {path}: {response.status_code} {response.text}",
+                    f"Provisioning API request failed ({type(exc).__name__}). "
+                    "The server may have applied an earlier request; inspect "
+                    "tenant state before retrying.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1) from None
+            if not 200 <= response.status_code < 300:
+                # Never echo an admin API's arbitrary error body into CLI/CI logs.
+                print(
+                    f"Provisioning API refused request (HTTP {response.status_code}). "
+                    "Response body suppressed; inspect tenant state before retrying.",
                     file=sys.stderr,
                 )
                 raise SystemExit(1)
-            return response.json()
+            try:
+                result = response.json()
+            except ValueError:
+                print(
+                    "Provisioning API returned invalid JSON. Inspect tenant "
+                    "state before retrying.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1) from None
+            if not isinstance(result, dict):
+                print(
+                    "Provisioning API returned an unexpected response type. "
+                    "Inspect tenant state before retrying.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+            return result
 
         org = post(
             "/admin/organizations",
