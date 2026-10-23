@@ -75,3 +75,14 @@ def test_successful_send_preserves_functionality_without_logging_payload(monkeyp
     assert captured["kwargs"]["timeout"] == 5.0
     for marker in (token, "PRIVATE_CHAT_MARKER", "PRIVATE_SIGNAL_MARKER"):
         assert marker not in caplog.text
+
+
+def test_httpx_info_request_log_cannot_expose_telegram_api_token(caplog):
+    # Exercise actual HTTPX logging with an offline transport and no network.
+    marker = "SYNTHETIC_BOT_PATH_TOKEN_MARKER"
+    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+    with caplog.at_level(logging.INFO):
+        with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200))) as client:
+            response = client.post("https://api.telegram.org/bot" + marker + "/sendMessage")
+    assert response.status_code == 200
+    assert marker not in caplog.text
