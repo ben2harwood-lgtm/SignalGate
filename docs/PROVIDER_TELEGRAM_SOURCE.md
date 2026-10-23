@@ -69,7 +69,12 @@ rechecks the persisted provider/feed binding immediately before extraction; if i
 has been revoked or cannot be verified, extraction stops without falling back to
 the local-demo endpoint. Backend error bodies and exception messages are not
 forwarded into Telegram or operator logs; users receive generic failure text and
-logs retain only HTTP status or exception class. Offline mocked-transport checks
+logs retain only HTTP status or exception class. Even a backend HTTP 200 is
+untrusted: malformed JSON roots, non-string extracted text, invalid preview fields,
+non-finite/oversized values, invalid Unicode and Telegram-length-overflow previews
+are rejected before any confirmable per-user state is stored. A corrupted older
+pending preview also fails closed on Confirm. Responses remain generic, with no
+backend payload echoed into logs or Telegram. Offline mocked-transport checks
 exercise these boundaries; they are **not** actual Telegram delivery or MT5
 demo-account acceptance evidence.
 
