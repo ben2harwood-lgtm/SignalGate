@@ -6,6 +6,10 @@ DEMO acceptance or resolve PR #60's acknowledgement-outage recovery finding.
 from __future__ import annotations
 
 import datetime as dt
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Event
+import time
 
 import pytest
 
@@ -120,3 +124,60 @@ def test_ack_does_not_waive_ea_authentication(client):
     _claim_command(client, user_id, command_id)
     assert _ack(client, command_id, headers={}).status_code == 401
     assert _ack(client, command_id).status_code == 200
+
+
+def test_ack_guard_fetches_fresh_locked_command():
+    """Structural companion; the PostgreSQL race test proves actual behaviour."""
+    source = (
+        Path(__file__).resolve().parents[1] / "app/routes/commands.py"
+    ).read_text(encoding="utf-8")
+    block = source.split("def command_received(", 1)[1].split(
+        "def report_execution(", 1
+    )[0]
+    assert "with_for_update=True" in block
+    assert "populate_existing=True" in block
+    assert block.index("with_for_update=True") < block.index(
+        'command.status != "SENT_TO_EA"'
+    )
+
+
+def test_ack_serializes_with_concurrent_terminal_commit_on_postgres(client):
+    """An ACK cannot return 200 based on stale pre-FAILURE status.
+
+    A separately committed writer holds a PostgreSQL FOR UPDATE row lock.
+    The HTTP ACK must block until its FAILED update commits, then see 409.
+    Skipped for SQLite, which cannot provide equivalent row-lock semantics.
+    """
+    with SessionLocal() as check:
+        if check.get_bind().dialect.name != "postgresql":
+            pytest.skip("requires PostgreSQL transaction row locking")
+
+    user_id, command_id = _approved_command(client)
+    _claim_command(client, user_id, command_id)
+    entered = Event()
+    with SessionLocal() as writer:
+        command = writer.get(models.Command, command_id, with_for_update=True)
+        assert command is not None
+        command.status = "FAILED"
+        writer.flush()  # The change is invisible until this writer commits.
+
+        def try_ack():
+            entered.set()
+            return _ack(client, command_id)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(try_ack)
+            try:
+                assert entered.wait(5), "ACK request thread did not start"
+                time.sleep(0.35)
+                assert not future.done(), (
+                    "ACK completed while an earlier terminal transition held "
+                    "the same PostgreSQL command row lock"
+                )
+            finally:
+                # Always release the lock, including on assertion failure.
+                writer.commit()
+            response = future.result(timeout=15)
+
+    assert response.status_code == 409
+    assert _status(command_id) == "FAILED"
