@@ -26,6 +26,11 @@ def exercise(tmp_path, *, mismatch: str) -> tuple[subprocess.CompletedProcess, b
         backup.write_bytes(b"mutated-after-manifest")
     elif mismatch == "multiple_records":
         manifest.write_text(record(backup) + record(other))
+    elif mismatch == "missing_target":
+        manifest.write_text(record(backup))
+        backup.unlink()
+    elif mismatch == "empty_manifest":
+        manifest.write_text("")
     else:
         assert mismatch == "valid"
         manifest.write_text(record(backup))
@@ -54,7 +59,7 @@ def exercise(tmp_path, *, mismatch: str) -> tuple[subprocess.CompletedProcess, b
     return result, marker.exists()
 
 
-@pytest.mark.parametrize("mismatch", ["other_file", "changed_target", "multiple_records"])
+@pytest.mark.parametrize("mismatch", ["other_file", "changed_target", "multiple_records", "missing_target", "empty_manifest"])
 def test_mismatched_checksum_manifest_never_invokes_restore(tmp_path, mismatch):
     result, invoked = exercise(tmp_path, mismatch=mismatch)
     assert result.returncode != 0
