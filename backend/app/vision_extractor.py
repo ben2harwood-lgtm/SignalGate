@@ -92,6 +92,13 @@ class ExtractionResult:
     notes: Optional[str] = None
 
 
+def _unreadable(engine: str, reason: str) -> ExtractionResult:
+    """Refuse untrusted or malformed vision output without a parsable trade."""
+    return ExtractionResult(
+        raw_text="", engine=engine, confidence="LOW", readable=False, notes=reason,
+    )
+
+
 class FakeExtractor:
     """Deterministic extractor for tests and API-less demos.
 
@@ -171,18 +178,25 @@ class ClaudeExtractor:
                 resp = http.post(ANTHROPIC_URL, headers=headers, json=body)
                 resp.raise_for_status()
                 payload = resp.json()
-        except Exception as exc:  # noqa: BLE001
-            return ExtractionResult(
-                raw_text="", engine=self.engine, confidence="LOW", readable=False,
-                notes=f"Vision API error: {exc}",
-            )
+        except Exception:  # noqa: BLE001
+            # Never return an HTTP transport/response exception string to the bot:
+            # these strings may contain credential-bearing request details.
+            return _unreadable(self.engine, "Vision service unavailable.")
 
-        text = "".join(
-            block.get("text", "")
-            for block in payload.get("content", [])
-            if block.get("type") == "text"
-        ).strip()
-        return _parse_model_json(text, engine=self.engine)
+        # Upstream JSON is untrusted. A malformed content envelope or block
+        # must refuse the whole preview, never produce a partial parse or 500.
+        if not isinstance(payload, dict) or not isinstance(payload.get("content"), list):
+            return _unreadable(self.engine, "Vision service returned invalid content.")
+        text_parts: list[str] = []
+        for block in payload["content"]:
+            if not isinstance(block, dict):
+                return _unreadable(self.engine, "Vision service returned invalid content.")
+            if block.get("type") == "text":
+                value = block.get("text")
+                if not isinstance(value, str):
+                    return _unreadable(self.engine, "Vision service returned invalid content.")
+                text_parts.append(value)
+        return _parse_model_json("".join(text_parts).strip(), engine=self.engine)
 
 
 def _parse_model_json(text: str, engine: str) -> ExtractionResult:
@@ -206,12 +220,39 @@ def _parse_model_json(text: str, engine: str) -> ExtractionResult:
             notes="Could not parse model response.",
         )
 
+    # In particular, bool("false") is True and list.strip() raises: never
+    # trust a model's booleans, text or notes without exact type checks.
+    readable = payload.get("readable")
+    raw_text = payload.get("signal_text")
+    confidence = payload.get("confidence", "LOW")
+    notes = payload.get("notes")
+    if (
+        type(readable) is not bool
+        or not isinstance(raw_text, str)
+        or not isinstance(confidence, str)
+        or confidence.strip().upper() not in {"HIGH", "MEDIUM", "LOW"}
+        or (notes is not None and not isinstance(notes, str))
+        or (isinstance(notes, str) and len(notes) > 2048)
+    ):
+        return _unreadable(engine, "Model response has invalid field types.")
+    if not readable:
+        # Do not let a structured false/unreadable result become a valid
+        # deterministic-parser preview merely because text was also present.
+        return _unreadable(engine, "Model did not identify a readable signal.")
+
+    normalized = raw_text.strip()
+    if (
+        not normalized
+        or len(normalized) > 2048
+        or any(ord(character) < 32 for character in normalized)
+    ):
+        return _unreadable(engine, "Model returned invalid signal text.")
     return ExtractionResult(
-        raw_text=(payload.get("signal_text") or "").strip(),
+        raw_text=normalized,
         engine=engine,
-        confidence=str(payload.get("confidence", "LOW")).upper(),
-        readable=bool(payload.get("readable", False)),
-        notes=payload.get("notes"),
+        confidence=confidence.strip().upper(),
+        readable=True,
+        notes=notes,
     )
 
 
