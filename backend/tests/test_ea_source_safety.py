@@ -30,14 +30,20 @@ def test_ea_rejects_limit_and_verifies_broker_fill_retcode():
     assert "TRADE_RETCODE_DONE_PARTIAL" in EA
 
 
+
 def test_ea_distinguishes_stop_and_tp_from_broker_deal_reason():
     assert "CommandClosedByReason(DEAL_REASON_SL)" in EA
-    assert "CommandClosedByReason(DEAL_REASON_TP)" in EA
+    assert "ChildClosedByReason(tp1_child, DEAL_REASON_TP)" in EA
+    assert "ChildClosedByReason(tp2_child, DEAL_REASON_TP)" in EA
+    assert "ChildClosedByReason(tp3_child, DEAL_REASON_TP)" in EA
     assert "DEAL_POSITION_ID" in EA
+    assert "DEAL_TIME_MSC" in EA
     assert "STOP_LOSS_HIT" in EA
-    full_close = EA.split("if(open_children == 0)", 1)[1]
-    assert "CommandClosedByReason" in full_close
-
+    manage = EA.split("void ManageActiveCommand()", 1)[1].split(
+        "//| Broker execution / close-reason helpers", 1
+    )[0]
+    assert "fully_closed && CommandClosedByReason(DEAL_REASON_SL)" in manage
+    assert "AllTrackedChildrenClosedWithEvidence()" in manage
 
 def test_ea_resolves_broker_symbol_suffix_and_netting_fallback():
     assert "ResolveBrokerSymbol(requested)" in EA
@@ -46,11 +52,74 @@ def test_ea_resolves_broker_symbol_suffix_and_netting_fallback():
     assert "g_split_mode" in EA
 
 
-def test_unknown_full_close_is_not_forced_to_tp3():
-    block = EA.split("// Full close. Only attribute TP3", 1)[1].split("//+------------------------------------------------------------------+", 1)[0]
-    assert "CommandClosedByReason(DEAL_REASON_TP)" in block
-    assert "FULLY_CLOSED" in block
 
+def test_unknown_full_close_is_not_forced_to_tp3():
+    block = EA.split("// Full close: TP3 is credited only to its own child", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert "if(fully_closed)" in block
+    assert "ChildClosedByReason(tp3_child, DEAL_REASON_TP)" in block
+    assert "preceding_tps" in block
+    assert "FULLY_CLOSED" in block
+    assert "CommandClosedByReason(DEAL_REASON_TP)" not in block
+
+
+def test_tp_stage_receipts_require_exact_child_broker_deal_and_full_volume():
+    manage = EA.split("void ManageActiveCommand()", 1)[1].split(
+        "//| Broker execution / close-reason helpers", 1
+    )[0]
+    for stage in (1, 2, 3):
+        assert f"ChildClosedByReason(tp{stage}_child, DEAL_REASON_TP)" in manage
+    assert "open_children <= (g_child_count" not in manage
+    assert "CommandClosedByReason(DEAL_REASON_TP)" not in manage
+    stage = EA.split("bool ChildClosedByReason(", 1)[1].split(
+        "bool AllTrackedChildrenClosedWithEvidence()", 1
+    )[0]
+    assert "ChildPositionStillOpen(position_id)" in stage
+    assert "g_child_tickets[child_index]" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_POSITION_ID)" in stage
+    assert "HistoryDealGetString(deal, DEAL_SYMBOL)" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_REASON) != required_reason" in stage
+    assert "DEAL_ENTRY_OUT" in stage
+    assert "DEAL_ENTRY_OUT_BY" in stage
+    assert "exited_volume += volume" in stage
+    assert "g_child_open_volumes[child_index] - 1e-8" in stage
+    assert "else if(entry == DEAL_ENTRY_IN || entry == DEAL_ENTRY_INOUT)" in stage
+
+
+def test_final_stop_reason_uses_latest_matching_child_exit_not_earlier_stop():
+    helper = EA.split("bool CommandClosedByReason(", 1)[1].split(
+        "void ClearActiveCommand()", 1
+    )[0]
+    assert "IsChildPosition(position_id)" in helper
+    assert "DEAL_TIME_MSC" in helper
+    assert "latest_ticket" in helper
+    assert "latest_reason == reason" in helper
+    assert "return(true)" not in helper
+
+
+def test_server_confirmed_stop_move_requires_readback_and_a_matching_child():
+    guard = EA.split("bool MoveRemainingSL(", 1)[1].split(
+        "//| Close all children", 1
+    )[0]
+    assert "IsChildPosition(position_id)" in guard
+    assert "POSITION_IDENTIFIER" in guard
+    assert 'PositionGetString(POSITION_COMMENT) != "SG:" + command_id' in guard
+    assert "trade.ResultRetcode()" in guard
+    assert "retcode != TRADE_RETCODE_DONE" in guard
+    assert "PositionSelectByTicket(ticket)" in guard
+    assert "MathAbs(PositionGetDouble(POSITION_SL) - new_sl) > tolerance" in guard
+    assert "return(all_ok && seen > 0)" in guard
+
+
+def test_trading_starts_explicitly_off_for_demo_account():
+    assert "input bool   EnableTrading              = false;" in EA
+    timer = EA.split("void OnTimer()", 1)[1].split(
+        "void ProcessCommand(", 1
+    )[0]
+    assert "if(!EnableTrading)" in timer
+    assert timer.index("if(!EnableTrading)") < timer.index("PollPendingCommand()")
 
 def test_ea_continuously_reconciles_open_broker_positions():
     assert "int ReconcileOpenPositions()" in EA
