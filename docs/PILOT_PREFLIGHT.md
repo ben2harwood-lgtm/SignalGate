@@ -59,6 +59,12 @@ object/list shape, or an incorrectly typed provider identity as a failed check,
 not proof of readiness. It issues a `FAIL` receipt when it can safely complete
 the remaining read-only checks, rather than accepting an incorrect response.
 A transport error remains an incomplete preflight requiring operator review.
+For a CLI transport/validation/filesystem failure, stderr reports only the
+exception **class**, not the exception message: third-party errors may embed
+backend responses, private URLs, credentials or local paths. Diagnose these
+failures through controlled operator procedures; do not copy raw errors into
+public GitHub issues or CI logs. No FAIL/PASS receipt should be inferred if the
+preflight exits before recording one.
 
 To avoid storing unexpected provider/customer data, only nonnegative integer
 export-summary counters from an explicit allowlist are copied into receipts;
