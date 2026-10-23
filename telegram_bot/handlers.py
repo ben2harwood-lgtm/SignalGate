@@ -631,11 +631,14 @@ def _valid_screenshot_preview_payload(data: Any) -> bool:
 
     for field in ("entry_price", "initial_stop_loss", "tp1", "tp2", "tp3"):
         value = data.get(field)
-        if value is not None and (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-        ):
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        try:
+            if not math.isfinite(value):
+                return False
+        except (OverflowError, ValueError):
             return False
     return True
 
@@ -707,10 +710,20 @@ async def _preview_screenshot(
 
     from keyboards import extract_preview_keyboard, format_extraction_preview
 
-    preview = format_extraction_preview(data)
-    # Telegram's 4096-character limit counts UTF-16 code units, not Python
-    # codepoints; reserve headroom for non-BMP emoji and presentation changes.
-    if len(preview.encode("utf-16-le")) // 2 > 3900:
+    try:
+        preview = format_extraction_preview(data)
+        # Telegram counts UTF-16 code units rather than Python codepoints.
+        # Also reject invalid Unicode in an otherwise well-typed JSON string.
+        preview_length = len(preview.encode("utf-16-le")) // 2
+        preview.encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, OverflowError):
+        logger.warning("backend screenshot extraction returned unrenderable preview")
+        await update.message.reply_text(
+            "Screenshot preview could not be rendered. Nothing was saved. "
+            "Please try another screenshot."
+        )
+        return
+    if preview_length > 3900:
         logger.warning("backend screenshot extraction preview exceeded display limit")
         await update.message.reply_text(
             "Screenshot preview was too long. Nothing was saved. "
