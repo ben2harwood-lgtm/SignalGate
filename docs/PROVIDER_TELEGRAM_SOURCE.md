@@ -48,6 +48,17 @@ When `REQUIRE_LICENSE=true` (hosted Provider Edition):
 
 Hosted Provider Edition therefore uses only the tenant source-binding flow for provider Telegram submission.
 
+## Screenshot extraction failures
+
+Each new screenshot attempt invalidates any earlier unconfirmed preview. Hosted mode
+rechecks the persisted provider/feed binding immediately before extraction; if it
+has been revoked or cannot be verified, extraction stops without falling back to
+the local-demo endpoint. Backend error bodies and exception messages are not
+forwarded into Telegram or operator logs; users receive generic failure text and
+logs retain only HTTP status or exception class. Offline mocked-transport checks
+exercise these boundaries; they are **not** actual Telegram delivery or MT5
+demo-account acceptance evidence.
+
 ## Security properties
 
 - one-time token stored only as SHA-256 hash;
