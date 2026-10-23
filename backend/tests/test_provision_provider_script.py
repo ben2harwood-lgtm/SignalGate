@@ -87,3 +87,69 @@ def test_write_credential_secret_never_overwrites_and_is_owner_only(tmp_path):
 
     with pytest.raises(FileExistsError):
         provision.write_credential_secret(target, record)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://127.0.0.1:8000",
+        "http://localhost:8000/",
+        "http://[::1]:8000/",
+        "https://provider.example.invalid",
+        "https://provider.example.invalid:8443/",
+    ],
+)
+def test_admin_provisioning_allows_loopback_http_or_remote_https(origin):
+    assert provision.validate_admin_backend_url(origin) == origin.rstrip("/")
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://provider.example.invalid",
+        "http://127.0.0.1.attacker.invalid",
+        "http://192.168.0.12:8000",
+        "http://[::]:8000",
+        "ftp://provider.example.invalid",
+        "https://user:fake-password@provider.example.invalid",
+        "https://provider.example.invalid/admin",
+        "https://provider.example.invalid?credential=FAKE",
+        "https://provider.example.invalid/#fragment",
+        "https://provider.example.invalid:INVALID",
+        "https://provider.example.invalid\\\\@attacker.invalid",
+        " https://provider.example.invalid",
+        "",
+        "not-an-origin",
+    ],
+)
+def test_admin_provisioning_invalid_origins_fail_before_any_network(
+    origin, monkeypatch, tmp_path, capsys
+):
+    """No admin mutation or credential delivery is attempted for unsafe origins."""
+    import sys
+
+    calls = []
+    def unexpected_client(**kwargs):
+        calls.append(kwargs)
+        raise AssertionError("Admin API connection must not be constructed")
+
+    monkeypatch.setattr(provision.httpx, "Client", unexpected_client)
+    monkeypatch.delenv("SIGNALGATE_PROVIDER_CREDENTIAL_OUTPUT", raising=False)
+    target = tmp_path / "never-created-secret.json"
+    monkeypatch.setattr(sys, "argv", [
+        str(SCRIPT),
+        "--backend", origin,
+        "--admin-id", "FAKE-ADMIN",
+        "--organization-name", "Fictional Organisation",
+        "--provider-name", "Fictional Provider",
+        "--credential-output", str(target),
+    ])
+
+    with pytest.raises(SystemExit) as exc:
+        provision.main()
+    assert exc.value.code == 2
+    assert calls == []
+    assert not target.exists()
+    captured = capsys.readouterr()
+    assert "FAKE" not in captured.out + captured.err
+    assert "Traceback" not in captured.out + captured.err
