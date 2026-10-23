@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -19,6 +20,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("signalgate")
 request_logger = logging.getLogger("signalgate.request")
 settings = get_settings()
+
+_REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}", re.ASCII)
+
+
+def _safe_request_id(value: str | None) -> str:
+    """Do not propagate unbounded or control-bearing client request IDs."""
+    if value and len(value) <= 128 and _REQUEST_ID_PATTERN.fullmatch(value):
+        return value
+    return uuid.uuid4().hex
+
 
 # Default settings seeded on first run.
 DEFAULT_SETTINGS = {
@@ -74,7 +85,7 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def _request_observability(request: Request, call_next):
-        request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+        request_id = _safe_request_id(request.headers.get("X-Request-Id"))
         started = time.perf_counter()
         status_code = 500
         try:
