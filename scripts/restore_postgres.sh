@@ -9,7 +9,7 @@ if ! actual_checksum_record="$(sha256sum "$BACKUP_FILE")"; then
   echo "Unable to hash requested BACKUP_FILE; refusing restore" >&2
   exit 2
 fi
-if ! cmp -s <(printf '%s\\n' "$actual_checksum_record") "$BACKUP_FILE.sha256"; then
+if ! cmp -s <(printf '%s\n' "$actual_checksum_record") "$BACKUP_FILE.sha256"; then
   echo "Checksum manifest does not match requested BACKUP_FILE; refusing restore" >&2
   exit 2
 fi
