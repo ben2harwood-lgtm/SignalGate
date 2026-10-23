@@ -10,12 +10,6 @@ import os
 
 from .config import Settings
 
-_UVICORN_ARGS = (
-    "uvicorn", "app.main:app", "--host", "0.0.0.0",
-    "--port", "8000", "--proxy-headers",
-)
-
-
 def validate_hosted_entrypoint(settings: Settings) -> None:
     """Refuse the local-header auth model in the hosted distribution image."""
     if not settings.require_license:
@@ -27,12 +21,21 @@ def validate_hosted_entrypoint(settings: Settings) -> None:
 
 
 def main() -> None:
+    settings = Settings()
     try:
-        validate_hosted_entrypoint(Settings())
+        validate_hosted_entrypoint(settings)
     except RuntimeError as exc:
         # The validation errors contain configuration *names*, not secret values.
         raise SystemExit(f"SignalGate hosted startup refused: {exc}") from None
-    os.execvp(_UVICORN_ARGS[0], list(_UVICORN_ARGS))
+
+    # The image defaults to Settings' loopback bind. Staging must explicitly
+    # select a container-internal interface with BACKEND_HOST; ports are bound
+    # to the host's loopback by compose.staging.yml, never an open host port.
+    argv = [
+        "uvicorn", "app.main:app", "--host", settings.backend_host,
+        "--port", "8000", "--proxy-headers",
+    ]
+    os.execvp(argv[0], argv)
 
 
 if __name__ == "__main__":
