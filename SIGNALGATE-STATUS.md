@@ -21,7 +21,31 @@ SignalGate does not supply proprietary investment signals, does not promise prof
 - The hosted schema is versioned through ten Alembic revisions:
   `20260918_0001` baseline -> `20260919_0002` execution safety -> `0003` replay identity -> `0004` provider tenancy -> `0005` provider branding -> `0006` feed policy -> `0007` customer-licence hashing -> `0008` subscription invites -> `0009` provider-source bindings -> `0010` audit hash chain.
 
-Use RC2 for all new external/manual acceptance work once its final freeze CI is green. RC1 remains an immutable historical checkpoint.
+Frozen RC2 is preserved as **historical machine-tested evidence**, not as a compiler-passing EA: its exact source FAILED official MetaEditor compilation. Do not use RC2 for broker-demo onboarding or new MT5 acceptance. A separately reviewed, compiler-passing successor SHA is required. RC1 remains an immutable historical checkpoint.
+
+## Frozen RC2 compiler exception — verified 23 October 2026
+
+**FAILED (exact frozen source):** `release/signalgate-demo-rc2-2026-09-19` at
+`3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2` produced
+**18 errors / 4 warnings** under official MetaEditor 5.0.0.6204 on
+19 September 2026 (workflow [35464044898](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464044898);
+log and evidence artifact `10590378689`). This was an actual compiler failure,
+**not** a failed Linux static/source-only check. Earlier green RC2 backend,
+security and runtime CI did not compile this EA successfully.
+
+**Different repaired candidate:** PR #55's exact head
+`d2dc404c94db02bd2d21cfa5a37674bfd748dea4` passed official
+MetaEditor with **0 errors / 0 warnings** (workflow
+[35464509608](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464509608)).
+That pass belongs only to the repaired SHA; it cannot retroactively clear
+frozen RC2. Likewise the 20 October provider-workspace compilation below
+does not constitute a frozen-RC2 compile pass.
+
+**Gate remains OPEN:** independently review a separately pinned successor,
+obtain its own exact-source compile receipt, then collect real MT5 broker-demo
+scenario receipts. PR #60's execution-attribution HOLD remains independent.
+Do not treat a synthetic rehearsal, a new document or a green CI matrix as
+broker-demo acceptance. Real-money and automatic copying remain blocked.
 
 ## RC2 improvements over RC1
 
@@ -67,7 +91,7 @@ RC2 does not broaden the trading mode. It improves readiness and evidence qualit
 
 These are **not software features to paper over**. They require external or deployed-environment evidence.
 
-1. **MT5 compiler/demo receipt** — compile the exact RC2 `SignalGateEA.mq5` in target MetaEditor with 0 errors / 0 warnings and retain the compiler log/screenshot.
+1. **MT5 compiler/demo receipt** — frozen RC2's exact EA already FAILED MetaEditor (18 errors / 4 warnings, run 35464044898). Pin a **new, independently reviewed successor candidate**, compile its exact `SignalGateEA.mq5` with 0 errors / 0 warnings, and retain versions/source SHA/log. Do not relabel PR #55 or later compile evidence as an RC2 pass.
 2. **MT5 demo scenario evidence** — run the scenarios in `docs/MT5_ACCEPTANCE.md`, including fill, rejection, suffix, LIMIT refusal, stop-out/manual-close attribution, netting fallback, lost-callback recovery, restart blocking and reconciliation conflict.
 3. **Central production telemetry** — connect a real log/metrics backend, alert routing, retention and on-call ownership; then accumulate measured SLO history.
 4. **Production-like recovery drill** — retain scheduled restore evidence and measured RTO/RPO, beyond CI smoke.
@@ -124,7 +148,7 @@ negative-control compile that produced errors and no EX5. Working evidence refer
 `work/provider-compile-8bb11393026d4bce925b51cc23d4284f/receipt.json`
 (in the coordinating build workspace; retain the packaged receipt with its source
 hash before candidate acceptance). This is compiler evidence only, not an MT5
-broker-demo scenario receipt or a declaration that frozen RC2's gate is complete.
+broker-demo scenario receipt, not proof that it compiled frozen RC2, and not a declaration that frozen RC2's gate is complete.
 The provider operations update was merged in PR #71 with successful full integration CI. It does not close broker, independent assurance or real-provider gates.
 
 ## 21 October 2026 post-RC integration — evidence only; not release acceptance
