@@ -6,6 +6,7 @@ logic itself — all decisions, idempotency and safety live in the backend.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -130,7 +131,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "wait for Confirm before any subscriber card is sent."
         )
         return
-    if config.is_signal_provider(user.id):
+    if not config.require_license and config.is_signal_provider(user.id):
         await update.message.reply_text(
             "SignalGate screenshot provider ready.\n"
             f"Your Telegram id is {user.id}.\n\n"
@@ -160,6 +161,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"{license_key}\n"
                 "Keep it private. SignalGate cannot display this key again; "
                 "if it is lost, an admin must rotate it."
+            )
+        if config.require_license:
+            message += (
+                "\n\nTo submit provider signals, generate a feed-bound source token "
+                "in the Provider Portal and send /connectprovider TOKEN."
             )
         await update.message.reply_text(message)
 
@@ -254,6 +260,11 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"Feed: {source.get('feed_name')} ({source.get('feed_id')})",
             ]
         )
+    elif config.require_license:
+        lines.append(
+            "Provider submissions require a feed-bound token from the "
+            "Provider Portal: /connectprovider TOKEN."
+        )
     await update.message.reply_text("\n".join(lines))
 
 
@@ -284,8 +295,11 @@ async def connect_provider_source(
         )
         return
     if result.get("detail"):
+        # Backend diagnostics can contain token text or server internals.
+        # Never echo an arbitrary error detail to a Telegram conversation.
         await update.message.reply_text(
-            f"Provider source not connected: {result.get('detail')}"
+            "Provider source not connected. The token may be invalid, expired, "
+            "or already used. Generate a new feed-bound token in the Provider Portal."
         )
         return
     provider_name = (
@@ -415,7 +429,7 @@ def _require_signal_provider(update: Update) -> bool:
 def _role_name(telegram_user_id: int | str) -> str:
     if config.is_admin(telegram_user_id):
         return "admin"
-    if config.is_signal_provider(telegram_user_id):
+    if not config.require_license and config.is_signal_provider(telegram_user_id):
         return "screenshot provider"
     return "tester"
 
@@ -596,12 +610,49 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+def _valid_screenshot_preview_payload(data: Any) -> bool:
+    """Refuse malformed extractor JSON before preview formatting or pending state."""
+    if not isinstance(data, dict):
+        return False
+    string_fields = (
+        "extracted_text", "parser_status", "symbol", "direction", "entry_type",
+        "confidence", "engine", "notes", "parser_error",
+    )
+    for field in string_fields:
+        value = data.get(field)
+        if value is not None and (not isinstance(value, str) or len(value) > 2048):
+            return False
+
+    raw_text = data.get("extracted_text", "")
+    if not isinstance(raw_text, str) or not isinstance(data.get("parser_status"), str):
+        return False
+    if data["parser_status"] == "VALID" and not raw_text.strip():
+        return False
+
+    for field in ("entry_price", "initial_stop_loss", "tp1", "tp2", "tp3"):
+        value = data.get(field)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        try:
+            if not math.isfinite(value):
+                return False
+        except (OverflowError, ValueError):
+            return False
+    return True
+
+
 async def _preview_screenshot(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     image_bytes: bytes,
     mime: str,
 ) -> None:
+    # Never leave an earlier unsent preview available when a new screenshot
+    # fails extraction or its provider source has been revoked.
+    context.user_data.pop("pending_signal_text", None)
+    context.user_data.pop("awaiting_edit", None)
     user_id = update.effective_user.id
     source = await _provider_source_status(user_id)
     if source:
@@ -609,6 +660,14 @@ async def _preview_screenshot(
         headers = _registration_headers()
         params = {"telegram_user_id": str(user_id)}
     else:
+        if config.require_license:
+            # The earlier photo permission check is not authority after a
+            # source revocation or backend lookup failure.
+            await update.message.reply_text(
+                "Provider source is no longer connected. Nothing was extracted. "
+                "Reconnect using a new token from the Provider Portal."
+            )
+            return
         # Local-demo legacy path only.
         url = f"{config.backend_base_url}/signals/extract"
         headers = _signal_provider_headers(user_id)
@@ -623,26 +682,59 @@ async def _preview_screenshot(
                 files={"file": ("signal", image_bytes, mime)},
             )
             if resp.status_code != 200:
+                # Backend error bodies may contain secrets or internal details.
+                logger.warning("backend screenshot extraction returned HTTP %s", resp.status_code)
                 await update.message.reply_text(
-                    f"Screenshot rejected by backend: {resp.text}"
+                    "Screenshot extraction was rejected by the backend. "
+                    "No signal was created."
                 )
                 return
             data = resp.json()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("extract failed: %s", exc)
+        # HTTP exceptions can include credential-bearing URLs or response text.
+        logger.warning("extract failed: %s", type(exc).__name__)
         await update.message.reply_text(
             "Couldn't read that image (backend/extractor error). Try again."
         )
         return
 
-    # Hold the candidate text in per-user state until Confirm/Edit/Cancel.
-    context.user_data["pending_signal_text"] = data.get("extracted_text", "")
-    context.user_data.pop("awaiting_edit", None)
+    # Treat extractor JSON as untrusted even on HTTP 200. A malformed response
+    # must not crash callbacks or leave an earlier preview confirmable.
+    if not _valid_screenshot_preview_payload(data):
+        logger.warning("backend screenshot extraction returned invalid preview shape")
+        await update.message.reply_text(
+            "Screenshot extraction returned an invalid response. Nothing was saved. "
+            "Please try another screenshot."
+        )
+        return
 
     from keyboards import extract_preview_keyboard, format_extraction_preview
 
+    try:
+        preview = format_extraction_preview(data)
+        # Telegram counts UTF-16 code units rather than Python codepoints.
+        # Also reject invalid Unicode in an otherwise well-typed JSON string.
+        preview_length = len(preview.encode("utf-16-le")) // 2
+        preview.encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, OverflowError):
+        logger.warning("backend screenshot extraction returned unrenderable preview")
+        await update.message.reply_text(
+            "Screenshot preview could not be rendered. Nothing was saved. "
+            "Please try another screenshot."
+        )
+        return
+    if preview_length > 3900:
+        logger.warning("backend screenshot extraction preview exceeded display limit")
+        await update.message.reply_text(
+            "Screenshot preview was too long. Nothing was saved. "
+            "Please try a clearer screenshot."
+        )
+        return
+
+    # Set confirmable state only after every validation and format check passed.
+    context.user_data["pending_signal_text"] = data.get("extracted_text", "")
     await update.message.reply_text(
-        format_extraction_preview(data),
+        preview,
         reply_markup=extract_preview_keyboard(data.get("parser_status") == "VALID"),
     )
 
@@ -675,8 +767,11 @@ async def on_signal_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     if action == "SIGOK":
-        raw_text = context.user_data.get("pending_signal_text", "").strip()
+        candidate = context.user_data.get("pending_signal_text")
+        raw_text = candidate.strip() if isinstance(candidate, str) else ""
         if not raw_text:
+            context.user_data.pop("pending_signal_text", None)
+            context.user_data.pop("awaiting_edit", None)
             await query.edit_message_text(
                 "Nothing to send — I couldn't read any text. Tap Edit next time."
             )
