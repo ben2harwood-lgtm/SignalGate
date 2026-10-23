@@ -55,6 +55,7 @@ def test_template_does_not_allow_ci_to_pass_external_acceptance():
     ):
         assert required in text
 
+
 def test_evidence_index_links_supplement_without_approval_claim():
     evidence_readme = RECEIPT.parent / "README.md"
     text = evidence_readme.read_text(encoding="utf-8")
