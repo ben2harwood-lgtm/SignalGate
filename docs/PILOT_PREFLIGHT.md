@@ -64,6 +64,17 @@ To avoid storing unexpected provider/customer data, only nonnegative integer
 export-summary counters from an explicit allowlist are copied into receipts;
 the complete raw export remains in memory only and is not written to disk.
 
+The same rule applies to the other response bodies: readiness and provider-auth
+diagnostics record only Boolean match results/HTTP codes, never unexpected
+backend-provided strings. Provider status is recorded only as ACTIVE or
+INACTIVE_OR_UNKNOWN, pause fields must be Booleans if present, feed identifiers
+must match the expected FED- operational-id format, and overview counters must
+be nonnegative integers (not Booleans). Unexpected field types fail the
+preflight and their raw values are omitted from the JSON and Markdown
+receipts. A forbidden export key produces a count, not a potentially sensitive
+nested key path. Receipt redaction is a defensive control, not a guarantee of
+the external backend's security or pilot acceptance.
+
 ## Candidate identity limitation in RC2
 
 RC2 does not expose a deployment build-id endpoint. Therefore this preflight records the candidate SHA **declared by the operator**, but cannot cryptographically prove the deployed backend is that SHA.
