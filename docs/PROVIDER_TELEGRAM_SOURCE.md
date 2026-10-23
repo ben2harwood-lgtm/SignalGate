@@ -48,6 +48,16 @@ When `REQUIRE_LICENSE=true` (hosted Provider Edition):
 
 Hosted Provider Edition therefore uses only the tenant source-binding flow for provider Telegram submission.
 
+## Hosted role display and legacy identifiers
+
+Hosted `/start` and `/status` never treat a locally configured legacy
+screenshot-provider id as provider authority. Without a persisted source
+binding, the bot displays the Provider Portal → one-time feed token →
+`/connectprovider TOKEN` path. The historic shared-code `/provider` command
+is neither registered in hosted mode nor accepted by its handler. Local-demo
+compatibility remains unchanged; these are offline UI/authority-boundary checks,
+not a real Telegram or broker acceptance receipt.
+
 ## Screenshot extraction failures
 
 Each new screenshot attempt invalidates any earlier unconfirmed preview. Hosted mode
