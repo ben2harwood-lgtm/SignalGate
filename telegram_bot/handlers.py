@@ -6,6 +6,7 @@ logic itself — all decisions, idempotency and safety live in the backend.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -609,6 +610,36 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+def _valid_screenshot_preview_payload(data: Any) -> bool:
+    """Refuse malformed extractor JSON before preview formatting or pending state."""
+    if not isinstance(data, dict):
+        return False
+    string_fields = (
+        "extracted_text", "parser_status", "symbol", "direction", "entry_type",
+        "confidence", "engine", "notes", "parser_error",
+    )
+    for field in string_fields:
+        value = data.get(field)
+        if value is not None and (not isinstance(value, str) or len(value) > 2048):
+            return False
+
+    raw_text = data.get("extracted_text", "")
+    if not isinstance(raw_text, str) or not isinstance(data.get("parser_status"), str):
+        return False
+    if data["parser_status"] == "VALID" and not raw_text.strip():
+        return False
+
+    for field in ("entry_price", "initial_stop_loss", "tp1", "tp2", "tp3"):
+        value = data.get(field)
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            return False
+    return True
+
+
 async def _preview_screenshot(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -664,14 +695,33 @@ async def _preview_screenshot(
         )
         return
 
-    # Hold the candidate text in per-user state until Confirm/Edit/Cancel.
-    context.user_data["pending_signal_text"] = data.get("extracted_text", "")
-    context.user_data.pop("awaiting_edit", None)
+    # Treat extractor JSON as untrusted even on HTTP 200. A malformed response
+    # must not crash callbacks or leave an earlier preview confirmable.
+    if not _valid_screenshot_preview_payload(data):
+        logger.warning("backend screenshot extraction returned invalid preview shape")
+        await update.message.reply_text(
+            "Screenshot extraction returned an invalid response. Nothing was saved. "
+            "Please try another screenshot."
+        )
+        return
 
     from keyboards import extract_preview_keyboard, format_extraction_preview
 
+    preview = format_extraction_preview(data)
+    # Telegram's 4096-character limit counts UTF-16 code units, not Python
+    # codepoints; reserve headroom for non-BMP emoji and presentation changes.
+    if len(preview.encode("utf-16-le")) // 2 > 3900:
+        logger.warning("backend screenshot extraction preview exceeded display limit")
+        await update.message.reply_text(
+            "Screenshot preview was too long. Nothing was saved. "
+            "Please try a clearer screenshot."
+        )
+        return
+
+    # Set confirmable state only after every validation and format check passed.
+    context.user_data["pending_signal_text"] = data.get("extracted_text", "")
     await update.message.reply_text(
-        format_extraction_preview(data),
+        preview,
         reply_markup=extract_preview_keyboard(data.get("parser_status") == "VALID"),
     )
 
@@ -704,8 +754,11 @@ async def on_signal_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     if action == "SIGOK":
-        raw_text = context.user_data.get("pending_signal_text", "").strip()
+        candidate = context.user_data.get("pending_signal_text")
+        raw_text = candidate.strip() if isinstance(candidate, str) else ""
         if not raw_text:
+            context.user_data.pop("pending_signal_text", None)
+            context.user_data.pop("awaiting_edit", None)
             await query.edit_message_text(
                 "Nothing to send — I couldn't read any text. Tap Edit next time."
             )
