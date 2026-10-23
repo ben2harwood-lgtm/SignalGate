@@ -251,6 +251,11 @@ def telegram_provider_source_extract(
         )
 
     extractor = get_extractor()
+    if settings.require_license and extractor.engine == "fake":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Synthetic screenshot extraction is unavailable in hosted mode.",
+        )
     extracted = extractor.extract(
         image_bytes,
         mime=file.content_type or "image/png",

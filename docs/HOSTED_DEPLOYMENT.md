@@ -58,6 +58,23 @@ Never commit:
 
 Provider API keys and customer EA licences are returned only at issuance/rotation and are stored by SignalGate only in hashed/last-four form according to `docs/CREDENTIALS.md`.
 
+### Screenshot-reader safety for hosted demo deployments
+
+The supplied `.env.hosted.example` intentionally uses `SIGNAL_EXTRACTOR=fake`
+without a model API key so installation itself never invokes a paid extractor.
+That engine returns canned, image-independent signal text for **offline local
+rehearsal only**. Hosted Provider Edition **refuses screenshot previews** from
+both extract routes when the selected engine is fake (including the implicit
+fallback when no real key is configured): the caller receives HTTP 503, not a
+fabricated valid screenshot. This does not prevent separately human-authored,
+deterministically validated text signals in the demo workflow.
+
+Do not disable `REQUIRE_LICENSE` or mislabel fake output as genuine OCR to
+work around the guard. Real hosted screenshot ingestion requires a separately
+approved extractor configuration, an authorised cost/key arrangement, and
+actual provider-demo evidence. The offline guard tests prove only refusal of
+synthetic image extraction; they do not clear any external acceptance gate.
+
 ## 4. Database
 
 Do **not** initialise hosted PostgreSQL with `scripts/init_db.py` or application `create_all()`.
