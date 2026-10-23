@@ -81,7 +81,7 @@ def test_untrusted_response_metadata_is_redacted_and_fails_closed(monkeypatch, t
     assert receipt["evidence"]["provider_status"] == "INACTIVE_OR_UNKNOWN"
     assert receipt["evidence"]["provider_paused"] is None
     assert receipt["evidence"]["feed_ids"] == []
-    assert "feed_count" not in receipt["evidence"]
+    assert receipt["evidence"]["feed_count"] == 1  # From typed feed list, not poisoned overview
     assert "active_accounts" not in receipt["evidence"]
     assert "command_count" not in receipt["evidence"]
     assert receipt["evidence"]["provider_export_summary"] == {}
