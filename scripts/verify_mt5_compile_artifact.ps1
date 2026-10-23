@@ -1,5 +1,8 @@
 # Shared fail-closed evidence predicate for official and operator MT5 compile receipts.
-# This checks source continuity and a nonempty EX5 produced after callers deleted old output.
+# MetaEditor 5 can exit 1 after a clean compilation. The log and newly generated
+# EX5 are the primary evidence; only observed exit codes 0/1 are permitted,
+# with the numeric code always retained in the receipt for independent review.
+# This checks source continuity and a nonempty EX5 after callers delete old output.
 # It does not establish broker-demo execution, EX5 authenticity or external acceptance.
 function Test-SignalGateCompileEvidence {
     [CmdletBinding()]
@@ -19,8 +22,8 @@ function Test-SignalGateCompileEvidence {
         CompiledEx5Sha256    = $null
         CompiledEx5SizeBytes = 0
     }
-    if ($CompilerExitCode -ne 0) {
-        $result.Reason = "compiler_nonzero_exit"
+    if ($CompilerExitCode -ne 0 -and $CompilerExitCode -ne 1) {
+        $result.Reason = "compiler_unexpected_exit_code"
         return [pscustomobject]$result
     }
     if ($Errors -ne 0 -or $Warnings -ne 0) {
@@ -53,6 +56,6 @@ function Test-SignalGateCompileEvidence {
     $result.CompiledEx5SizeBytes = [int64]$binary.Length
     $result.CompiledEx5Sha256 = (Get-FileHash -LiteralPath $CompiledBinaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $result.Passed = $true
-    $result.Reason = "clean_log_zero_exit_fresh_ex5_source_unchanged"
+    $result.Reason = "clean_log_fresh_ex5_source_unchanged"
     return [pscustomobject]$result
 }
