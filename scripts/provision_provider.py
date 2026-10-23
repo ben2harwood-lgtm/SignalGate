@@ -64,6 +64,15 @@ def validate_credential_output(raw_path: str) -> Path:
     parent = path.parent if str(path.parent) else Path(".")
     if not parent.exists() or not parent.is_dir():
         raise ValueError(f"credential output parent does not exist: {parent}")
+
+    # The source repository is public. Avoid creating one-time raw credentials
+    # anywhere inside its checkout, including through a symlinked parent.
+    checkout = Path(__file__).resolve().parents[1]
+    resolved = path.resolve(strict=False)
+    if resolved == checkout or checkout in resolved.parents:
+        raise ValueError(
+            "credential output must be outside the SignalGate repository"
+        )
     return path
 
 
