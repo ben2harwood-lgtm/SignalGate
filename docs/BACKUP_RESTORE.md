@@ -47,7 +47,7 @@ export BACKUP_AGE_IDENTITY_FILE='/secure/path/signalgate-backup-age-key.txt'
 bash scripts/restore_postgres.sh
 ```
 
-The restore script verifies the encrypted artifact checksum before decrypting to a restrictive temporary file, restores with `pg_restore --exit-on-error`, then removes the temporary plaintext.
+The restore script verifies that the checksum manifest matches the **exact requested backup file** (both digest and filename) before decrypting to a restrictive temporary file, restores with `pg_restore --exit-on-error`, then removes the temporary plaintext. A manifest that validates another file, contains extra records, or refers to changed bytes is refused. A SHA-256 checksum detects accidental mismatch; it is not a signature or proof of authenticity.
 
 Plaintext restore is refused unless `BACKUP_ALLOW_PLAINTEXT_RESTORE=true` is explicitly set.
 
