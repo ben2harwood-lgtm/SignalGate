@@ -76,4 +76,8 @@ python -m pytest -q
 
 - `scripts/init_db.py` — create tables + seed settings.
 - `scripts/seed_settings.py` — (re)seed default settings only.
-- `scripts/reset_local_db.py` — drop everything and recreate (LOCAL ONLY).
+- `scripts/reset_local_db.py` — **destructive LOCAL demo reset only**. Stop the local backend and bot first, then run from `backend/`:
+  ```bash
+  python ../scripts/reset_local_db.py --confirm-local-demo-reset
+  ```
+  Without this explicit flag it refuses to run. Even with confirmation, it refuses hosted/licensed or non-demo mode, PostgreSQL, memory/URI SQLite, and databases outside the canonical repository `signalgate.db` file. Never use this script in a hosted deployment, on a customer database, or as a substitute for migrations/backups.
