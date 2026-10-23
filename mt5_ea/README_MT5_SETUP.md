@@ -90,7 +90,10 @@ Management (pending independent review and real demo-broker validation):
   current-position stop-loss readback. Rejections/unknowns are failures.
 - TP3 is credited only for its own broker TP exit and proven earlier milestones.
   Manual or unknown full closes are never fabricated as TP successes.
-- `STOP_LOSS_HIT` uses the **final matching broker exit**, not an earlier SL.
+- `STOP_LOSS_HIT` uses the **latest matching broker exit**, not an earlier SL.
+  When distinct final exits share a broker millisecond but report conflicting
+  reasons, stop-out attribution fails closed rather than sorting by deal ticket.
+  `FULLY_CLOSED` then records closure without asserting a verified stop reason.
 - These are source changes awaiting MetaEditor and actual broker-demo proof.
 
 Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
