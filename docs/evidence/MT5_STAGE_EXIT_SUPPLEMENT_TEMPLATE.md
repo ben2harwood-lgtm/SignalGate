@@ -43,13 +43,14 @@ TP exit as proof that a specific TP-stage child closed by TP.
 | S4 | Final child manually closed AFTER earlier child TP | No `TP3_CLOSE_SUCCESS` or fabricated TP3; earlier TP must not be reused to attribute the final deal | NOT_RUN | |
 | S5 | Final child stop-loss closed AFTER earlier child TP | Specific final child `DEAL_REASON_SL` produces stop-loss attribution, not TP3; open/closed ledger remains consistent | NOT_RUN | |
 | S6 | Unrelated historical TP deal exists | Different command, magic, symbol or position cannot satisfy this command's TP1/TP2/TP3 stages | NOT_RUN | |
-| S7 | Broker rejects remaining-child stop modification | No `SL_MOVE_BREAKEVEN_SUCCESS` / `SL_MOVE_LOCK_PROFIT_SUCCESS` after rejected `PositionModify`; record failure, `ResultRetcode()` and unchanged broker SL | NOT_RUN | |
-| S8 | Child position ID/comment missing or broker-mutated | No guessed ownership or TP/SL attribution; record reconciliation ambiguity and prevent unsafe new execution pending resolution | NOT_RUN | |
+| S7 | Broker rejects remaining-child stop modification | No `SL_MOVE_BREAKEVEN_SUCCESS` / `SL_MOVE_TP1_SUCCESS` after rejected `PositionModify`; record failure, `ResultRetcode()` and unchanged broker SL | NOT_RUN | |
+| S8 | Child position ID/comment missing or broker-mutated, including EA restart | No guessed TP/SL attribution; after a broker removes the `SG:` comment and the EA restarts, prove orphan detection blocks new execution. If ownership cannot be established or polling is not blocked, mark FAIL/INCONCLUSIVE and retain the HOLD | NOT_RUN | |
 | S9 | Final TP3 child closes after earlier proven TP exits | Only the final mapped child with its OWN `DEAL_REASON_TP` may yield `TP3_CLOSE_SUCCESS`; prior child TP cannot substitute for final broker exit | NOT_RUN | |
+| S10 | Conflicting broker exits at the same latest millisecond | Bound children with conflicting `DEAL_REASON_SL` and manual/unknown exit reasons at the same latest `DEAL_TIME_MSC` must NOT emit `STOP_LOSS_HIT` based on deal-ticket order; retain exact deal IDs/reasons and `FULLY_CLOSED` without a fabricated stop reason | NOT_RUN | |
 
 ## Evidence review and decision
 
-For **each** S1–S9 row, the independent reviewer checks the original demo
+For **each** S1–S10 row, the independent reviewer checks the original demo
 terminal/broker deal history against the EA journal and backend audit receipts,
 ensures negative scenarios generated **no** forbidden success event, and verifies
 that the record belongs to this exact tested candidate and demo account.
