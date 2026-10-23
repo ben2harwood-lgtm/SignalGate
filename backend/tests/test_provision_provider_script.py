@@ -153,3 +153,144 @@ def test_admin_provisioning_invalid_origins_fail_before_any_network(
     captured = capsys.readouterr()
     assert "FAKE" not in captured.out + captured.err
     assert "Traceback" not in captured.out + captured.err
+
+
+def _run_provisioning_mocked(monkeypatch, capsys, tmp_path, respond):
+    """Exercise CLI using isolated synthetic HTTP; never reach a real API."""
+    import sys
+    import httpx
+
+    calls = []
+    target = tmp_path / "synthetic-credential.json"
+    original_client = provision.httpx.Client
+
+    def handle(request):
+        calls.append(request.url.path)
+        return respond(request)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            provision.httpx, "Client",
+            lambda **kwargs: original_client(
+                **kwargs, transport=httpx.MockTransport(handle)
+            ),
+        )
+        patcher.delenv("SIGNALGATE_PROVIDER_CREDENTIAL_OUTPUT", raising=False)
+        patcher.setattr(sys, "argv", [
+            str(SCRIPT),
+            "--backend", "https://provision.example.invalid",
+            "--admin-id", "SYNTHETIC-ADMIN",
+            "--organization-name", "Fictional Organisation",
+            "--provider-name", "Fictional Provider",
+            "--credential-output", str(target),
+        ])
+        with pytest.raises(SystemExit) as error:
+            provision.main()
+    return error.value.code, capsys.readouterr(), calls, target
+
+
+@pytest.mark.parametrize("status", [302, 403, 500])
+def test_provisioning_error_body_is_never_printed(
+    monkeypatch, capsys, tmp_path, status
+):
+    import httpx
+
+    secret = "SYNTHETIC-ADMIN-ERROR-SECRET"
+
+    def respond(request):
+        return httpx.Response(status, text=f"private failure: {secret}")
+
+    code, captured, calls, target = _run_provisioning_mocked(
+        monkeypatch, capsys, tmp_path, respond
+    )
+    assert code == 1
+    assert calls == ["/admin/organizations"]
+    assert not target.exists()
+    assert secret not in captured.out + captured.err
+    assert str(status) in captured.err
+    assert "inspect tenant state" in captured.err.lower()
+
+
+def test_provisioning_transport_exception_is_not_printed(
+    monkeypatch, capsys, tmp_path
+):
+    import httpx
+
+    secret = "SYNTHETIC-TRANSPORT-EXCEPTION-SECRET"
+
+    def respond(request):
+        raise httpx.ConnectError(f"remote token={secret}", request=request)
+
+    code, captured, calls, target = _run_provisioning_mocked(
+        monkeypatch, capsys, tmp_path, respond
+    )
+    assert code == 1
+    assert calls == ["/admin/organizations"]
+    assert not target.exists()
+    assert secret not in captured.out + captured.err
+    assert "ConnectError" in captured.err
+    assert "inspect tenant state" in captured.err.lower()
+
+
+@pytest.mark.parametrize("shape", ["invalid-json", "unexpected-list"])
+def test_provisioning_invalid_success_body_fails_closed_without_echo(
+    monkeypatch, capsys, tmp_path, shape
+):
+    import httpx
+
+    secret = "SYNTHETIC-MALFORMED-RESPONSE-SECRET"
+
+    def respond(request):
+        if shape == "invalid-json":
+            return httpx.Response(200, text=f"<private>{secret}</private>")
+        return httpx.Response(200, json=[secret])
+
+    code, captured, calls, target = _run_provisioning_mocked(
+        monkeypatch, capsys, tmp_path, respond
+    )
+    assert code == 1
+    assert calls == ["/admin/organizations"]
+    assert not target.exists()
+    assert secret not in captured.out + captured.err
+    assert "inspect tenant state" in captured.err.lower()
+
+
+def test_feed_failure_after_credential_issuance_does_not_leak_secret(
+    monkeypatch, capsys, tmp_path
+):
+    import httpx
+
+    api_secret = "SYNTHETIC-ISSUED-PROVIDER-KEY"
+    error_secret = "SYNTHETIC-SECRET-IN-FEED-ERROR"
+    expected = [
+        "/admin/organizations",
+        "/admin/providers",
+        "/admin/providers/PROVIDER-SYNTHETIC/credentials",
+        "/admin/providers/PROVIDER-SYNTHETIC/feeds",
+    ]
+
+    def respond(request):
+        if request.url.path == expected[0]:
+            return httpx.Response(200, json={"id": "ORG-SYNTHETIC"})
+        if request.url.path == expected[1]:
+            return httpx.Response(200, json={"id": "PROVIDER-SYNTHETIC"})
+        if request.url.path == expected[2]:
+            return httpx.Response(200, json={
+                "credential_id": "PCRED-SYNTHETIC",
+                "api_key": api_secret,
+                "label": "initial-onboarding",
+            })
+        if request.url.path == expected[3]:
+            return httpx.Response(500, text=f"internal error: {error_secret}")
+        raise AssertionError("Unexpected synthetic request")
+
+    code, captured, calls, target = _run_provisioning_mocked(
+        monkeypatch, capsys, tmp_path, respond
+    )
+    assert code == 1
+    assert calls == expected
+    assert target.exists()
+    assert json.loads(target.read_text())["provider_api_key"] == api_secret
+    assert api_secret not in captured.out + captured.err
+    assert error_secret not in captured.out + captured.err
+    assert "inspect tenant state" in captured.err.lower()
