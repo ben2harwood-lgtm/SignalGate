@@ -248,3 +248,32 @@ def test_broker_suffix_resolution_refuses_ambiguous_matches():
     assert "matches != 1" in block
     assert "Ambiguous broker symbol suffix match" in block
     assert "refusing to guess" in block
+
+
+def test_ea_accepts_only_positive_demo_account_mode_at_start_and_each_timer():
+    """Source guard: no negative-only 'not REAL' account classification."""
+    helper = EA.split("bool IsDemoAccount()", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert "ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO" in helper
+    assert "IsLiveAccount" not in EA
+    init = EA.split("int OnInit()", 1)[1].split("void OnDeinit(", 1)[0]
+    timer = EA.split("void OnTimer()", 1)[1].split("void ProcessCommand(", 1)[0]
+    assert "if(!IsDemoAccount())" in init
+    assert "if(!IsDemoAccount())" in timer
+    assert timer.index("if(!IsDemoAccount())") < timer.index("if(!EnableTrading)")
+
+
+def test_unidentified_or_broker_mutated_open_positions_block_new_demo_orders():
+    """All existing positions/orders block even if comment or magic is lost."""
+    timer = EA.split("void OnTimer()", 1)[1].split("void ProcessCommand(", 1)[0]
+    process = EA.split("void ProcessCommand(", 1)[1].split(
+        "bool ExecuteSplitTicket(", 1
+    )[0]
+    account_flat_guard = "PositionsTotal() != 0 || OrdersTotal() != 0"
+    assert account_flat_guard in timer
+    assert timer.index(account_flat_guard) < timer.index("PollPendingCommand()")
+    assert process.count(account_flat_guard) >= 2
+    assert process.index(account_flat_guard) < process.index("AckReceived(command_id)")
+    assert process.rindex(account_flat_guard) > process.index("AckReceived(command_id)")
+    assert process.count("!IsDemoAccount()") >= 2

@@ -3,8 +3,11 @@
 This Expert Advisor connects MetaTrader 5 to the SignalGate backend. It polls
 for approved, structured commands and places **demo trades only**.
 
-> ⚠️ **Demo only.** The EA refuses to run on a live account. v1 has no live
-> trading support by design. Use a broker **demo** account.
+> ⚠️ **Demo only.** The EA requires a positively identified MT5 DEMO account;
+> REAL, CONTEST and unknown modes are refused at startup and each timer cycle.
+> Use a dedicated **flat** broker demo account for testing. Any existing open
+> position or pending order blocks new command polling, even if its broker
+> comment/magic was changed or lost after a restart.
 
 ## 1. Compile the exact candidate EA
 
@@ -105,9 +108,16 @@ Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
   deterministic extractor (`JsonGet*`) tuned to the **exact** backend command
   shape. It is not a general JSON parser; if the backend payload shape changes,
   update those helpers. No external/unbundled libraries are required.
-- **Demo/live detection** relies on `ACCOUNT_TRADE_MODE`. Most brokers report
-  this correctly, but if a broker misreports it, keep `DemoOnlyMode = true`
-  and only attach to a known demo account.
+- **Positive DEMO detection** requires `ACCOUNT_TRADE_MODE_DEMO` at startup
+  and every timer cycle. REAL, CONTEST and unknown values fail closed. A broker
+  that misreports its account mode is an unresolved external dependency; verify
+  the terminal account independently before any controlled broker-demo tests.
+- **Flat account prerequisite:** when no command is actively managed in memory,
+  fresh polling is blocked by *any* open position or pending order, regardless
+  of symbol, position comment or magic. This conservative demo-only isolation
+  catches broker-mutated/orphan positions after restart but also blocks new
+  commands while unrelated/manual positions exist. It cannot prove orphan
+  identity or reconstruct management state; broker-demo S8 remains `NOT_RUN`.
 - Broker history, position identifiers and live stop-loss readbacks can be
   unavailable or incomplete. Stage/SL checks must fail closed in these cases.
   Test rejected modifications, manual partial/final closes and broker-modified

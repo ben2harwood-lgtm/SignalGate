@@ -81,10 +81,10 @@ int OnInit()
       return(INIT_FAILED);
    }
 
-   // SAFETY: refuse to run against a live account.
-   if(IsLiveAccount())
+   // Positive-only DEMO check: contest, real and unknown accounts all fail.
+   if(!IsDemoAccount())
    {
-      Print("FATAL: Account appears to be LIVE. SignalGate is demo only. Refusing.");
+      Print("FATAL: Account is not positively identified as MT5 DEMO. Refusing.");
       ReportDemoOnlyViolation();
       return(INIT_FAILED);
    }
@@ -124,6 +124,12 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
+   // Account switches must not convert this DEMO-only EA into an order sender.
+   if(!IsDemoAccount())
+   {
+      Print("SignalGate: account no longer confirmed DEMO; timer blocked.");
+      return;
+   }
    if(!EnableTrading)
       return;
 
@@ -145,6 +151,16 @@ void OnTimer()
    {
       Print("SignalGate position(s) found without active in-memory state; "
             "reconciled with backend and polling is blocked until flat.");
+      return;
+   }
+
+   // Broker comments and magic can be changed, lost, or unavailable after
+   // restart. No new command can be trusted on a non-flat demo account.
+   // This conservative gate intentionally includes manual/unrelated positions.
+   if(PositionsTotal() != 0 || OrdersTotal() != 0)
+   {
+      Print("SignalGate: account has open position(s)/order(s); "
+            "new command polling blocked until the DEMO account is flat.");
       return;
    }
 
@@ -253,12 +269,29 @@ void ProcessCommand(const string command_id, const string json)
       return;
    }
 
+   // Re-check after polling (and after server acknowledgement): manual,
+   // orphaned or broker-mutated positions must never overlap a new order.
+   if(!IsDemoAccount() || PositionsTotal() != 0 || OrdersTotal() != 0)
+   {
+      ReportError(command_id, "TRADING_DISABLED",
+                  "Requires confirmed DEMO account with no open positions/orders");
+      return;
+   }
+
    // Acknowledge receipt before execution. Fail closed if the backend no
    // longer accepts this EA/customer/command or cannot be reached.
    if(!AckReceived(command_id))
    {
       Print("Command acknowledgement failed; refusing broker execution for ",
             command_id, " HTTP=", g_last_http_code);
+      return;
+   }
+
+   // Re-check just before broker execution to reduce poll/ack race exposure.
+   if(!IsDemoAccount() || PositionsTotal() != 0 || OrdersTotal() != 0)
+   {
+      ReportError(command_id, "TRADING_DISABLED",
+                  "DEMO account changed or became non-flat after acknowledgement");
       return;
    }
 
@@ -827,13 +860,10 @@ bool NormalizeLot(const string symbol, double &lot)
 //+------------------------------------------------------------------+
 //| Account demo/live detection                                     |
 //+------------------------------------------------------------------+
-bool IsLiveAccount()
+bool IsDemoAccount()
 {
-   long mode = AccountInfoInteger(ACCOUNT_TRADE_MODE);
-   // ACCOUNT_TRADE_MODE_DEMO=0, _CONTEST=1, _REAL=2
-   if(mode == ACCOUNT_TRADE_MODE_REAL)
-      return(true);
-   return(false);
+   // Refuse REAL, CONTEST and unknown modes; do not accept "not REAL".
+   return(AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO);
 }
 
 //+------------------------------------------------------------------+
