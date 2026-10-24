@@ -62,7 +62,11 @@ EXPECTED_FOREIGN_KEYS = {
 def _foreign_key_sets(inspector, table):
     """Read reflected relations only; do not use ORM/metadata to fabricate them."""
     found = set()
-    for row in inspector.get_foreign_keys(table):
+    # PostgreSQL normally omits a referenced schema that happens to be in
+    # search_path. Preserve the real target schema before validating FKs.
+    for row in inspector.get_foreign_keys(
+        table, postgresql_ignore_search_path=True
+    ):
         local = tuple(row.get("constrained_columns") or ())
         referenced = tuple(row.get("referred_columns") or ())
         destination = row.get("referred_table")

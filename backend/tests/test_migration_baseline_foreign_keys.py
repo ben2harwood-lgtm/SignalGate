@@ -22,10 +22,13 @@ _SPEC.loader.exec_module(verifier)
 class _Inspector:
     default_schema_name = "public"
 
-    def __init__(self, *, missing=None, substitute=None, foreign_schema=None):
+    def __init__(self, *, missing=None, substitute=None, foreign_schema=None,
+                 search_path_hidden_schema=None):
         self.missing = missing
         self.substitute = substitute
         self.foreign_schema = foreign_schema
+        self.search_path_hidden_schema = search_path_hidden_schema
+        self.foreign_key_calls = []
 
     def get_table_names(self):
         return list(verifier.EXPECTED_COLUMNS)
@@ -45,7 +48,8 @@ class _Inspector:
     def get_indexes(self, table):
         return []
 
-    def get_foreign_keys(self, table):
+    def get_foreign_keys(self, table, **kwargs):
+        self.foreign_key_calls.append(kwargs)
         rows = []
         for relation in verifier.EXPECTED_FOREIGN_KEYS.get(table, ()):
             if (table, relation) == self.missing:
@@ -56,6 +60,11 @@ class _Inspector:
                 referenced_table = "unrelated_" + referenced_table
             if (table, relation) == self.foreign_schema:
                 schema = "other_tenant"
+            if (table, relation) == self.search_path_hidden_schema:
+                # PostgreSQL's default reflection can conceal cross-schema
+                # references when the target schema is in search_path.
+                schema = ("other_tenant" if kwargs.get(
+                    "postgresql_ignore_search_path") is True else None)
             rows.append({
                 "constrained_columns": list(local),
                 "referred_table": referenced_table,
@@ -121,3 +130,19 @@ def test_misbound_relation_cannot_satisfy_baseline(
     assert code == 1
     assert "commands: missing foreign key" in stderr
     assert "Safe next step" not in stdout
+
+
+def test_foreign_search_path_does_not_conceal_wrong_schema(monkeypatch, capsys):
+    # Without the PostgreSQL reflection option this corrupt relationship
+    # appears to point into the default schema and wrongly passes the stamp.
+    relation = ("commands", (("approval_id",), "approvals", ("id",)))
+    inspector = _Inspector(search_path_hidden_schema=relation)
+    code, stdout, stderr = _run(monkeypatch, capsys, inspector)
+    assert code == 1
+    assert "commands: missing foreign key" in stderr
+    assert "Safe next step" not in stdout
+    assert len(inspector.foreign_key_calls) == len(verifier.EXPECTED_FOREIGN_KEYS)
+    assert all(
+        options == {"postgresql_ignore_search_path": True}
+        for options in inspector.foreign_key_calls
+    )
