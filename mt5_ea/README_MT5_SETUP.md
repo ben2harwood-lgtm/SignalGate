@@ -128,7 +128,16 @@ Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
   retain eight decimal places instead of rounding broker volume to two.
   This prevents chart-symbol and fractional-volume evidence distortion, but
   does **not** establish that an event occurred without DEMO broker receipts.
-- **Multiple broker deals per order:** the close-evidence guard permits extra\n  opening deals only where history binds each to the original MT5 ResultOrder,\n  broker position ID, executed symbol, direction and magic. It verifies total\n  broker opening volume against all closing volume, and refuses active orders,\n  unrelated increases, reversals or missing identity. This is an offline source\n  correction only, pending official MetaEditor compile, independent review and\n  genuine S14 multi-deal MT5 DEMO receipts. It does not repair ambiguous\n  single-ticket send outcomes or prove the backend execution receipt includes\n  complete multi-deal exposure.\n- Broker history, position identifiers and live stop-loss readbacks can be
+- **Multiple broker deals per order:** the close-evidence guard permits extra
+  opening deals only where history binds each to the original MT5 ResultOrder,
+  broker position ID, executed symbol, direction and magic. It verifies total
+  broker opening volume against all closing volume, and refuses active orders,
+  unrelated increases, reversals or missing identity. This is an offline source
+  correction only, pending official MetaEditor compile, independent review and
+  genuine S14 multi-deal MT5 DEMO receipts. It does not repair ambiguous
+  single-ticket send outcomes or prove the backend execution receipt includes
+  complete multi-deal exposure.
+- Broker history, position identifiers and live stop-loss readbacks can be
   unavailable or incomplete. Stage/SL checks must fail closed in these cases.
   Test rejected modifications, manual partial/final closes and broker-modified
   comments on a controlled **demo** terminal before accepting the candidate.
