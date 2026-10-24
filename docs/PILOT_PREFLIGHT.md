@@ -52,6 +52,14 @@ use HTTPS. Whitespace, backslashes, percent-encoded authorities, any userinfo
 fragment delimiters are rejected **before** an HTTP client can receive
 credentials. This limits operator input ambiguity, but does not validate the
 identity of the deployed backend or replace controlled TLS verification.
+Both tools explicitly disable ambient HTTP proxy and CA-file overrides
+(`httpx.Client(trust_env=False)`) and refuse HTTP redirects when using
+provider/admin credentials. This avoids inheriting an unexpected
+`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE` or `SSL_CERT_DIR`;
+HTTPS certificate verification stays enabled with the platform trust store.
+If an environment requires a corporate proxy or private CA, configure and
+review the trusted network/certificate route before running these tools;
+these evidence collectors deliberately do not accept ambient overrides.
 
 The receipt is written under `artifacts/pilot-preflight/`, which should remain outside Git.
 

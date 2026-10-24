@@ -183,7 +183,11 @@ def run_preflight(
     checks: list[dict] = []
     evidence: dict = {}
 
-    with httpx.Client(base_url=backend, timeout=timeout, follow_redirects=False) as client:
+    # Do not let ambient proxy/CA environment settings redirect credentialled
+    # operator traffic. The normal platform trust store is still used.
+    with httpx.Client(
+        base_url=backend, timeout=timeout, follow_redirects=False, trust_env=False
+    ) as client:
         health = client.get("/health")
         health_json, health_valid = _object_json(health)
         _check("health", health_valid, f"HTTP {health.status_code}; object_json={health_valid}", checks)

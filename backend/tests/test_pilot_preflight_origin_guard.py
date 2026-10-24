@@ -91,3 +91,43 @@ def test_preflight_and_snapshot_refuse_bad_origin_before_constructing_client(
             candidate_sha="a" * 40,
         )
     assert constructed == []
+
+
+def test_both_credentialled_operator_clients_disable_ambient_proxy_and_ca(monkeypatch):
+    """Constructor-level negative guard; no transport or network is created."""
+    class BlockNetwork(RuntimeError):
+        pass
+
+    created = []
+
+    def blocked_client(*_args, **kwargs):
+        assert kwargs["base_url"] == "https://pilot.example.invalid"
+        assert kwargs["follow_redirects"] is False
+        assert kwargs["trust_env"] is False
+        created.append(True)
+        raise BlockNetwork("synthetic: no network")
+
+    # These values must not influence outbound privileged HTTP client setup.
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.invalid:8080")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.example.invalid:8080")
+    monkeypatch.setenv("SSL_CERT_FILE", "/synthetic/untrusted/ca.pem")
+    monkeypatch.setattr(httpx, "Client", blocked_client)
+
+    with pytest.raises(BlockNetwork, match="synthetic: no network"):
+        preflight.run_preflight(
+            backend="https://pilot.example.invalid",
+            provider_id="PROVIDER-SYNTHETIC",
+            provider_api_key="SYNTHETIC-KEY",
+            declared_candidate_sha="a" * 40,
+            require_feeds_paused=True,
+        )
+
+    with pytest.raises(BlockNetwork, match="synthetic: no network"):
+        snapshot.collect(
+            backend="https://pilot.example.invalid",
+            admin_id="SYNTHETIC-ID",
+            admin_api_key="SYNTHETIC-KEY",
+            candidate_sha="a" * 40,
+        )
+
+    assert len(created) == 2
