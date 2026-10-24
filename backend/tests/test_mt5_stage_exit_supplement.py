@@ -131,7 +131,7 @@ def test_single_ticket_unknown_broker_outcome_needs_real_reconciliation():
     row = _scenario_rows(text)["S13"]
     assert "Single-ticket broker send" in row[1]
     for proof in ("TRADE_RETCODE_PLACED", "ResultVolume()", "no new order",
-                  "across restart", "account-flat proof", "no terminal `FAILED`"):
+                  "across restart", "account-flat proof", "No terminal `FAILED`"):
         assert proof in row[2]
     assert row[3] == "NOT_RUN" and row[4] == ""
 
