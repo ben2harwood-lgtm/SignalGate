@@ -27,6 +27,12 @@ class BotConfig:
             "yes",
             "on",
         }
+        # Shared-code provider onboarding needs an explicit local-demo opt-in.
+        self.legacy_provider_demo_enabled: bool = (
+            not self.require_license
+            and os.getenv("ENABLE_LEGACY_PROVIDER_DEMO", "false").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
         admin_raw: str = os.getenv("ADMIN_TELEGRAM_IDS", "")
         self.admin_ids: List[str] = [x.strip() for x in admin_raw.split(",") if x.strip()]
         provider_raw: str = os.getenv("SIGNAL_PROVIDER_TELEGRAM_IDS", "")
@@ -45,7 +51,7 @@ class BotConfig:
         Hosted Provider Edition never treats configured/local ids as provider
         authority; it requires a persisted feed-bound source binding.
         """
-        if self.require_license:
+        if self.require_license or not self.legacy_provider_demo_enabled:
             return False
         user_id = str(telegram_user_id)
         return (
@@ -63,6 +69,8 @@ class BotConfig:
         return [str(x) for x in ids if str(x).strip()]
 
     def add_local_provider(self, telegram_user_id: int | str) -> None:
+        if self.require_license or not self.legacy_provider_demo_enabled:
+            raise RuntimeError("Legacy provider enrolment requires explicit local-demo opt-in")
         user_id = str(telegram_user_id)
         ids = set(self.local_provider_ids())
         ids.add(user_id)
