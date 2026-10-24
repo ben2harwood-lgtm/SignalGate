@@ -145,7 +145,9 @@ bool SaveAckAbortJournal(const string command_id)
    uint written = FileWriteString(handle, record);
    FileFlush(handle);
    FileClose(handle);
-   return(written == (uint)StringLen(record));
+   // FileWriteString returns BYTES, not characters. FILE_UNICODE uses 2 bytes
+   // per UTF-16 code unit; comparing to character count would reject success.
+   return(written == (uint)(2 * StringLen(record)));
 }
 
 bool ClearAckAbortJournal()
