@@ -2127,6 +2127,26 @@ def reconcile_open_position(
             ):
                 conflicts.append("existing_open_price")
 
+        # A successful partial close can reduce, but never increase, the
+        # original execution exposure. Reusing a matching broker ticket does
+        # not authorise a new/increased fill on that position.
+        if command.status in {"PARTIAL_TP1_DONE", "PARTIAL_TP2_DONE"}:
+            if (
+                existing.lot_size is None
+                or not math.isfinite(existing.lot_size)
+                or not math.isfinite(payload.lot_size)
+                or (
+                    payload.lot_size > existing.lot_size
+                    and not math.isclose(
+                        payload.lot_size,
+                        existing.lot_size,
+                        rel_tol=1e-9,
+                        abs_tol=1e-8,
+                    )
+                )
+            ):
+                conflicts.append("existing_open_lot_size")
+
         if conflicts:
             add_audit(
                 db,

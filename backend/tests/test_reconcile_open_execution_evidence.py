@@ -108,3 +108,66 @@ def test_reported_partial_close_allows_lower_remaining_open_volume(client):
     )
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "matched"
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [("TP1_CLOSE_SUCCESS", "TP1_DONE")],
+        [("TP1_CLOSE_SUCCESS", "TP1_DONE"), ("TP2_CLOSE_SUCCESS", "TP2_DONE")],
+    ],
+    ids=["after-tp1", "after-tp2"],
+)
+@pytest.mark.parametrize("observed_lot_size", [0.02, 0.20])
+def test_partial_close_snapshot_increase_conflicts_and_keeps_original_execution(
+    client, events, observed_lot_size
+):
+    """A partial-close event is not authority to accept increased broker exposure."""
+    cid = _reported_execution(client, "844")
+    for event_type, stage in events:
+        event = client.post(
+            f"/commands/{cid}/management_event",
+            json={"event_type": event_type, "stage": stage, "result": "SUCCESS"},
+            headers=EA_HEADERS,
+        )
+        assert event.status_code == 200, event.text
+
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=_snapshot(lot_size=observed_lot_size),
+        headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    assert "existing_open_lot_size" in response.json()["detail"]
+    with SessionLocal() as db:
+        original = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert original.lot_size == pytest.approx(0.01)
+        assert original.executed_price == pytest.approx(2345.0)
+        assert (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
+            .one()
+            .payload_json
+            .find("existing_open_lot_size")
+            >= 0
+        )
+
+
+def test_second_partial_close_snapshot_allows_reduced_remaining_volume(client):
+    cid = _reported_execution(client, "845")
+    for event_type, stage in (
+        ("TP1_CLOSE_SUCCESS", "TP1_DONE"),
+        ("TP2_CLOSE_SUCCESS", "TP2_DONE"),
+    ):
+        event = client.post(
+            f"/commands/{cid}/management_event",
+            json={"event_type": event_type, "stage": stage, "result": "SUCCESS"},
+            headers=EA_HEADERS,
+        )
+        assert event.status_code == 200, event.text
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=_snapshot(lot_size=0.002),
+        headers=EA_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "matched"
