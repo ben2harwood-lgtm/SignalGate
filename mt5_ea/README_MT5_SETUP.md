@@ -50,7 +50,7 @@ URL is whitelisted:
    - `EAApiKey` = the server's EA service credential supplied through the approved onboarding channel;
    - `UserID` = local-demo compatibility only (may be empty in hosted mode); hosted ownership is resolved from `LicenseKey`;
    - `DemoOnlyMode` = `true` (leave as-is);
-   - `SplitTicketDemoPartialMode` = `true` on a hedging demo account (the EA safely falls back on non-hedging/netting accounts);
+   - `SplitTicketDemoPartialMode` = `false` **required**. Split mode fails `OnInit` while partial-fill rollback/server-close verification is on HOLD; do not change it to `true` for demo testing;
    - `EnableTrading` = `false` until independent EA review, exact MetaEditor compile and controlled MT5 broker-DEMO acceptance are complete.
 4. Click OK. A smiley face in the top-right of the chart means it is running.
 
@@ -64,7 +64,7 @@ URL is whitelisted:
 | `EAApiKey` | `local-demo-ea-key` | EA service credential. Hosted calls require this in addition to the customer licence. |
 | `PollIntervalSeconds` | `2` | How often to poll/manage |
 | `SingleTicketFixedLot` | `0.01` | Lot for single-ticket fallback mode |
-| `SplitTicketDemoPartialMode` | `true` | Open 3 child tickets for 50/25/25 |
+| `SplitTicketDemoPartialMode` | `false` | **Temporary safety HOLD:** `true` refuses EA startup until S11/R1–R5 rollback proof and independent review. The remaining path is single-ticket demo only, still subject to all execution gates. |
 | `TP1Lot` / `TP2Lot` / `TP3Lot` | `0.02 / 0.01 / 0.01` | Child lots |
 | `MagicNumber` | `440044` | EA position tag |
 | `DemoOnlyMode` | `true` | Hard safety; EA won't run if false/live |
@@ -73,7 +73,9 @@ URL is whitelisted:
 | `EnableTrading` | `false` | **OFF by default.** Per-EA input; explicitly enable only for an accepted demo build. Not an emergency position-flattening switch. |
 | `SymbolOverride` | `""` | Force a chart symbol name if broker differs |
 
-## 6. How it trades (split-ticket demo partial mode)
+## 6. How split-ticket demo partial mode is intended to trade (CURRENTLY BLOCKED)
+
+**Split-ticket broker submission is disabled at EA startup.** A later-child rejection may leave a previously filled DEMO position open; the existing rollback does not check close retcode, position identity and confirmed flatness before reporting `FAILED`. This is a protective interim restriction, **not a rollback fix, demo acceptance or permission to turn on trading**. Leave `SplitTicketDemoPartialMode=false` and `EnableTrading=false` until independently reviewed corrections and genuine broker-DEMO evidence are recorded. The single-ticket path is not externally accepted either.
 
 A single 0.01 lot position **cannot** be partially closed 50/25/25 (that needs
 0.005 lots, below the 0.01 lot step). So in demo we open **three child

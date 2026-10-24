@@ -28,7 +28,7 @@ input string LicenseKey                 = "local-demo";
 input string EAApiKey                   = "local-demo-ea-key";
 input int    PollIntervalSeconds        = 2;
 input double SingleTicketFixedLot       = 0.01;
-input bool   SplitTicketDemoPartialMode = true;
+input bool   SplitTicketDemoPartialMode = false;
 input double TP1Lot                     = 0.02;
 input double TP2Lot                     = 0.01;
 input double TP3Lot                     = 0.01;
@@ -218,6 +218,19 @@ int OnInit()
    {
       Print("FATAL: Account is not positively identified as MT5 DEMO. Refusing.");
       ReportDemoOnlyViolation();
+      return(INIT_FAILED);
+   }
+
+   // TEMPORARY SAFETY HOLD: child #1 may fill before a later broker rejection.
+   // The current split rollback cannot prove server-confirmed flattening and
+   // may incorrectly publish FAILED while an open DEMO position remains.
+   // Never permit the unsafe split path, even if someone changes the input.
+   // Remove this hold only with reviewed rollback/reconciliation code plus
+   // genuine MT5 broker-DEMO S11/R1-R5 evidence; default OFF is insufficient.
+   if(SplitTicketDemoPartialMode)
+   {
+      Print("FATAL: split-ticket mode on HOLD pending verified rollback; ",
+            "no broker orders permitted. Keep EnableTrading OFF.");
       return(INIT_FAILED);
    }
 

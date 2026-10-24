@@ -411,3 +411,16 @@ def test_hosted_empty_user_id_is_permitted_without_weakening_ack_journal_binding
     assert "backend != BackendURL || user_id != UserID" in load
     assert "!AckJournalSafeField(command_id)" in load
     assert "FileFlush(handle)" in persist
+
+
+def test_split_ticket_rollback_hold_blocks_even_explicit_demo_opt_in():
+    """Source-only fail-closed gate while split rollback can misreport FAILED."""
+    assert "input bool   SplitTicketDemoPartialMode = false;" in EA
+    init = EA.split("int OnInit()", 1)[1].split("void OnDeinit(", 1)[0]
+    assert "if(SplitTicketDemoPartialMode)" in init
+    hold = init.split("if(SplitTicketDemoPartialMode)", 1)[1].split("}", 1)[0]
+    assert "return(INIT_FAILED);" in hold
+    assert "split-ticket mode on HOLD" in hold
+    assert init.index("if(SplitTicketDemoPartialMode)") < init.index("EventSetTimer(")
+    assert "SplitTicketDemoPartialMode = true;" not in EA
+
