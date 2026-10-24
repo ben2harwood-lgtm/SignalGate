@@ -63,3 +63,12 @@ def test_allows_local_sqlite_only_without_network(monkeypatch, local_settings, h
     monkeypatch.setattr(run_backend.uvicorn, "run", lambda *a, **kw: calls.append((a, kw)))
     run_backend.main()
     assert calls == [(("app.main:app",), {"host": host, "port": 8000, "reload": True})]
+
+
+def test_startup_validation_runs_before_any_listener(monkeypatch, local_settings):
+    def reject_live_mode():
+        raise RuntimeError("DEMO ONLY")
+    local_settings.validate_startup = reject_live_mode
+    _must_not_start_uvicorn(monkeypatch, local_settings)
+    with pytest.raises(RuntimeError, match="DEMO ONLY"):
+        run_backend.main()
