@@ -25,19 +25,28 @@ import httpx
 
 def validate_admin_backend_url(raw: str) -> str:
     """Reject insecure or ambiguous admin API origins before any requests."""
-    if not raw or raw != raw.strip() or "\\" in raw:
+    # urlparse strips embedded TAB/LF and treats empty ?/# delimiters as
+    # empty fields. Refuse these before the privileged HTTP client exists.
+    if (
+        not raw
+        or raw != raw.strip()
+        or "\\" in raw
+        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw)
+    ):
         raise ValueError("backend must be a clean absolute URL")
     parsed = urlparse(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("backend must be an absolute http(s) URL")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("credentials must not be embedded in the backend URL")
-    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+    if parsed.path not in {"", "/"} or "?" in raw or "#" in raw:
         raise ValueError("backend URL must be an origin without path, query or fragment")
     try:
-        _ = parsed.port
+        port = parsed.port
     except ValueError as exc:
         raise ValueError("invalid backend port") from exc
+    if parsed.netloc.endswith(":") or port == 0:
+        raise ValueError("invalid backend port")
     if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
         raise ValueError("non-local provider provisioning requires HTTPS")
     return raw.rstrip("/")
