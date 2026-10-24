@@ -39,7 +39,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("settings", handlers.settings_cmd))
     # Historical shared-code provider enrolment is local-demo compatibility
     # only. Hosted Provider Edition uses feed-bound /connectprovider tokens.
-    if not config.require_license:
+    if config.legacy_provider_demo_enabled and not config.require_license:
         app.add_handler(CommandHandler("provider", handlers.provider_invite))
     app.add_handler(CommandHandler("screenshothelp", handlers.screenshot_help))
 

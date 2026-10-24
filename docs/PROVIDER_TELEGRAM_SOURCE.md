@@ -37,7 +37,7 @@ It does not delete historical signal/audit evidence.
 
 ## Local demo compatibility
 
-The historical `SIGNAL_PROVIDER_TELEGRAM_IDS` / `/provider` shared-provider path remains only as a local-demo compatibility route.
+The historical `SIGNAL_PROVIDER_TELEGRAM_IDS` / `/provider` shared-provider path is **disabled by default**, even with `REQUIRE_LICENSE=false`. For a deliberately trusted local demo only, set both `REQUIRE_LICENSE=false` and `ENABLE_LEGACY_PROVIDER_DEMO=true`, configure `SIGNAL_PROVIDER_INVITE_CODE` for self-enrolment, and restart the bot. Without this flag, the bot never registers `/provider`, never grants legacy configured/local IDs provider authority, and refuses direct legacy self-enrolment. Use the Provider Portal and `/connectprovider` for hosted onboarding.
 
 When `REQUIRE_LICENSE=true` (hosted Provider Edition):
 
