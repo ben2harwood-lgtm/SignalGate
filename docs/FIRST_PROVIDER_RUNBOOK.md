@@ -21,6 +21,16 @@ Use `scripts/provision_provider.py` or the equivalent authenticated admin workfl
 
 The provisioning CLI creates the initial feed **paused** and no longer prints the raw provider credential to ordinary stdout. Choose the credential-delivery path **before** provisioning.
 
+Before any tenant-creation request, the CLI rejects non-local plain HTTP endpoints and ambiguous origins. Use **HTTPS** for all remote admin APIs; `http://127.0.0.1`, `http://localhost` and `http://[::1]` are permitted for local-only demos. Never embed credentials, paths, queries or fragments in `--backend`. A rejected URL must produce no admin API request or credential file.
+Privileged provisioning requests disable ambient HTTP proxy and CA-file
+overrides (`httpx.Client(trust_env=False)`) and do not follow redirects.
+This prevents unexpected `HTTPS_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE` or
+`SSL_CERT_DIR` settings from changing the destination/trust of admin keys.
+Normal platform TLS verification remains enabled. Operators using a
+corporate proxy or private CA must arrange a separately trusted network/
+certificate route before using this provisioning CLI; ambient overrides
+are deliberately not an accepted credential-transport mechanism.
+
 Recommended secret-file flow (write the file outside the repository and deliver it through the approved private channel):
 
 ```bash
@@ -30,11 +40,20 @@ python scripts/provision_provider.py \
   --credential-output /secure/private/provider-onboarding-secret.json
 ```
 
-The secret file is created without overwrite and with owner-only mode where the operating system supports POSIX permissions. Delete it from the operator machine after confirmed secure delivery/rotation according to the agreed secret-handling process.
+The secret file is created without overwrite and with owner-only mode where the operating system supports POSIX permissions. The CLI refuses output paths inside the SignalGate source checkout (including symlinked parents), reducing accidental commits of raw one-time credentials to the public repository. Use a separate private directory, not the repository tree; still protect all other backup/sync locations. Delete the file from the operator machine after confirmed secure delivery/rotation according to the agreed secret-handling process.
 
 For an attended emergency/demo terminal only, `--show-secret` explicitly opts into displaying the one-time secret. Do not use that mode in captured CI/session logs.
 
 Treat an unexpectedly unpaused new feed as a setup failure and pause it before continuing.
+
+If the provisioning CLI reports a non-2xx response, transport failure, malformed JSON
+or an unexpected response shape, it intentionally suppresses backend response
+bodies and detailed exception strings in terminal/CI logs. **Do not retry blindly**:
+earlier organisation/provider/credential mutations may already have succeeded.
+Inspect tenant state through the authenticated admin interface and reconcile or
+rotate any issued credential before retrying. A private secret file may exist
+if failure occurred after credential issuance; handle it under the same secure
+credential-delivery/rotation procedure.
 
 Record:
 
