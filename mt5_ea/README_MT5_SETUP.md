@@ -48,7 +48,7 @@ URL is whitelisted:
    - `BackendURL` = the exact backend URL you whitelisted;
    - `LicenseKey` = **your one-time customer EA licence** in hosted Provider Edition;
    - `EAApiKey` = the server's EA service credential supplied through the approved onboarding channel;
-   - `UserID` = local-demo compatibility only; hosted ownership is resolved from `LicenseKey`;
+   - `UserID` = local-demo compatibility only (may be empty in hosted mode); hosted ownership is resolved from `LicenseKey`;
    - `DemoOnlyMode` = `true` (leave as-is);
    - `SplitTicketDemoPartialMode` = `true` on a hedging demo account (the EA safely falls back on non-hedging/netting accounts);
    - `EnableTrading` = `false` until independent EA review, exact MetaEditor compile and controlled MT5 broker-DEMO acceptance are complete.

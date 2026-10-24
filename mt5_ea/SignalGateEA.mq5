@@ -85,6 +85,13 @@ bool AckJournalSafeField(const string value)
           StringFind(value, "\n") < 0);
 }
 
+// The hosted EA authenticates by customer licence, not local-demo UserID.
+// An empty UserID is valid, but a CR/LF would corrupt journal line binding.
+bool AckJournalSafeOptionalField(const string value)
+{
+   return(StringFind(value, "\r") < 0 && StringFind(value, "\n") < 0);
+}
+
 bool LoadAckAbortJournal()
 {
    if(!FileIsExist(ACK_ABORT_JOURNAL))
@@ -132,7 +139,7 @@ bool SaveAckAbortJournal(const string command_id)
    string magic = IntegerToString(MagicNumber);
    if(!AckJournalSafeField(command_id) ||
       !AckJournalSafeField(server) || !AckJournalSafeField(BackendURL) ||
-      !AckJournalSafeField(UserID))
+      !AckJournalSafeOptionalField(UserID))
       return(false);
 
    string record = "SG_ACK_ABORT_V1\r\n" + login + "\r\n" +

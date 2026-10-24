@@ -384,3 +384,30 @@ def test_weighted_breakeven_stop_is_tick_aligned_and_directional():
     assert "old_sl, breakeven_sl" in management
     assert "old_sl, tp1_stop_sl" in management
     assert "if(moved) g_effective_sl = g_active_entry" not in management
+
+def test_hosted_empty_user_id_is_permitted_without_weakening_ack_journal_binding():
+    """Hosted customer licence owns the command; blank local UserID is valid."""
+    required = EA.split("bool AckJournalSafeField(", 1)[1].split(
+        "bool AckJournalSafeOptionalField(", 1
+    )[0]
+    optional = EA.split("bool AckJournalSafeOptionalField(", 1)[1].split(
+        "bool LoadAckAbortJournal(", 1
+    )[0]
+    persist = EA.split("bool SaveAckAbortJournal(", 1)[1].split(
+        "bool ClearAckAbortJournal(", 1
+    )[0]
+    load = EA.split("bool LoadAckAbortJournal(", 1)[1].split(
+        "bool SaveAckAbortJournal(", 1
+    )[0]
+    assert 'value != ""' in required
+    assert 'value != ""' not in optional
+    assert 'StringFind(value, "\\r") < 0' in optional
+    assert 'StringFind(value, "\\n") < 0' in optional
+    assert "!AckJournalSafeOptionalField(UserID)" in persist
+    assert "!AckJournalSafeField(UserID)" not in persist
+    assert "!AckJournalSafeField(command_id)" in persist
+    assert "!AckJournalSafeField(server)" in persist
+    assert "!AckJournalSafeField(BackendURL)" in persist
+    assert "backend != BackendURL || user_id != UserID" in load
+    assert "!AckJournalSafeField(command_id)" in load
+    assert "FileFlush(handle)" in persist
