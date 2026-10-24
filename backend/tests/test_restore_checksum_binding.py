@@ -12,8 +12,28 @@ import pytest
 
 RESTORE = Path(__file__).resolve().parents[2] / "scripts/restore_postgres.sh"
 
+@pytest.fixture(autouse=True)
+def _mock_readonly_target_probe(tmp_path, monkeypatch):
+    """Keep every restore regression offline; never contact a real database."""
+    probe_bin = tmp_path / "readonly-psql-probe"
+    probe_bin.mkdir()
+    psql_stub = probe_bin / "psql"
+    psql_stub.write_text(
+        "#!/bin/sh\n"
+        "case \"\${SG_PSQL_RESPONSE:-empty}\" in\n"
+        "  empty) printf 'f\\n' ;;\n"
+        "  occupied) printf 't\\n' ;;\n"
+        "  malformed) printf 'unknown\\n' ;;\n"
+        "  failure) exit 7 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    psql_stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(probe_bin) + os.pathsep + os.environ.get("PATH", ""))
 
-def exercise(tmp_path, *, mismatch: str) -> tuple[subprocess.CompletedProcess, bool]:
+
+
+def exercise(tmp_path, *, mismatch: str, psql_response: str = "empty", same_target: bool = False) -> tuple[subprocess.CompletedProcess, bool]:
     backup = tmp_path / "selected backup.dump"
     other = tmp_path / "unrelated.dump"
     backup.write_bytes(b"selected-synthetic-backup")
@@ -41,7 +61,8 @@ def exercise(tmp_path, *, mismatch: str) -> tuple[subprocess.CompletedProcess, b
     bin_dir.mkdir()
     fake_restore = bin_dir / "pg_restore"
     fake_restore.write_text(
-        "#!/bin/sh\nprintf 'invoked' > \"$SG_RESTORE_MARKER\"\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SG_RESTORE_ARGS\"\n"
+        "printf 'invoked' > \"$SG_RESTORE_MARKER\"\n",
         encoding="utf-8",
     )
     fake_restore.chmod(0o755)
@@ -53,7 +74,13 @@ def exercise(tmp_path, *, mismatch: str) -> tuple[subprocess.CompletedProcess, b
         "BACKUP_FILE": str(backup),
         "BACKUP_ALLOW_PLAINTEXT_RESTORE": "true",
         "SG_RESTORE_MARKER": str(marker),
+        "SG_RESTORE_ARGS": str(tmp_path / "restore-args"),
+        "SG_PSQL_RESPONSE": psql_response,
     }
+    if same_target:
+        env["DATABASE_URL"] = env["RESTORE_DATABASE_URL"]
+    else:
+        env.pop("DATABASE_URL", None)
     result = subprocess.run(
         ["bash", str(RESTORE)], env=env,
         capture_output=True, text=True, timeout=10,
@@ -161,3 +188,30 @@ def test_restore_reads_only_checksum_verified_snapshot(tmp_path):
     assert result.returncode == 0, result.stderr
     assert backup.read_bytes() == later
     assert captured.read_bytes() == initial
+
+
+@pytest.mark.parametrize("response", ("occupied", "failure", "malformed"))
+def test_restore_refuses_nonempty_or_unverifiable_destination(tmp_path, response):
+    result, invoked = exercise(tmp_path, mismatch="valid", psql_response=response)
+    assert result.returncode != 0
+    assert not invoked
+    assert "refusing restore" in result.stderr
+    assert "synthetic" not in result.stderr
+
+
+def test_restore_refuses_identical_source_and_destination_url(tmp_path):
+    result, invoked = exercise(tmp_path, mismatch="valid", same_target=True)
+    assert result.returncode != 0
+    assert not invoked
+    assert "refusing restore" in result.stderr
+
+
+def test_empty_target_restore_never_uses_destructive_clean_flags(tmp_path):
+    result, invoked = exercise(tmp_path, mismatch="valid")
+    assert result.returncode == 0, result.stderr
+    assert invoked
+    args = (tmp_path / "restore-args").read_text()
+    assert "--exit-on-error" in args
+    assert "--clean" not in args
+    assert "--if-exists" not in args
+    assert "--dbname=postgresql://127.0.0.1/synthetic" in args

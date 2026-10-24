@@ -35,6 +35,35 @@ if ! cmp -s <(printf '%s  %s\n' "$digest" "$BACKUP_FILE") "$BACKUP_FILE.sha256";
   echo "Checksum manifest does not match staged BACKUP_FILE; refusing restore" >&2
   exit 2
 fi
+# This command is for an empty, isolated restore target, never an existing
+# application database. Inspect the target read-only before any decrypt/restore.
+# No override is offered; a separate reviewed recovery procedure is required
+# for a nonempty target. Avoid printing the DSN on failures.
+if [[ -n "${DATABASE_URL:-}" && "$DATABASE_URL" == "$RESTORE_DATABASE_URL" ]]; then
+  echo "Source and restore database URLs match; refusing restore" >&2
+  exit 2
+fi
+if ! command -v psql >/dev/null 2>&1; then
+  echo "psql is required to check the isolated restore target; refusing restore" >&2
+  exit 2
+fi
+if ! target_occupied="$(psql -X -A -t -v ON_ERROR_STOP=1 \
+  --dbname="$RESTORE_DATABASE_URL" \
+  -c "SELECT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_class AS c
+        JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND n.nspname NOT LIKE 'pg_toast%'
+      );" 2>/dev/null)"; then
+  echo "Unable to verify an empty isolated restore target; refusing restore" >&2
+  exit 2
+fi
+if [[ "$target_occupied" != "f" ]]; then
+  echo "Restore target is occupied or cannot be verified empty; refusing restore" >&2
+  exit 2
+fi
+
 restore_file="$verified_backup"
 
 if [[ "$BACKUP_FILE" == *.age ]]; then
@@ -52,5 +81,7 @@ elif [[ "${BACKUP_ALLOW_PLAINTEXT_RESTORE:-false}" != "true" ]]; then
   exit 2
 fi
 
-pg_restore --exit-on-error --no-owner --no-acl --clean --if-exists   --dbname="$RESTORE_DATABASE_URL" "$restore_file"
+# Never request destructive --clean / --if-exists on a target that could change.
+pg_restore --exit-on-error --no-owner --no-acl \
+  --dbname="$RESTORE_DATABASE_URL" "$restore_file"
 printf 'restore_completed=%s\nencrypted=%s\n'   "$BACKUP_FILE" "$([[ "$BACKUP_FILE" == *.age ]] && echo true || echo false)"
