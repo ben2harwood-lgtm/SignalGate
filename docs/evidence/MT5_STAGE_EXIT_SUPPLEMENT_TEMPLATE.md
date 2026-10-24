@@ -48,6 +48,7 @@ TP exit as proof that a specific TP-stage child closed by TP.
 | S9 | Final TP3 child closes after earlier proven TP exits | Only the final mapped child with its OWN `DEAL_REASON_TP` may yield `TP3_CLOSE_SUCCESS`; prior child TP cannot substitute for final broker exit | NOT_RUN | |
 | S10 | Conflicting broker exits at the same latest millisecond | Bound children with conflicting `DEAL_REASON_SL` and manual/unknown exit reasons at the same latest `DEAL_TIME_MSC` must NOT emit `STOP_LOSS_HIT` based on deal-ticket order; retain exact deal IDs/reasons and `FULLY_CLOSED` without a fabricated stop reason | NOT_RUN | |
 | S11 | Partially filled split command; later child fails and rollback is attempted (R1–R5 mandatory) | No final `FAILED` or flat receipt until broker-confirmed closure of **each** filled child; check `PositionClose` return, server `ResultRetcode()` and post-close broker position/deal history. An unknown/rejected rollback requires a durable reconciliation-required HOLD, operator escalation, and no further order polling or broker retry; never close an unrelated position | NOT_RUN | |
+| S12 | Later enabled TP2/TP3 split-child lot is invalid before execution | Preflight every enabled child lot before the FIRST broker order: return `LOT_SIZE_INVALID` with ZERO broker order/deal tickets and no rollback attempt. Preserve exact DEMO account/magic, EA input lot values, broker min/max/step, and backend failure receipt; never infer broker proof from CI | NOT_RUN | |
 
 ### S11 — mandatory partial-fill rollback subcases (all NOT_RUN)
 
@@ -76,9 +77,15 @@ affected subcase FAIL/INCONCLUSIVE (not PASS) and retain the execution HOLD.
 Backend status and reconciliation semantics must be corrected and independently
 reviewed before attempting this matrix; no real-money or automatic-copy tests.
 
+S12 is distinct from S11: it verifies the pre-order input guard when no child
+should ever be sent. A real DEMO receipt must prove **zero** broker order/deal
+tickets for invalid later-child lot configuration; static/source checks alone
+cannot mark it PASS. Actual later-child broker rejection after a prior fill
+remains covered separately by S11/R1–R5 and remains a HARD HOLD.
+
 ## Evidence review and decision
 
-For **each** S1–S11 row (including every S11/R1–R5 subcase), the independent reviewer checks the original demo
+For **each** S1–S12 row (including every S11/R1–R5 subcase), the independent reviewer checks the original demo
 terminal/broker deal history against the EA journal and backend audit receipts,
 ensures negative scenarios generated **no** forbidden success event, and verifies
 that the record belongs to this exact tested candidate and demo account.

@@ -18,9 +18,9 @@ def _scenario_rows(text: str):
     return rows
 
 
-def test_all_eleven_broker_demo_scenarios_are_explicitly_unexecuted():
+def test_all_twelve_broker_demo_scenarios_are_explicitly_unexecuted():
     rows = _scenario_rows(RECEIPT.read_text(encoding="utf-8"))
-    assert set(rows) == {f"S{n}" for n in range(1, 12)}
+    assert set(rows) == {f"S{n}" for n in range(1, 13)}
     assert all(row[3] == "NOT_RUN" and not row[4] for row in rows.values())
 
 
@@ -68,7 +68,7 @@ def test_evidence_index_links_supplement_without_approval_claim():
     evidence_readme = RECEIPT.parent / "README.md"
     text = evidence_readme.read_text(encoding="utf-8")
     assert "MT5_STAGE_EXIT_SUPPLEMENT_TEMPLATE.md" in text
-    assert "eleven NOT_RUN scenarios" in text
+    assert "twelve NOT_RUN scenarios" in text
 
 
 def test_split_fill_rollback_receipt_never_infers_flatness_from_close_request():
@@ -106,3 +106,20 @@ def test_split_fill_rollback_receipt_never_infers_flatness_from_close_request():
     assert "S11 may be marked PASS **only if R1–R5 each have real broker-DEMO evidence" in text
     assert "matching backend audit receipt" in text
     assert "Backend status and reconciliation semantics must be corrected" in text
+
+def test_later_child_lot_preflight_needs_zero_broker_order_demo_receipt():
+    """S12 is demo acceptance, not a claim that source-only checks prove a fill."""
+    text = RECEIPT.read_text(encoding="utf-8")
+    row = _scenario_rows(text)["S12"]
+    assert "TP2/TP3 split-child lot is invalid" in row[1]
+    for required in (
+        "before the FIRST broker order",
+        "LOT_SIZE_INVALID",
+        "ZERO broker order/deal tickets",
+        "no rollback attempt",
+        "broker min/max/step",
+        "never infer broker proof from CI",
+    ):
+        assert required in row[2]
+    assert row[3] == "NOT_RUN" and not row[4]
+    assert "Actual later-child broker rejection after a prior fill" in text
