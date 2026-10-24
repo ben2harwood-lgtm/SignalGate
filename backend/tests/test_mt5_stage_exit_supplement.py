@@ -18,9 +18,9 @@ def _scenario_rows(text: str):
     return rows
 
 
-def test_all_twelve_broker_demo_scenarios_are_explicitly_unexecuted():
+def test_all_thirteen_broker_demo_scenarios_are_explicitly_unexecuted():
     rows = _scenario_rows(RECEIPT.read_text(encoding="utf-8"))
-    assert set(rows) == {f"S{n}" for n in range(1, 13)}
+    assert set(rows) == {f"S{n}" for n in range(1, 14)}
     assert all(row[3] == "NOT_RUN" and not row[4] for row in rows.values())
 
 
@@ -68,7 +68,7 @@ def test_evidence_index_links_supplement_without_approval_claim():
     evidence_readme = RECEIPT.parent / "README.md"
     text = evidence_readme.read_text(encoding="utf-8")
     assert "MT5_STAGE_EXIT_SUPPLEMENT_TEMPLATE.md" in text
-    assert "twelve NOT_RUN scenarios" in text
+    assert "thirteen NOT_RUN scenarios" in text
 
 
 def test_split_fill_rollback_receipt_never_infers_flatness_from_close_request():
@@ -123,3 +123,37 @@ def test_later_child_lot_preflight_needs_zero_broker_order_demo_receipt():
         assert required in row[2]
     assert row[3] == "NOT_RUN" and not row[4]
     assert "Actual later-child broker rejection after a prior fill" in text
+
+
+def test_single_ticket_unknown_broker_outcome_needs_real_reconciliation():
+    """Source-anchored S13/U1–U5 are unrun DEMO acceptance obligations."""
+    text = RECEIPT.read_text(encoding="utf-8")
+    row = _scenario_rows(text)["S13"]
+    assert "Single-ticket broker send" in row[1]
+    for proof in ("TRADE_RETCODE_PLACED", "ResultVolume()", "no new order",
+                  "across restart", "account-flat proof", "no terminal `FAILED`"):
+        assert proof in row[2]
+    assert row[3] == "NOT_RUN" and row[4] == ""
+
+    subcases = {}
+    for line in text.splitlines():
+        if line.startswith("| U"):
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            assert len(cells) == 5, line
+            assert cells[0] not in subcases, "Duplicate U case"
+            subcases[cells[0]] = cells
+    assert set(subcases) == {f"U{n}" for n in range(1, 6)}
+    assert all(row[3] == "NOT_RUN" and not row[4] for row in subcases.values())
+    for case, proof in {
+        "U1": "market send times out",
+        "U2": "TRADE_RETCODE_PLACED",
+        "U3": "ResultVolume()",
+        "U4": "restarts before broker truth",
+        "U5": "rejects reconciliation (409)",
+    }.items():
+        assert proof in subcases[case][1]
+    for required in ("87a0ef3a1edf2e50c19b86370cd8355507df045d",
+                     "S13 may be marked PASS **only after all U1–U5",
+                     "actual", "independent review", "FAIL/INCONCLUSIVE"):
+        if required != "actual":
+            assert required in text
