@@ -67,6 +67,129 @@ bool    g_tp3_done            = false;
 double  g_effective_sl        = 0.0;
 bool    g_split_mode          = true;
 int     g_last_http_code      = 0;
+// A pre-order acknowledgement may have been accepted despite a lost HTTP reply.
+// Until its terminal FAILED receipt is confirmed, no new command may execute.
+string  g_ack_abort_command_id = "";
+datetime g_ack_abort_last_try = 0;
+const string ACK_ABORT_JOURNAL = "SignalGate_ack_abort.txt";
+
+//+------------------------------------------------------------------+
+//| Durable fail-closed outcome for uncertain PRE-ORDER acknowledgement |
+//| The journal contains only demo account/binding context and command ID,
+//| never credentials. It is deliberately terminal-failure-only; it NEVER
+//| retries acknowledgement or sends a broker order after an unknown reply.
+//+------------------------------------------------------------------+
+bool AckJournalSafeField(const string value)
+{
+   return(value != "" && StringFind(value, "\r") < 0 &&
+          StringFind(value, "\n") < 0);
+}
+
+bool LoadAckAbortJournal()
+{
+   if(!FileIsExist(ACK_ABORT_JOURNAL))
+      return(true);
+
+   int handle = FileOpen(ACK_ABORT_JOURNAL, FILE_READ|FILE_TXT|FILE_UNICODE);
+   if(handle == INVALID_HANDLE)
+      return(false);
+   string version = FileReadString(handle);
+   string login = FileReadString(handle);
+   string server = FileReadString(handle);
+   string backend = FileReadString(handle);
+   string user_id = FileReadString(handle);
+   string magic = FileReadString(handle);
+   string command_id = FileReadString(handle);
+   FileClose(handle);
+
+   if(version != "SG_ACK_ABORT_V1" ||
+      login != IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) ||
+      server != AccountInfoString(ACCOUNT_SERVER) ||
+      backend != BackendURL || user_id != UserID ||
+      magic != IntegerToString(MagicNumber) ||
+      !AckJournalSafeField(command_id))
+   {
+      Print("FATAL: ACK-abort journal is unreadable or bound to a different ",
+            "account/configuration. No trading; operator reconciliation required.");
+      return(false);
+   }
+   g_ack_abort_command_id = command_id;
+   Print("SignalGate: restored pending pre-order ACK failure receipt for ",
+         command_id, "; no orders permitted until outcome is confirmed.");
+   return(true);
+}
+
+bool SaveAckAbortJournal(const string command_id)
+{
+   // A second EA/chart or leftover file must never be overwritten.
+   if(g_ack_abort_command_id != "" || FileIsExist(ACK_ABORT_JOURNAL))
+      return(false);
+
+   // Hold in memory BEFORE any possible write failure.
+   g_ack_abort_command_id = command_id;
+   string login = IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
+   string server = AccountInfoString(ACCOUNT_SERVER);
+   string magic = IntegerToString(MagicNumber);
+   if(!AckJournalSafeField(command_id) ||
+      !AckJournalSafeField(server) || !AckJournalSafeField(BackendURL) ||
+      !AckJournalSafeField(UserID))
+      return(false);
+
+   string record = "SG_ACK_ABORT_V1\r\n" + login + "\r\n" +
+                   server + "\r\n" + BackendURL + "\r\n" +
+                   UserID + "\r\n" + magic + "\r\n" +
+                   command_id + "\r\n";
+   int handle = FileOpen(ACK_ABORT_JOURNAL, FILE_WRITE|FILE_TXT|FILE_UNICODE);
+   if(handle == INVALID_HANDLE)
+      return(false);
+   uint written = FileWriteString(handle, record);
+   FileFlush(handle);
+   FileClose(handle);
+   return(written == (uint)StringLen(record));
+}
+
+bool ClearAckAbortJournal()
+{
+   if(!FileIsExist(ACK_ABORT_JOURNAL) || !FileDelete(ACK_ABORT_JOURNAL))
+      return(false);
+   g_ack_abort_command_id = "";
+   g_ack_abort_last_try = 0;
+   return(true);
+}
+
+void RetryAckAbortAsTerminalFailure()
+{
+   if(g_ack_abort_command_id == "")
+      return;
+   // Fail closed on unknown account mode or any potentially related fill.
+   if(!IsDemoAccount() || PositionsTotal() != 0 || OrdersTotal() != 0)
+   {
+      Print("SignalGate: ACK outcome requires manual broker reconciliation; ",
+            "no terminal failure reported with positions/orders present.");
+      return;
+   }
+
+   datetime now = TimeLocal();
+   if(g_ack_abort_last_try != 0 && now >= g_ack_abort_last_try &&
+      now - g_ack_abort_last_try < 30)
+      return; // rate-limit retries; no new polling meanwhile
+   g_ack_abort_last_try = now;
+
+   // A lost pre-order ACK reply NEVER results in an automatic broker order.
+   // This exact FAILED callback is idempotent in the backend; repeat only
+   // until the server confirms the terminal receipt with a 2xx response.
+   ReportError(g_ack_abort_command_id, "ACK_RECEIPT_UNCONFIRMED",
+               "Pre-order acknowledgement unconfirmed; EA sent no broker order");
+   if(g_last_http_code >= 200 && g_last_http_code < 300)
+   {
+      if(!ClearAckAbortJournal())
+         Print("SignalGate: terminal failure recorded, but local journal ",
+               "could not be cleared; execution remains blocked.");
+   }
+   else
+      Print("SignalGate: terminal ACK failure receipt not yet confirmed; ",
+            "polling and execution remain blocked. HTTP=", g_last_http_code);
+}
 
 //+------------------------------------------------------------------+
 //| OnInit                                                            |
@@ -88,6 +211,11 @@ int OnInit()
       ReportDemoOnlyViolation();
       return(INIT_FAILED);
    }
+
+   // A saved unknown ACK outcome survives terminal restarts. Never restart
+   // execution until its exact original command has a terminal receipt.
+   if(!LoadAckAbortJournal())
+      return(INIT_FAILED);
 
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(MaxSlippagePoints);
@@ -128,6 +256,19 @@ void OnTimer()
    if(!IsDemoAccount())
    {
       Print("SignalGate: account no longer confirmed DEMO; timer blocked.");
+      return;
+   }
+   // An ambiguous pre-order ACK must resolve only as a terminal FAILED
+   // receipt. Recovery runs even with the user trading toggle OFF.
+   if(g_ack_abort_command_id != "")
+   {
+      RetryAckAbortAsTerminalFailure();
+      return;
+   }
+   // A second EA/chart may have left a journal after this EA started.
+   if(FileIsExist(ACK_ABORT_JOURNAL))
+   {
+      Print("SignalGate: unknown ACK-abort journal detected; new orders blocked.");
       return;
    }
    if(!EnableTrading)
@@ -278,12 +419,27 @@ void ProcessCommand(const string command_id, const string json)
       return;
    }
 
-   // Acknowledge receipt before execution. Fail closed if the backend no
-   // longer accepts this EA/customer/command or cannot be reached.
+   // Journal the exact claimed command BEFORE the pre-order acknowledgement:
+   // an HTTP timeout or terminal restart must never turn into a blind order.
+   if(!SaveAckAbortJournal(command_id))
+   {
+      Print("SignalGate: unable to durably journal command ACK; execution blocked.");
+      RetryAckAbortAsTerminalFailure();
+      return;
+   }
    if(!AckReceived(command_id))
    {
       Print("Command acknowledgement failed; refusing broker execution for ",
             command_id, " HTTP=", g_last_http_code);
+      RetryAckAbortAsTerminalFailure();
+      return;
+   }
+   // Remove the pre-order journal BEFORE entering any broker-order path.
+   // If removal fails, fail the command rather than trading with unknown state.
+   if(!ClearAckAbortJournal())
+   {
+      Print("SignalGate: ACK journal removal failed; no broker order permitted.");
+      RetryAckAbortAsTerminalFailure();
       return;
    }
 
