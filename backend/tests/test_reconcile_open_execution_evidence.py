@@ -81,7 +81,7 @@ def test_open_snapshot_discrepancy_is_conflict_and_does_not_rewrite_execution(
             .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
             .one()
         )
-        assert expected in audit.details_json
+        assert expected in audit.payload_json
 
 
 def test_matching_open_snapshot_remains_idempotent(client):
