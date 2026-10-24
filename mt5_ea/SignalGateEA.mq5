@@ -490,18 +490,24 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
    double executed_lot = 0.0;
    double weighted_exec_price = 0.0;
 
+   // Preflight every active child lot BEFORE placing the first broker order.
+   // A later invalid configured lot must never trigger rollback of a fill.
    for(int i = 0; i < 3; i++)
    {
       if(tps[i] <= 0.0)
-         continue; // skip absent TP levels (e.g. only TP1/TP2 present)
-
+         continue;
       if(!NormalizeLot(symbol, lots[i]))
       {
          ReportError(command_id, "LOT_SIZE_INVALID",
                      "Lot invalid for child " + IntegerToString(i+1));
-         CloseAllChildren(symbol, command_id);
-         return(false);
+         return(false); // no broker order has been attempted
       }
+   }
+
+   for(int i = 0; i < 3; i++)
+   {
+      if(tps[i] <= 0.0)
+         continue; // skip absent TP levels (e.g. only TP1/TP2 present)
 
       bool sent;
       if(direction == +1)

@@ -341,3 +341,20 @@ def test_ack_failure_recovery_sends_only_rate_limited_terminal_failed_receipt():
     assert "ClearAckAbortJournal()" in recovery
     for never in ("AckReceived(", "PollPendingCommand(", "trade.Buy(", "trade.Sell("):
         assert never not in recovery
+
+def test_all_split_ticket_lots_are_validated_before_first_broker_order():
+    """An invalid TP2/TP3 lot must not require rolling back an earlier fill."""
+    split = EA.split("bool ExecuteSplitTicket(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert split.count("for(int i = 0; i < 3; i++)") == 2
+    assert split.count("NormalizeLot(symbol, lots[i])") == 1
+    preflight = split.split("for(int i = 0; i < 3; i++)", 1)[1].split(
+        "for(int i = 0; i < 3; i++)", 1
+    )[0]
+    assert "if(tps[i] <= 0.0)" in preflight
+    assert 'ReportError(command_id, "LOT_SIZE_INVALID"' in preflight
+    assert "return(false);" in preflight
+    assert "CloseAllChildren(" not in preflight
+    assert split.index("NormalizeLot(symbol, lots[i])") < split.index("trade.Buy(")
+    assert split.index("NormalizeLot(symbol, lots[i])") < split.index("trade.Sell(")
