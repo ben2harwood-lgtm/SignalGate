@@ -33,26 +33,29 @@ success/failure, TP1/TP2/TP3 events, stop-loss hit, full close, and failures.
 - `signal_to_card_delay` — seconds from signal creation to command creation.
 - `approval_to_execution_delay` — seconds from command creation to execution.
 - `slippage`, `spread_at_execution` — captured from the EA execution report.
-- `r_result` — **approximate** R multiple (reward ÷ risk).
-- `final_notes` — human-readable context, including "R provisional" warnings.
+- `r_result` — remains `null` without a verified whole-trade realised return. TP targets and stop markers are not return evidence.
+- `final_notes` — human-readable milestone context and explicit evidence limitations.
 
-## Approximate R calculation
+## Why whole-trade realised R is withheld
 
-```
-BUY:   risk = entry_price - initial_stop_loss
-       reward(TP) = tp_price - entry_price
-SELL:  risk = initial_stop_loss - entry_price
-       reward(TP) = entry_price - tp_price
-R(TP) = reward(TP) / risk        (only when risk > 0)
-```
+A `TP1_CLOSE_SUCCESS`, `TP2_CLOSE_SUCCESS`, `TP3_CLOSE_SUCCESS` or
+`STOP_LOSS_HIT` event is a **reported milestone**, not a volume-weighted
+realised return for the entire position. An event may represent a partial
+close, a moved stop, or a residual position with an unknown exit. A target
+price alone cannot establish the return on the opening volume.
 
-If the executed entry price is not reported, the signal's entry/market
-placeholder is used and `final_notes` records that **R is provisional**. A
-stop-out is recorded conservatively as approximately **−1R** (or breakeven if
-the SL had already been moved up).
+The ledger preserves those milestones in `result_status` but leaves
+`r_result` as `null` for TP, stop, close, or management-failure events.
+This is **unknown**, not zero, profit, or loss. Fully closed without an
+attributed exit remains `CLOSED_UNATTRIBUTED` for manual review.
 
-## Why approximate
+## Evidence boundary
 
-This is a local forward-testing tool, not a P&L accounting system. R is a
-risk-normalised sanity check on signal quality, deliberately conservative.
-Real broker statements remain the authority for any actual account.
+This ledger records demo forward-testing events; it is **not** broker P&L,
+a verified realised-R calculator, or MT5 demo-broker acceptance. Complete,
+broker-confirmed fill and exit sizes, prices, fees and changes to stops are
+required before a whole-trade return could be calculated.
+
+Historical non-null `r_result` values written by earlier versions are
+legacy target/stop **estimates**, not independently verified performance.
+This change does not rewrite historical rows or certify them.
