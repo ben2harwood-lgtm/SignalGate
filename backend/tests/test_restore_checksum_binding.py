@@ -20,7 +20,7 @@ def _mock_readonly_target_probe(tmp_path, monkeypatch):
     psql_stub = probe_bin / "psql"
     psql_stub.write_text(
         "#!/bin/sh\n"
-        "case \"\${SG_PSQL_RESPONSE:-empty}\" in\n"
+        "case \"${SG_PSQL_RESPONSE:-empty}\" in\n"
         "  empty) printf 'f\\n' ;;\n"
         "  occupied) printf 't\\n' ;;\n"
         "  malformed) printf 'unknown\\n' ;;\n"
