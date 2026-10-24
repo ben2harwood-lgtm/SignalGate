@@ -88,9 +88,12 @@ Management (pending independent review and real demo-broker validation):
 - TP-stage success requires the **assigned child's** original opening deal and
   position identifier, and full-volume TP exit history. A child count or an
   earlier child's TP exit cannot establish another milestone.
-- Following verified TP1/TP2 exits, remaining stops are moved to breakeven/TP1
-  respectively, but success is reported only after broker `DONE` and confirmed
-  current-position stop-loss readback. Rejections/unknowns are failures.
+- Following verified TP1/TP2 exits, remaining stops target breakeven/TP1.
+  The volume-weighted broker entry stays unchanged for execution reporting, but
+  protective SL prices are rounded to the broker's `SYMBOL_TRADE_TICK_SIZE`
+  (BUY down, SELL up) before submitting a stop request. A rounded target still
+  requires broker `DONE` and matching current-position SL readback; broker
+  rejections/unknowns remain failures and are not automatically retried.
 - TP3 is credited only for its own broker TP exit and proven earlier milestones.
   Manual or unknown full closes are never fabricated as TP successes.
 - `STOP_LOSS_HIT` uses the **latest matching broker exit**, not an earlier SL.

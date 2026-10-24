@@ -613,6 +613,28 @@ bool ExecuteSingleTicket(const string command_id, const string symbol,
 }
 
 //+------------------------------------------------------------------+
+//| Round protective SL to valid broker ticks without overstating it |
+//| BUY stops round DOWN, SELL stops round UP; entry price is unchanged. |
+//+------------------------------------------------------------------+
+double AlignProtectiveStopToTick(const string symbol,
+                                const double proposed_sl,
+                                const int direction)
+{
+   double tick = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tick <= 0.0 || proposed_sl <= 0.0 ||
+      (direction != +1 && direction != -1))
+      return(0.0); // unknown tick/direction must not trigger modification
+
+   double tick_count = proposed_sl / tick;
+   // Avoid drifting one tick at an exact binary-floating-point boundary.
+   double snapped_ticks = (direction == +1)
+      ? MathFloor(tick_count + 1e-9) : MathCeil(tick_count - 1e-9);
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   double aligned = NormalizeDouble(snapped_ticks * tick, digits);
+   return(aligned > 0.0 ? aligned : 0.0);
+}
+
+//+------------------------------------------------------------------+
 //| Manage the active command: detect TP hits, move SLs              |
 //+------------------------------------------------------------------+
 void ManageActiveCommand()
@@ -644,12 +666,16 @@ void ManageActiveCommand()
                             g_active_tp1, 0,0,0,0);
       ReportManagementEvent(cid, "TP1_CLOSE_SUCCESS", "TP1_DONE", "CLOSE_TP1",
                             "SUCCESS", g_active_tp1, 0,0,0,0);
-      bool moved = MoveRemainingSL(g_active_symbol, cid, g_active_entry);
-      if(moved) g_effective_sl = g_active_entry;
+      double old_sl = g_effective_sl;
+      double breakeven_sl = AlignProtectiveStopToTick(
+         g_active_symbol, g_active_entry, g_active_direction);
+      bool moved = (breakeven_sl > 0.0 &&
+                    MoveRemainingSL(g_active_symbol, cid, breakeven_sl));
+      if(moved) g_effective_sl = breakeven_sl;
       ReportManagementEvent(cid,
          moved ? "SL_MOVE_BREAKEVEN_SUCCESS" : "SL_MOVE_BREAKEVEN_FAILED",
          "TP1_DONE", "MOVE_SL_BREAKEVEN", moved ? "SUCCESS" : "FAILED",
-         g_active_entry, 0,0, g_active_sl, g_active_entry);
+         g_active_entry, 0,0, old_sl, breakeven_sl);
    }
 
    int tp2_child = ChildIndexForTpLevel(2);
@@ -661,12 +687,16 @@ void ManageActiveCommand()
                             g_active_tp2, 0,0,0,0);
       ReportManagementEvent(cid, "TP2_CLOSE_SUCCESS", "TP2_DONE", "CLOSE_TP2",
                             "SUCCESS", g_active_tp2, 0,0,0,0);
-      bool moved = MoveRemainingSL(g_active_symbol, cid, g_active_tp1);
-      if(moved) g_effective_sl = g_active_tp1;
+      double old_sl = g_effective_sl;
+      double tp1_stop_sl = AlignProtectiveStopToTick(
+         g_active_symbol, g_active_tp1, g_active_direction);
+      bool moved = (tp1_stop_sl > 0.0 &&
+                    MoveRemainingSL(g_active_symbol, cid, tp1_stop_sl));
+      if(moved) g_effective_sl = tp1_stop_sl;
       ReportManagementEvent(cid,
          moved ? "SL_MOVE_TP1_SUCCESS" : "SL_MOVE_TP1_FAILED",
          "TP2_DONE", "MOVE_SL_TP1", moved ? "SUCCESS" : "FAILED",
-         g_active_tp1, 0,0, g_active_entry, g_active_tp1);
+         g_active_tp1, 0,0, old_sl, tp1_stop_sl);
    }
 
    // Full close: TP3 is credited only to its own child and only with all

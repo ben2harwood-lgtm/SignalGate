@@ -358,3 +358,29 @@ def test_all_split_ticket_lots_are_validated_before_first_broker_order():
     assert "CloseAllChildren(" not in preflight
     assert split.index("NormalizeLot(symbol, lots[i])") < split.index("trade.Buy(")
     assert split.index("NormalizeLot(symbol, lots[i])") < split.index("trade.Sell(")
+
+def test_weighted_breakeven_stop_is_tick_aligned_and_directional():
+    """Offline guard only: actual tick/rejection proof requires MT5 DEMO."""
+    helper = EA.split("double AlignProtectiveStopToTick(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert "SYMBOL_TRADE_TICK_SIZE" in helper
+    assert "SYMBOL_DIGITS" in helper
+    assert "direction == +1" in helper
+    assert "MathFloor(tick_count + 1e-9)" in helper
+    assert "MathCeil(tick_count - 1e-9)" in helper
+    assert "NormalizeDouble(snapped_ticks * tick, digits)" in helper
+    assert "if(tick <= 0.0 || proposed_sl <= 0.0" in helper
+
+    management = EA.split("void ManageActiveCommand()", 1)[1].split(
+        "string ResolveBrokerSymbol(", 1
+    )[0]
+    assert "g_active_entry, g_active_direction" in management
+    assert "g_active_tp1, g_active_direction" in management
+    assert "MoveRemainingSL(g_active_symbol, cid, breakeven_sl)" in management
+    assert "MoveRemainingSL(g_active_symbol, cid, tp1_stop_sl)" in management
+    assert "if(moved) g_effective_sl = breakeven_sl;" in management
+    assert "if(moved) g_effective_sl = tp1_stop_sl;" in management
+    assert "old_sl, breakeven_sl" in management
+    assert "old_sl, tp1_stop_sl" in management
+    assert "if(moved) g_effective_sl = g_active_entry" not in management
