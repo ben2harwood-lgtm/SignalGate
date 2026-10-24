@@ -54,7 +54,7 @@ if ! target_occupied="$(psql -X -A -t -v ON_ERROR_STOP=1 \
         FROM pg_catalog.pg_class AS c
         JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
         WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-          AND n.nspname NOT LIKE 'pg_toast%'
+          AND n.nspname NOT LIKE 'pg!_toast%' ESCAPE '!'
       );" 2>/dev/null)"; then
   echo "Unable to verify an empty isolated restore target; refusing restore" >&2
   exit 2
