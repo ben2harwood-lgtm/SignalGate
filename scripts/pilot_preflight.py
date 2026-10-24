@@ -36,21 +36,43 @@ FORBIDDEN_EXPORT_KEYS = {
 
 
 def validate_backend_url(raw: str) -> str:
-    value = raw.rstrip("/")
-    parsed = urlparse(value)
+    """Require an unambiguous API origin before supplying provider/admin keys.
+
+    Both pilot_preflight and pilot_ops_snapshot call this before constructing
+    their HTTP client. This is an operator input guard, not proof of the
+    remote endpoint's identity, TLS configuration or pilot acceptance.
+    """
+    if (
+        not raw
+        or raw != raw.strip()
+        or "\\" in raw
+        or any(ord(char) <= 0x20 or ord(char) == 0x7f for char in raw)
+    ):
+        raise ValueError("backend must be a clean absolute URL")
+    parsed = urlparse(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("backend must be an absolute http(s) URL")
-    local = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-    if not local and parsed.scheme != "https":
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or "@" in parsed.netloc
+        or "%" in parsed.netloc
+    ):
+        raise ValueError("credentials or ambiguous authority are forbidden")
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("backend URL has an invalid port") from exc
+    if (
+        parsed.netloc.endswith(":")
+        or parsed.path not in {"", "/"}
+        or "?" in raw
+        or "#" in raw
+    ):
+        raise ValueError("backend URL must be an origin without path, query or fragment")
+    if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("non-local pilot preflight requires HTTPS")
-    if parsed.path not in {"", "/"}:
-        raise ValueError("backend URL must be an origin without a path")
-    if parsed.username or parsed.password:
-        raise ValueError("credentials must not be embedded in the backend URL")
-    if parsed.query or parsed.fragment:
-        raise ValueError("backend URL must not contain a query or fragment")
-    return value
-
+    return raw[:-1] if raw.endswith("/") else raw
 
 def mutate_secret(value: str) -> str:
     if not value:
@@ -161,7 +183,11 @@ def run_preflight(
     checks: list[dict] = []
     evidence: dict = {}
 
-    with httpx.Client(base_url=backend, timeout=timeout, follow_redirects=False) as client:
+    # Do not let ambient proxy/CA environment settings redirect credentialled
+    # operator traffic. The normal platform trust store is still used.
+    with httpx.Client(
+        base_url=backend, timeout=timeout, follow_redirects=False, trust_env=False
+    ) as client:
         health = client.get("/health")
         health_json, health_valid = _object_json(health)
         _check("health", health_valid, f"HTTP {health.status_code}; object_json={health_valid}", checks)

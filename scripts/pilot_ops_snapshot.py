@@ -58,7 +58,11 @@ def collect(
     if not re.fullmatch(r"[0-9a-f]{40}", candidate_sha):
         raise ValueError("Operator-declared candidate SHA must be 40 lowercase hex digits")
 
-    with httpx.Client(base_url=backend, timeout=15, follow_redirects=False) as client:
+    # Credentialled operator requests must not inherit ambient proxy/CA
+    # overrides. TLS verification remains enabled with the platform trust store.
+    with httpx.Client(
+        base_url=backend, timeout=15, follow_redirects=False, trust_env=False
+    ) as client:
         ready = client.get("/readyz")
         health = client.get("/health")
         metrics = client.get(
