@@ -92,7 +92,7 @@ def test_simulator_local_idempotency(client):
     assert sim.run_once() is False
 
 
-def test_simulator_stop_out_records_loss(client):
+def test_simulator_stop_out_records_status_not_unverified_r(client):
     user = register_user(client, "124")
     sig = create_signal(client, VALID)
     approve = client.post(
@@ -121,6 +121,7 @@ def test_simulator_stop_out_records_loss(client):
             .one()
         )
         assert row.result_status == "STOPPED_OUT"
-        assert row.r_result == -1.0
+        assert row.r_result is None
+        assert "unverified" in row.final_notes
     finally:
         db.close()
