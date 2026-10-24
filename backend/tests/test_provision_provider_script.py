@@ -343,3 +343,45 @@ def test_external_private_credential_output_remains_accepted(tmp_path):
     target = tmp_path / "fresh-credential.json"
     assert provision.validate_credential_output(str(target)) == target
     assert not target.exists()
+
+
+def test_provisioning_admin_client_ignores_ambient_proxy_ca_and_redirects(
+    monkeypatch, tmp_path,
+):
+    """No network or provider state mutation; construction is intercepted."""
+    import sys
+
+    class NoNetwork(RuntimeError):
+        pass
+
+    observed = []
+
+    def blocking_client(**kwargs):
+        assert kwargs["trust_env"] is False
+        assert kwargs["follow_redirects"] is False
+        assert kwargs["base_url"] == "https://provider.example.invalid"
+        assert kwargs["headers"]["X-Admin-Id"] == "SYNTHETIC-ADMIN"
+        assert kwargs["headers"]["X-Admin-API-Key"] == "SYNTHETIC-ADMIN-KEY"
+        observed.append(True)
+        raise NoNetwork("synthetic: no admin API")
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.invalid:8080")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.example.invalid:8080")
+    monkeypatch.setenv("SSL_CERT_FILE", "/synthetic/untrusted/ca.pem")
+    monkeypatch.delenv("SIGNALGATE_PROVIDER_CREDENTIAL_OUTPUT", raising=False)
+    monkeypatch.setattr(provision.httpx, "Client", blocking_client)
+    target = tmp_path / "not-created-secret.json"
+    monkeypatch.setattr(sys, "argv", [
+        str(SCRIPT),
+        "--backend", "https://provider.example.invalid",
+        "--admin-id", "SYNTHETIC-ADMIN",
+        "--admin-api-key", "SYNTHETIC-ADMIN-KEY",
+        "--organization-name", "Fictional Organisation",
+        "--provider-name", "Fictional Provider",
+        "--credential-output", str(target),
+    ])
+
+    with pytest.raises(NoNetwork, match="synthetic: no admin API"):
+        provision.main()
+    assert observed == [True]
+    assert not target.exists()

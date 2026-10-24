@@ -206,10 +206,14 @@ def main() -> int:
     org_slug = args.organization_slug or slug(args.organization_name)
     provider_slug = args.provider_slug or slug(args.provider_name)
 
+    # Privileged tenant mutation must not inherit ambient proxy or CA-file
+    # overrides. TLS verification remains enabled with the platform trust store.
     with httpx.Client(
         base_url=args.backend.rstrip("/"),
         timeout=15.0,
         headers=headers,
+        follow_redirects=False,
+        trust_env=False,
     ) as client:
 
         def post(path: str, payload: dict | None = None) -> dict:

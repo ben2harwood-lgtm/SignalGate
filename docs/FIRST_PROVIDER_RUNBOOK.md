@@ -22,6 +22,14 @@ Use `scripts/provision_provider.py` or the equivalent authenticated admin workfl
 The provisioning CLI creates the initial feed **paused** and no longer prints the raw provider credential to ordinary stdout. Choose the credential-delivery path **before** provisioning.
 
 Before any tenant-creation request, the CLI rejects non-local plain HTTP endpoints and ambiguous origins. Use **HTTPS** for all remote admin APIs; `http://127.0.0.1`, `http://localhost` and `http://[::1]` are permitted for local-only demos. Never embed credentials, paths, queries or fragments in `--backend`. A rejected URL must produce no admin API request or credential file.
+Privileged provisioning requests disable ambient HTTP proxy and CA-file
+overrides (`httpx.Client(trust_env=False)`) and do not follow redirects.
+This prevents unexpected `HTTPS_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE` or
+`SSL_CERT_DIR` settings from changing the destination/trust of admin keys.
+Normal platform TLS verification remains enabled. Operators using a
+corporate proxy or private CA must arrange a separately trusted network/
+certificate route before using this provisioning CLI; ambient overrides
+are deliberately not an accepted credential-transport mechanism.
 
 Recommended secret-file flow (write the file outside the repository and deliver it through the approved private channel):
 
