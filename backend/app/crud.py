@@ -2093,6 +2093,12 @@ def reconcile_open_position(
     if existing is not None:
         if existing.status != "SUCCESS":
             conflicts.append("existing_execution_status")
+        # A terminal/expired command cannot truthfully be reconciled as an
+        # OPEN broker position merely because its old execution ticket matches.
+        if command.status not in {
+            "EXECUTED_OPEN", "PARTIAL_TP1_DONE", "PARTIAL_TP2_DONE"
+        }:
+            conflicts.append("command_state")
         if existing.executed_direction and existing.executed_direction != payload.executed_direction:
             conflicts.append("existing_direction")
         if existing.executed_symbol and not _broker_symbol_matches(
