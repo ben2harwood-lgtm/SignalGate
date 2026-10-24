@@ -2112,7 +2112,10 @@ def reconcile_open_position(
         # requested symbol, direction and quantity happen to agree.
         if not existing_tickets:
             conflicts.append("missing_stored_broker_identity")
-        elif not (existing_tickets & set(tickets)):
+        # A snapshot may contain fewer positions after a partial close, but
+        # even one *additional* unowned ticket must not become authoritative
+        # merely because another ticket happens to match the old execution.
+        elif not set(tickets).issubset(existing_tickets):
             conflicts.append("broker_tickets")
 
         # A still-open broker position must not silently validate a SUCCESS
