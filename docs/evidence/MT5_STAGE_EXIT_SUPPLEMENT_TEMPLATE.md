@@ -49,6 +49,7 @@ TP exit as proof that a specific TP-stage child closed by TP.
 | S10 | Conflicting broker exits at the same latest millisecond | Bound children with conflicting `DEAL_REASON_SL` and manual/unknown exit reasons at the same latest `DEAL_TIME_MSC` must NOT emit `STOP_LOSS_HIT` based on deal-ticket order; retain exact deal IDs/reasons and `FULLY_CLOSED` without a fabricated stop reason | NOT_RUN | |
 | S11 | Partially filled split command; later child fails and rollback is attempted (R1–R5 mandatory) | No final `FAILED` or flat receipt until broker-confirmed closure of **each** filled child; check `PositionClose` return, server `ResultRetcode()` and post-close broker position/deal history. An unknown/rejected rollback requires a durable reconciliation-required HOLD, operator escalation, and no further order polling or broker retry; never close an unrelated position | NOT_RUN | |
 | S12 | Later enabled TP2/TP3 split-child lot is invalid before execution | Preflight every enabled child lot before the FIRST broker order: return `LOT_SIZE_INVALID` with ZERO broker order/deal tickets and no rollback attempt. Preserve exact DEMO account/magic, EA input lot values, broker min/max/step, and backend failure receipt; never infer broker proof from CI | NOT_RUN | |
+| S13 | Single-ticket broker send returns unknown, delayed or contradictory fill outcome (U1–U5 mandatory) | No terminal `FAILED` merely from `trade.Buy/Sell` false, non-filled/`TRADE_RETCODE_PLACED`/timeout retcode, or bad `ResultVolume()` when a fill might exist; durable execution-uncertain HOLD across restart, no new order or blind resend, reconcile exact order/deal/position IDs and backend state before any terminal outcome. Record broker retcode and account-flat proof (or explicitly INCONCLUSIVE) | NOT_RUN | |
 
 ### S11 — mandatory partial-fill rollback subcases (all NOT_RUN)
 
@@ -83,13 +84,38 @@ tickets for invalid later-child lot configuration; static/source checks alone
 cannot mark it PASS. Actual later-child broker rejection after a prior fill
 remains covered separately by S11/R1–R5 and remains a HARD HOLD.
 
+### S13 — single-ticket uncertain broker outcome (all U1–U5 NOT_RUN)
+
+At PR #60 head `87a0ef3a1edf2e50c19b86370cd8355507df045d`,
+`ExecuteSingleTicket()` reports terminal `FAILED` when the broker send
+returns false/non-filled `ResultRetcode()` or inconsistent fill volume/price.
+A rejected or missing client-side acknowledgement is **not broker proof** that
+no order/deal exists. The account-flat gate is an additional protection, not
+an authoritative result for a missing or delayed broker order. The currently
+implemented EA does **not** meet the required recovery contract below. These
+are prospective, independently reviewed DEMO acceptance cases, NOT_RUN.
+
+| ID | Controlled MT5 DEMO condition | Required outcome / failure guard | Status | Controlled broker + backend evidence ref |
+|---|---|---|---|---|
+| U1 | Single market send times out, then matching broker deal appears | No premature `FAILED`, no second order and no automatic retry; durable hold survives EA restart and exact order/deal/position evidence reconciles with backend | NOT_RUN | |
+| U2 | `TRADE_RETCODE_PLACED` or non-filled return while a broker order remains pending or is filled later | No definitive failure based on retcode alone; no fresh polling or duplicate send; prove the final broker outcome through terminal/deal history | NOT_RUN | |
+| U3 | Reported `ResultVolume()` <= 0 or `ResultPrice()` <= 0 despite a matching broker deal | No terminal `FAILED` or fabricated zero exposure; bind actual `DEAL_POSITION_ID`, volume, price, magic, account and command, then require operator-reviewed reconciliation | NOT_RUN | |
+| U4 | Unknown send result and EA/terminal restarts before broker truth is known | Durable uncertainty journal persists across restart; still block broker orders after restart even if no position is initially visible; wrong account/binding or corrupted journal refuses startup | NOT_RUN | |
+| U5 | Backend records terminal `FAILED` or rejects reconciliation (409), while delayed broker fill exists | No blind resend, no invented flatness or silent ledger override; fail closed, preserve discrepancy and escalate to an operator for authorised resolution | NOT_RUN | |
+
+S13 may be marked PASS **only after all U1–U5 have genuine MT5 DEMO broker
+and backend evidence, plus independent review**. A simulated broker response,
+an apparently empty account at one instant, 0-error compile or CI tests cannot
+prove absence of a delayed fill. If terminal/backend identity cannot be
+reconciled safely, mark FAIL/INCONCLUSIVE and keep PR #60 on HOLD.
+
 ## Evidence review and decision
 
-For **each** S1–S12 row (including every S11/R1–R5 subcase), the independent reviewer checks the original demo
+For **each** S1–S13 row (including every S11/R1–R5 and S13/U1–U5 subcase), the independent reviewer checks the original demo
 terminal/broker deal history against the EA journal and backend audit receipts,
 ensures negative scenarios generated **no** forbidden success event, and verifies
 that the record belongs to this exact tested candidate and demo account.
-A `NOT_RUN`, `FAIL`, `INCONCLUSIVE` in any matrix row or R1–R5 subcase,
+A `NOT_RUN`, `FAIL`, `INCONCLUSIVE` in any matrix row or R1–R5 or U1–U5 subcase,
 missing broker proof, missing reviewer, or mixed candidate/environment makes the **whole supplement NOT ACCEPTED**.
 No synthetic or source-only result may be reclassified as broker demo proof.
 
