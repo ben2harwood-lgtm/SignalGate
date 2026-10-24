@@ -21,13 +21,27 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python ../scripts/init_db.py          # create tables + seed settings
+python ../scripts/init_db.py          # create LOCAL SQLite tables + seed settings
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Check it: open http://127.0.0.1:8000/health → should show
 `{"status":"ok","demo_only_mode":true,"admin_paused":false}`.
 Interactive API docs: http://127.0.0.1:8000/docs
+
+**Database bootstrap safety:** `scripts/init_db.py` and
+`scripts/seed_settings.py` preflight the current configuration **before
+importing the database engine**. With `REQUIRE_LICENSE=false`, they refuse
+PostgreSQL (`postgres://` or `postgresql://`), non-file SQLite, and
+`DEMO_ONLY_MODE=false`; they accept only file-backed local SQLite.
+A correctly configured `REQUIRE_LICENSE=true` hosted invocation still checks
+the current Alembic migration state before seeding. Neither script is a hosted
+schema migration tool; use the reviewed Alembic process for hosted upgrades.
+
+This is a **partial** mitigation of [issue #108](https://github.com/ben2harwood-lgtm/SignalGate/issues/108):
+direct calls to `app.database.init_db()` and direct Uvicorn/local-header mode
+are **not** protected by this CLI-only preflight. The PostgreSQL CI fixture and
+app-level hosted boundary still require a separately reviewed correction.
 
 ## 2. Telegram bot (Terminal 2)
 
