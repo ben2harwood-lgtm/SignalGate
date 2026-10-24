@@ -17,7 +17,7 @@ import sys
 
 import httpx
 
-from ea_simulator import BANNER, EASimulator
+from ea_simulator import BANNER, EASimulator, validate_local_backend_origin
 
 DEFAULT_SIGNAL = "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363"
 
@@ -30,15 +30,33 @@ def main() -> None:
     parser.add_argument("--telegram-user-id", default="demo-tester-1")
     parser.add_argument("--signal", default=DEFAULT_SIGNAL)
     args = parser.parse_args()
+    try:
+        backend = validate_local_backend_origin(args.backend)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     print(BANNER)
-    with httpx.Client(base_url=args.backend, timeout=10.0) as http:
-        # 1. Health.
-        health = http.get("/health").json()
-        print("Health:", health)
-        if health.get("admin_paused"):
-            print("Backend is paused; resume before running the demo.")
+    # Synthetic approvals and fills must never be sent via an ambient proxy.
+    with httpx.Client(
+        base_url=backend, timeout=10.0, follow_redirects=False, trust_env=False
+    ) as http:
+        # 1. Validate demo health before ANY registration or fake execution.
+        health_response = http.get("/health")
+        try:
+            health = health_response.json()
+        except ValueError:
+            health = None
+        if (
+            health_response.status_code != 200
+            or not isinstance(health, dict)
+            or health.get("status") != "ok"
+            or health.get("demo_only_mode") is not True
+            or health.get("admin_paused") is not False
+        ):
+            print("Refusing scripted demo: local backend did not confirm "
+                  "active demo-only health.")
             sys.exit(1)
+        print("Health:", health)
 
         # 2. Register tester.
         user = http.post(

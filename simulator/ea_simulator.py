@@ -16,8 +16,40 @@ import argparse
 import json
 import time
 from typing import Any, Dict, List, Optional, Protocol
+from urllib.parse import urlsplit
 
 import httpx
+
+
+def validate_local_backend_origin(raw: str) -> str:
+    """Limit fake lifecycle writers to an explicit numeric loopback HTTP origin.
+
+    This rejects remote hosts, userinfo, arbitrary paths and inherited proxy
+    routing. It cannot prove that a local reverse proxy is not forwarding.
+    """
+    if not raw or any(ord(char) <= 32 or ord(char) == 127 for char in raw):
+        raise ValueError("Simulator backend must be a local HTTP origin")
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Simulator backend has an invalid host or port") from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.netloc.endswith(":")
+        or port == 0
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "Synthetic execution is local-only: use http://127.0.0.1:<port> "
+            "or http://[::1]:<port>, with no userinfo, path, query or fragment"
+        )
+    return raw.rstrip("/")
 
 
 BANNER = (
@@ -308,9 +340,32 @@ def main() -> None:
         help="Process a single command then exit (immediate mode)",
     )
     args = parser.parse_args()
+    try:
+        backend = validate_local_backend_origin(args.backend)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     print(BANNER)
-    with httpx.Client(base_url=args.backend, timeout=10.0) as http:
+    # No ambient HTTP(S)_PROXY/redirect may receive the EA key or fake fills.
+    with httpx.Client(
+        base_url=backend, timeout=10.0, follow_redirects=False, trust_env=False
+    ) as http:
+        health_response = http.get("/health")
+        try:
+            health = health_response.json()
+        except ValueError:
+            health = None
+        if (
+            health_response.status_code != 200
+            or not isinstance(health, dict)
+            or health.get("status") != "ok"
+            or health.get("demo_only_mode") is not True
+            or health.get("admin_paused") is not False
+        ):
+            parser.error(
+                "Simulator refused: /health did not confirm an active "
+                "local demo-only backend"
+            )
         sim = EASimulator(
             http=http,
             user_id=args.user_id,

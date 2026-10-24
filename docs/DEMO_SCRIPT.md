@@ -2,6 +2,25 @@
 
 This walkthrough demonstrates the current Provider Edition journey without real money. It is for sales/pilot demonstration and operating rehearsal; it is not a substitute for the MT5 acceptance scenarios in `docs/MT5_ACCEPTANCE.md`.
 
+## Legacy synthetic CLI containment
+
+`simulator/ea_simulator.py` and `simulator/run_demo_flow.py` post
+**fabricated** execution/management events to a backend. They are safe
+for isolated local test fixtures, **not** for deployed pilot/customer
+environments and **not** for MT5 broker acceptance. Their command-line
+entrypoints now refuse non-loopback URLs, URL credentials, redirects and
+ambient proxy routing; only numeric `http://127.0.0.1:<port>` or
+`http://[::1]:<port>` origins are allowed. They check unpaused,
+demo-only `/health` before polling, registering or reporting synthetic
+fills. The class-level test harness remains usable with an in-process
+FastAPI TestClient.
+
+A loopback URL can still be forwarded by a locally configured tunnel
+or reverse proxy: operators must use an isolated test backend/database,
+never a forwarded hosted/provider/customer deployment. A green
+simulator run never establishes genuine MetaEditor, MT5 demo-broker or
+independent acceptance evidence.
+
 ## Preflight
 
 1. Use the frozen demo-only RC or a later explicitly named candidate.
