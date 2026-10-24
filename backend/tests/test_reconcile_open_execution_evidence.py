@@ -291,3 +291,49 @@ def test_terminal_command_refuses_later_matching_open_position_snapshot(
             .one()
         )
         assert "command_state" in audit.payload_json
+
+
+@pytest.mark.parametrize("other_broker_symbol", ["XAUUSD.b", "XAUUSDmicro"])
+def test_same_requested_prefix_does_not_validate_different_executed_symbol(
+    client, other_broker_symbol
+):
+    """Requested-symbol prefix is not sufficient broker instrument identity."""
+    cid = _reported_execution(client, "850")
+    with SessionLocal() as db:
+        original = db.query(models.Execution).filter_by(command_id=cid).one()
+        original.executed_symbol = "XAUUSD.a"
+        db.commit()
+    snapshot = _snapshot()
+    snapshot["executed_symbol"] = other_broker_symbol
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    assert "existing_executed_symbol" in response.json()["detail"]
+    with SessionLocal() as db:
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert execution.executed_symbol == "XAUUSD.a"
+        assert execution.broker_ticket == "9001"
+        audit = (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
+            .one()
+        )
+        assert "existing_executed_symbol" in audit.payload_json
+
+
+def test_same_recorded_broker_suffix_allows_matching_snapshot(client):
+    cid = _reported_execution(client, "851")
+    with SessionLocal() as db:
+        original = db.query(models.Execution).filter_by(command_id=cid).one()
+        original.executed_symbol = "XAUUSD.a"
+        db.commit()
+    snapshot = _snapshot()
+    snapshot["executed_symbol"] = "XAUUSD.a"
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "matched"
