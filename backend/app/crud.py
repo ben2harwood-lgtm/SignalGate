@@ -2107,7 +2107,12 @@ def reconcile_open_position(
                 existing_tickets.update(str(x) for x in json.loads(existing.child_tickets_json))
             except (TypeError, ValueError, json.JSONDecodeError):
                 conflicts.append("stored_ticket_payload")
-        if existing_tickets and not (existing_tickets & set(tickets)):
+        # A successful execution with no persisted broker-ticket identity
+        # cannot be validated against a later snapshot merely because the
+        # requested symbol, direction and quantity happen to agree.
+        if not existing_tickets:
+            conflicts.append("missing_stored_broker_identity")
+        elif not (existing_tickets & set(tickets)):
             conflicts.append("broker_tickets")
 
         # A still-open broker position must not silently validate a SUCCESS
