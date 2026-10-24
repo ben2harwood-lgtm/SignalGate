@@ -97,3 +97,31 @@ def test_provenance_rejects_matching_bytes_from_uncommitted_symlink(tmp_path):
         pytest.skip("Symlinks unsupported on this filesystem")
     with pytest.raises(ValueError, match="not a regular working file"):
         inventory.candidate_source_provenance(repo)
+
+
+def test_incomplete_write_never_publishes_final_receipt(monkeypatch, tmp_path):
+    destination = tmp_path / "inventory.json"
+    real_dump = inventory.json.dump
+
+    def fail_mid_json(_payload, output, **_kwargs):
+        output.write('{"partial":')
+        raise OSError("synthetic disk quota")
+
+    monkeypatch.setattr(inventory.json, "dump", fail_mid_json)
+    with pytest.raises(OSError, match="synthetic disk quota"):
+        inventory.write_new_receipt(destination, {"scope": "synthetic"})
+    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []
+
+    monkeypatch.setattr(inventory.json, "dump", real_dump)
+    inventory.write_new_receipt(destination, {"scope": "complete"})
+    assert json.loads(destination.read_text()) == {"scope": "complete"}
+
+
+def test_publish_failure_keeps_existing_receipt_and_cleans_temporary(tmp_path):
+    destination = tmp_path / "inventory.json"
+    destination.write_text("unchanged", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        inventory.write_new_receipt(destination, {"scope": "replacement"})
+    assert destination.read_text() == "unchanged"
+    assert list(tmp_path.iterdir()) == [destination]

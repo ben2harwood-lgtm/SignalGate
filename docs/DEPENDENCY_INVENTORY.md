@@ -8,7 +8,7 @@ In a fresh Python environment, after checking out the **exact** candidate commit
     pip install -r telegram_bot/requirements.txt
     python scripts/generate_dependency_inventory.py --output dependency-inventory-<candidate>.json
 
-Replace `<candidate>` with the commit shorthand (without angle brackets in a shell); use a **new output filename each run**. Existing files/symlinks are never overwritten, and on POSIX the output file is owner-readable only (0600). Keep this receipt private until its package metadata and intended recipients have been reviewed.
+Replace `<candidate>` with the commit shorthand (without angle brackets in a shell); use a **new output filename each run**. The fully written JSON is published atomically without replacing existing files/symlinks, and on POSIX the output file is owner-readable only (0600). A failed/partial write leaves no final-name receipt. Keep this receipt private until its package metadata and intended recipients have been reviewed.
 
 The v2 receipt records the actual Git HEAD and SHA-256 digests of the generator and three dependency requirement files **only if their working-tree bytes match the committed Git blobs**. A modified/untracked replacement of one of those tracked source inputs fails closed. It records installed distribution names, versions, available licence metadata and homepages.
 

@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
 SOURCE_FILES = (
     "scripts/generate_dependency_inventory.py",
@@ -87,12 +88,22 @@ def installed_packages() -> list[dict]:
 
 
 def write_new_receipt(path: Path, payload: dict) -> None:
-    """Private on POSIX; never follow/overwrite pre-existing receipt or symlink."""
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-        json.dump(payload, output, indent=2)
-        output.write("\n")
-
+    """Publish only fully written JSON, atomically and without overwriting."""
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(payload, output, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        # A hard-link is a no-replace atomic publish on the same filesystem.
+        # os.replace/os.rename would silently overwrite an older receipt.
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
