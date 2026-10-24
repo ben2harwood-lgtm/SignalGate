@@ -18,9 +18,9 @@ def _scenario_rows(text: str):
     return rows
 
 
-def test_all_ten_broker_demo_scenarios_are_explicitly_unexecuted():
+def test_all_eleven_broker_demo_scenarios_are_explicitly_unexecuted():
     rows = _scenario_rows(RECEIPT.read_text(encoding="utf-8"))
-    assert set(rows) == {f"S{n}" for n in range(1, 11)}
+    assert set(rows) == {f"S{n}" for n in range(1, 12)}
     assert all(row[3] == "NOT_RUN" and not row[4] for row in rows.values())
 
 
@@ -68,4 +68,41 @@ def test_evidence_index_links_supplement_without_approval_claim():
     evidence_readme = RECEIPT.parent / "README.md"
     text = evidence_readme.read_text(encoding="utf-8")
     assert "MT5_STAGE_EXIT_SUPPLEMENT_TEMPLATE.md" in text
-    assert "ten NOT_RUN scenarios" in text
+    assert "eleven NOT_RUN scenarios" in text
+
+
+def test_split_fill_rollback_receipt_never_infers_flatness_from_close_request():
+    text = RECEIPT.read_text(encoding="utf-8")
+    rows = _scenario_rows(text)
+    assert "Partially filled split command" in rows["S11"][1]
+    for required in (
+        "No final `FAILED` or flat receipt",
+        "`PositionClose`",
+        "`ResultRetcode()`",
+        "post-close broker position/deal history",
+        "durable reconciliation-required HOLD",
+        "no further order polling or broker retry",
+        "never close an unrelated position",
+    ):
+        assert required in rows["S11"][2]
+
+    subcases = {}
+    for line in text.splitlines():
+        if line.startswith("| R"):
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            assert len(cells) == 5, line
+            assert cells[0] not in subcases
+            subcases[cells[0]] = cells
+    assert set(subcases) == {f"R{n}" for n in range(1, 6)}
+    assert all(row[3] == "NOT_RUN" and not row[4] for row in subcases.values())
+    for case, proof in {
+        "R1": "server `ResultRetcode()` rejects close",
+        "R2": "stop/freeze/rejection",
+        "R3": "EA restarts",
+        "R4": "authoritative broker deal history confirms the account flat",
+        "R5": "times out or returns 409",
+    }.items():
+        assert proof in subcases[case][1]
+    assert "S11 may be marked PASS **only if R1–R5 each have real broker-DEMO evidence" in text
+    assert "matching backend audit receipt" in text
+    assert "Backend status and reconciliation semantics must be corrected" in text
