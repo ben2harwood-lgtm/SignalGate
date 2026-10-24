@@ -125,6 +125,24 @@ Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
 - `EnableTrading = false` pauses timer processing, including management and
   reconciliation; it **does not flatten positions** or cancel broker-side
   stops/targets. Check positions and manage them separately before pausing.
+- **Pre-order acknowledgement uncertainty:** before sending `/commands/{id}/received`,
+  the EA writes `SignalGate_ack_abort.txt` under that terminal's MQL5 Files
+  folder, binding the claimed command to the broker-DEMO login/server, backend
+  URL, user ID and magic number (never storing licences/API secrets).
+  If acknowledgement fails or its HTTP outcome is unknown, the EA sends **no
+  broker order** and blocks all further polling. It retries only the *same*
+  `FAILED / ACK_RECEIPT_UNCONFIRMED` execution receipt, at most every 30
+  seconds, until the backend confirms it. The journal survives terminal
+  restarts; mismatched/unreadable journals cause startup refusal. Recovery
+  runs even with `EnableTrading=false`; it will not claim "no execution"
+  while the DEMO account has any position or pending order. Do not delete a
+  stuck journal merely to turn trading on: inspect broker history, backend
+  receipts and the account/terminal binding, then involve the coordinator.
+  This is a **fail-closed pre-order transport correction**, not proof of
+  reliable broker execution or an automatic re-offer/ACK retry. It cannot
+  eliminate every crash window between positive acknowledgement, journal
+  clearance and broker submission; ambiguous outcomes still require real
+  demo-broker reconciliation and independent review.
 
 ## 8. Error codes the EA reports
 
