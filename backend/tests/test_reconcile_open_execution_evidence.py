@@ -199,3 +199,55 @@ def test_missing_stored_broker_identity_refuses_snapshot_match(client, stored_ch
             .one()
         )
         assert "missing_stored_broker_identity" in audit.payload_json
+
+
+@pytest.mark.parametrize("after_partial", [False, True], ids=["open", "after-tp1"])
+def test_matching_ticket_does_not_authorize_untracked_extra_position(
+    client, after_partial
+):
+    """A single familiar ticket must not mask an extra broker position ticket."""
+    cid = _reported_execution(client, "847")
+    if after_partial:
+        event = client.post(
+            f"/commands/{cid}/management_event",
+            json={"event_type": "TP1_CLOSE_SUCCESS", "stage": "TP1_DONE", "result": "SUCCESS"},
+            headers=EA_HEADERS,
+        )
+        assert event.status_code == 200, event.text
+
+    snapshot = _snapshot(lot_size=0.005 if after_partial else 0.01)
+    snapshot["broker_tickets"] = ["9001", "9002"]
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    assert "broker_tickets" in response.json()["detail"]
+    with SessionLocal() as db:
+        original = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert original.broker_ticket == "9001"
+        assert original.lot_size == pytest.approx(0.01)
+        assert original.executed_price == pytest.approx(2345.0)
+        audit = (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
+            .one()
+        )
+        assert "broker_tickets" in audit.payload_json
+
+
+def test_snapshot_can_match_subset_of_already_recorded_child_tickets(client):
+    """A shrinking known-ticket set remains compatible with idempotent matching."""
+    cid = _reported_execution(client, "848")
+    with SessionLocal() as db:
+        original = db.query(models.Execution).filter_by(command_id=cid).one()
+        original.child_tickets_json = '["9001", "9002"]'
+        db.commit()
+    snapshot = _snapshot()
+    snapshot["broker_tickets"] = ["9002"]
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "matched"
