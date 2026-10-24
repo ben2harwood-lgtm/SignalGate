@@ -18,9 +18,9 @@ def _scenario_rows(text: str):
     return rows
 
 
-def test_all_thirteen_broker_demo_scenarios_are_explicitly_unexecuted():
+def test_all_fourteen_broker_demo_scenarios_are_explicitly_unexecuted():
     rows = _scenario_rows(RECEIPT.read_text(encoding="utf-8"))
-    assert set(rows) == {f"S{n}" for n in range(1, 14)}
+    assert set(rows) == {f"S{n}" for n in range(1, 15)}
     assert all(row[3] == "NOT_RUN" and not row[4] for row in rows.values())
 
 
@@ -68,7 +68,7 @@ def test_evidence_index_links_supplement_without_approval_claim():
     evidence_readme = RECEIPT.parent / "README.md"
     text = evidence_readme.read_text(encoding="utf-8")
     assert "MT5_STAGE_EXIT_SUPPLEMENT_TEMPLATE.md" in text
-    assert "thirteen NOT_RUN scenarios" in text
+    assert "fourteen NOT_RUN scenarios" in text
 
 
 def test_split_fill_rollback_receipt_never_infers_flatness_from_close_request():
@@ -155,4 +155,24 @@ def test_single_ticket_unknown_broker_outcome_needs_real_reconciliation():
     for required in ("87a0ef3a1edf2e50c19b86370cd8355507df045d",
                      "S13 may be marked PASS **only after all U1–U5",
                      "independent review", "FAIL/INCONCLUSIVE"):
+        assert required in text
+
+def test_multi_deal_same_order_and_foreign_increase_require_demo_proof():
+    """S14 is an unexecuted broker DEMO obligation, never synthetic acceptance."""
+    text = RECEIPT.read_text(encoding="utf-8")
+    row = _scenario_rows(text)["S14"]
+    assert "MULTIPLE opening broker deals" in row[1]
+    for required in (
+        "DEAL_ENTRY_IN", "DEAL_ORDER", "DEAL_POSITION_ID",
+        "cumulative volume", "FULLY_CLOSED", "Different-order added fills",
+        "DEAL_ENTRY_INOUT", "HOLD", "not fabricated closure",
+    ):
+        assert required in row[2]
+    assert row[3] == "NOT_RUN" and not row[4]
+    for required in (
+        "same original `DEAL_ORDER`", "different `DEAL_ORDER`",
+        "DEAL_ENTRY_INOUT", "original market order",
+        "S14 status: NOT_RUN", "independent reviewer",
+        "DEMO terminal/deal/backend receipts",
+    ):
         assert required in text

@@ -50,6 +50,7 @@ TP exit as proof that a specific TP-stage child closed by TP.
 | S11 | Partially filled split command; later child fails and rollback is attempted (R1–R5 mandatory) | No final `FAILED` or flat receipt until broker-confirmed closure of **each** filled child; check `PositionClose` return, server `ResultRetcode()` and post-close broker position/deal history. An unknown/rejected rollback requires a durable reconciliation-required HOLD, operator escalation, and no further order polling or broker retry; never close an unrelated position | NOT_RUN | |
 | S12 | Later enabled TP2/TP3 split-child lot is invalid before execution | Preflight every enabled child lot before the FIRST broker order: return `LOT_SIZE_INVALID` with ZERO broker order/deal tickets and no rollback attempt. Preserve exact DEMO account/magic, EA input lot values, broker min/max/step, and backend failure receipt; never infer broker proof from CI | NOT_RUN | |
 | S13 | Single-ticket broker send returns unknown, delayed or contradictory fill outcome (U1–U5 mandatory) | No terminal `FAILED` merely from `trade.Buy/Sell` false, non-filled/`TRADE_RETCODE_PLACED`/timeout retcode, or bad `ResultVolume()` when a fill might exist; durable execution-uncertain HOLD across restart, no new order or blind resend, reconcile exact order/deal/position IDs and backend state before any terminal outcome. Record broker retcode and account-flat proof (or explicitly INCONCLUSIVE) | NOT_RUN | |
+| S14 | Single market order produces MULTIPLE opening broker deals on one MT5 DEMO position | Treat same-order `DEAL_ENTRY_IN` deals as one authorised fill ONLY when each `DEAL_ORDER` matches the verified original broker order and `DEAL_POSITION_ID`, symbol/magic/direction and cumulative volume reconcile; permit `FULLY_CLOSED` after broker-proven exits. Different-order added fills or `DEAL_ENTRY_INOUT` reversals must NOT be accepted; unknown identities remain HOLD, not fabricated closure | NOT_RUN | |
 
 ### S11 — mandatory partial-fill rollback subcases (all NOT_RUN)
 
@@ -109,9 +110,37 @@ an apparently empty account at one instant, 0-error compile or CI tests cannot
 prove absence of a delayed fill. If terminal/backend identity cannot be
 reconciled safely, mark FAIL/INCONCLUSIVE and keep PR #60 on HOLD.
 
+### S14 — same-order multi-deal fill versus foreign added exposure (NOT_RUN)
+
+Independent [PR #60 P2 review](https://github.com/ben2harwood-lgtm/SignalGate/pull/60#discussion_r4366249503)
+identified that `ChildClosedByReason()` rejects a second `DEAL_ENTRY_IN`
+even when the broker used two opening deals for one original market order.
+This affects the still-unaccepted single-ticket mode as well as split mode.
+Retain the exact order request/result, `DEAL_ORDER`, opening deal tickets,
+`DEAL_POSITION_ID`, `DEAL_ENTRY`, `DEAL_MAGIC`, symbol, account, time,
+price and cumulative broker volume plus exit deals and backend receipt.
+
+- **Positive MT5 DEMO:** one submitted MARKET order creates at least two genuine
+  opening deals with the **same original `DEAL_ORDER`** and matching position,
+  account, symbol and magic. Once its full opening volume is broker-confirmed
+  closed, a single accurate `FULLY_CLOSED` receipt may be recorded; no frozen
+  active command, false TP/SL or duplicate order. All reported lot/price values
+  must derive from broker-confirmed cumulative fills, not just `ResultDeal()`.
+- **Negative MT5 DEMO:** a later opening deal on the same netting position but
+  a **different `DEAL_ORDER`**, an opening reversal `DEAL_ENTRY_INOUT`,
+  inconsistent cumulative fill volume, or missing authoritative order linkage
+  must not be silently folded into the authorised fill. Preserve fail-closed
+  reconciliation HOLD and human review, without fabricating `FULLY_CLOSED`
+  or sending a replacement order.
+
+**S14 status: NOT_RUN.** No accepted implementation or real broker proof exists;
+the reviewed candidate and independent reviewer must be attached to actual
+DEMO terminal/deal/backend receipts before this row can become PASS. Structural
+checks and a successful MetaEditor compile do not satisfy this gate.
+
 ## Evidence review and decision
 
-For **each** S1–S13 row (including every S11/R1–R5 and S13/U1–U5 subcase), the independent reviewer checks the original demo
+For **each** S1–S14 row (including every S11/R1–R5 and S13/U1–U5 subcase), the independent reviewer checks the original demo
 terminal/broker deal history against the EA journal and backend audit receipts,
 ensures negative scenarios generated **no** forbidden success event, and verifies
 that the record belongs to this exact tested candidate and demo account.
