@@ -171,3 +171,31 @@ def test_second_partial_close_snapshot_allows_reduced_remaining_volume(client):
     )
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "matched"
+
+
+@pytest.mark.parametrize("stored_children", [None, "[]"])
+def test_missing_stored_broker_identity_refuses_snapshot_match(client, stored_children):
+    """A matching price and size cannot substitute for original broker identity."""
+    cid = _reported_execution(client, "846")
+    with SessionLocal() as db:
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        execution.broker_ticket = None
+        execution.child_tickets_json = stored_children
+        db.commit()
+
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=_snapshot(), headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    assert "missing_stored_broker_identity" in response.json()["detail"]
+    with SessionLocal() as db:
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert execution.broker_ticket is None
+        assert execution.child_tickets_json == stored_children
+        audit = (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
+            .one()
+        )
+        assert "missing_stored_broker_identity" in audit.payload_json
