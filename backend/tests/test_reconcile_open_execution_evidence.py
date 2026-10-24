@@ -251,3 +251,43 @@ def test_snapshot_can_match_subset_of_already_recorded_child_tickets(client):
     )
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "matched"
+
+
+@pytest.mark.parametrize(
+    ("event_type", "event_result", "final_status"),
+    [
+        ("FULLY_CLOSED", "SUCCESS", "FULLY_CLOSED"),
+        ("STOP_LOSS_HIT", "SUCCESS", "FULLY_CLOSED"),
+        ("FAILED_MANAGEMENT", "FAILED", "FAILED"),
+    ],
+)
+def test_terminal_command_refuses_later_matching_open_position_snapshot(
+    client, event_type, event_result, final_status
+):
+    """A stored SUCCESS ticket cannot resurrect a closed/failed command."""
+    cid = _reported_execution(client, "849")
+    event = client.post(
+        f"/commands/{cid}/management_event",
+        json={"event_type": event_type, "result": event_result},
+        headers=EA_HEADERS,
+    )
+    assert event.status_code == 200, event.text
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=_snapshot(), headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    assert "command_state" in response.json()["detail"]
+    with SessionLocal() as db:
+        command = db.query(models.Command).filter_by(id=cid).one()
+        assert command.status == final_status
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert execution.status == "SUCCESS"
+        assert execution.broker_ticket == "9001"
+        assert execution.lot_size == pytest.approx(0.01)
+        audit = (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
+            .one()
+        )
+        assert "command_state" in audit.payload_json
