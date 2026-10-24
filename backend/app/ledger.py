@@ -124,7 +124,7 @@ def on_execution(
             ).total_seconds()
         if execution.executed_price is None:
             led.final_notes = (
-                "Executed (demo). Entry price not reported; R values provisional."
+                "Executed (demo). Entry price not reported; realised R unverified."
             )
         else:
             led.final_notes = "Executed (demo). Position opened."
@@ -158,41 +158,51 @@ def on_management_event(
     if new_status:
         led.result_status = new_status
 
-    # Update approximate R based on the highest TP reached.
-    entry = led.entry_price if led.entry_price is not None else command.entry_price
-    if entry is not None:
-        target = None
-        if event.event_type == "TP1_CLOSE_SUCCESS":
-            target = command.tp1
-        elif event.event_type == "TP2_CLOSE_SUCCESS":
-            target = command.tp2
-        elif event.event_type == "TP3_CLOSE_SUCCESS":
-            target = command.tp3
+    # TP/SL milestones cannot prove a realised return for the whole position.
+    # Event reports lack verified aggregate fill/exit volumes and may follow
+    # earlier partial closes or stop moves. Do not invent scalar whole-trade R.
+    if event.event_type in {
+        "TP1_CLOSE_SUCCESS", "TP2_CLOSE_SUCCESS", "TP3_CLOSE_SUCCESS",
+        "STOP_LOSS_HIT", "FULLY_CLOSED", "FAILED_MANAGEMENT",
+        "SL_MOVE_BREAKEVEN_SUCCESS",
+    }:
+        led.r_result = None
+        if event.event_type in {
+            "TP1_CLOSE_SUCCESS", "TP2_CLOSE_SUCCESS", "TP3_CLOSE_SUCCESS",
+        }:
+            led.final_notes = (
+                "Take-profit stage reported (demo). Whole-trade realised R "
+                "unverified without broker-confirmed fill and close volumes."
+            )
         elif event.event_type == "STOP_LOSS_HIT":
-            # Stopped out -> approx -1R (or breakeven if SL moved up).
-            led.r_result = -1.0
-        if target is not None:
-            r = _approx_r(command.direction, entry, command.initial_stop_loss, target)
-            if r is not None:
-                led.r_result = r
+            led.final_notes = (
+                "Stop-loss exit reported (demo). Whole-trade realised R "
+                "unverified; earlier partial exits and stop moves may apply."
+            )
+        elif event.event_type == "FAILED_MANAGEMENT":
+            led.final_notes = (
+                "Management failure reported (demo); realised outcome unverified."
+            )
 
     # Breakeven detection: if SL was moved to entry/open and price hit it.
     if event.event_type == "SL_MOVE_BREAKEVEN_SUCCESS":
         led.final_notes = "Stop moved to breakeven after TP1."
 
-    if event.event_type == "FULLY_CLOSED" and led.result_status not in {
-        "STOPPED_OUT",
-        "FAILED",
-        "TP1_HIT",
-        "TP2_HIT",
-        "TP3_HIT",
-    }:
-        led.result_status = "CLOSED_UNATTRIBUTED"
+    if event.event_type == "FULLY_CLOSED":
+        if led.result_status not in {
+            "STOPPED_OUT", "FAILED", "TP1_HIT", "TP2_HIT", "TP3_HIT",
+        }:
+            led.result_status = "CLOSED_UNATTRIBUTED"
+            led.final_notes = (
+                "Trade reported fully closed without TP/SL attribution; "
+                "manual reconciliation required."
+            )
+        else:
+            led.final_notes = (
+                "Demo position reported fully closed after a TP/SL stage; "
+                "whole-trade realised R unverified pending broker exit evidence."
+            )
         led.r_result = None
-        led.final_notes = (
-            "Trade reported fully closed without a TP/SL attribution; "
-            "manual reconciliation required."
-        )
 
     led.updated_at = utcnow()
     db.flush()
