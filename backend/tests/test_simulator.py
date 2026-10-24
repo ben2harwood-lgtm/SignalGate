@@ -120,7 +120,10 @@ def test_simulator_stop_out_records_loss(client):
             .filter(models.PerformanceLedger.signal_id == sig["id"])
             .one()
         )
+        # Keep this historical pytest node ID: the exact-commit rehearsal
+        # allowlist requires it. A STOPPED_OUT stage does not establish -1R.
         assert row.result_status == "STOPPED_OUT"
-        assert row.r_result == -1.0
+        assert row.r_result is None
+        assert "unverified" in row.final_notes
     finally:
         db.close()
