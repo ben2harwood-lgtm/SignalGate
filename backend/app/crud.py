@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import secrets
 from typing import List, Optional
 
@@ -2108,6 +2109,43 @@ def reconcile_open_position(
                 conflicts.append("stored_ticket_payload")
         if existing_tickets and not (existing_tickets & set(tickets)):
             conflicts.append("broker_tickets")
+
+        # A still-open broker position must not silently validate a SUCCESS
+        # execution that understated filled exposure or used the wrong price.
+        # Once a partial-close event has been recorded, remaining open volume
+        # can legitimately be lower than the original execution volume.
+        if command.status == "EXECUTED_OPEN":
+            if existing.lot_size is None or not math.isclose(
+                existing.lot_size, payload.lot_size, rel_tol=1e-9, abs_tol=1e-8
+            ):
+                conflicts.append("existing_open_lot_size")
+            if existing.executed_price is None or not math.isclose(
+                existing.executed_price,
+                payload.executed_price,
+                rel_tol=1e-9,
+                abs_tol=1e-8,
+            ):
+                conflicts.append("existing_open_price")
+
+        # A successful partial close can reduce, but never increase, the
+        # original execution exposure. Reusing a matching broker ticket does
+        # not authorise a new/increased fill on that position.
+        if command.status in {"PARTIAL_TP1_DONE", "PARTIAL_TP2_DONE"}:
+            if (
+                existing.lot_size is None
+                or not math.isfinite(existing.lot_size)
+                or not math.isfinite(payload.lot_size)
+                or (
+                    payload.lot_size > existing.lot_size
+                    and not math.isclose(
+                        payload.lot_size,
+                        existing.lot_size,
+                        rel_tol=1e-9,
+                        abs_tol=1e-8,
+                    )
+                )
+            ):
+                conflicts.append("existing_open_lot_size")
 
         if conflicts:
             add_audit(
