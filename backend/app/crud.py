@@ -2105,6 +2105,13 @@ def reconcile_open_position(
             command.symbol, existing.executed_symbol
         ):
             conflicts.append("existing_symbol")
+        # A requested symbol can have several broker-specific suffixes.
+        # Matching the requested prefix is not evidence that two different
+        # executed broker instruments represent the same position.
+        if existing.executed_symbol and (
+            existing.executed_symbol.upper() != payload.executed_symbol.upper()
+        ):
+            conflicts.append("existing_executed_symbol")
         existing_tickets: set[str] = set()
         if existing.broker_ticket:
             existing_tickets.add(str(existing.broker_ticket))
