@@ -115,3 +115,44 @@ def test_hosted_bootstrap_refuses_weak_secret_without_connecting(monkeypatch):
     monkeypatch.setenv("REGISTRATION_API_KEY", "r" * 40)
     with pytest.raises(RuntimeError, match="EA_API_KEY"):
         Settings().validate_cli_bootstrap()
+
+
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda path: path.name)
+def test_valid_local_cli_calls_init_then_seed_without_real_io(monkeypatch, script):
+    from app import database, main
+
+    local_url = "sqlite:///./signalgate.db"
+    _configure(monkeypatch, local_url)
+    monkeypatch.setattr(database.settings, "database_url", local_url)
+    monkeypatch.setattr(database.settings, "require_license", False)
+    monkeypatch.setattr(database.settings, "demo_only_mode", True)
+    actions = []
+    monkeypatch.setattr(database, "init_db", lambda: actions.append("init"))
+    monkeypatch.setattr(main, "seed_settings", lambda: actions.append("seed"))
+    entrypoint = runpy.run_path(str(script), run_name="bootstrap_preflight_test")["main"]
+
+    entrypoint()
+    assert actions == ["init", "seed"]
+
+
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda path: path.name)
+def test_cli_refuses_stale_loaded_database_target(monkeypatch, script):
+    from app import database, main
+
+    _configure(monkeypatch, "sqlite:///./signalgate.db")
+    monkeypatch.setattr(
+        database.settings,
+        "database_url",
+        "postgresql://operator:synthetic-not-a-secret@localhost/wrong",
+    )
+    monkeypatch.setattr(database.settings, "require_license", False)
+    monkeypatch.setattr(database.settings, "demo_only_mode", True)
+    actions = []
+    monkeypatch.setattr(database, "init_db", lambda: actions.append("init"))
+    monkeypatch.setattr(main, "seed_settings", lambda: actions.append("seed"))
+    entrypoint = runpy.run_path(str(script), run_name="bootstrap_preflight_test")["main"]
+
+    with pytest.raises(RuntimeError, match="database settings changed after preflight") as error:
+        entrypoint()
+    assert "synthetic-not-a-secret" not in str(error.value)
+    assert actions == []
