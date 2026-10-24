@@ -154,6 +154,5 @@ def test_single_ticket_unknown_broker_outcome_needs_real_reconciliation():
         assert proof in subcases[case][1]
     for required in ("87a0ef3a1edf2e50c19b86370cd8355507df045d",
                      "S13 may be marked PASS **only after all U1–U5",
-                     "actual", "independent review", "FAIL/INCONCLUSIVE"):
-        if required != "actual":
-            assert required in text
+                     "independent review", "FAIL/INCONCLUSIVE"):
+        assert required in text
