@@ -85,25 +85,6 @@ def on_command_created(
     db.flush()
 
 
-def _approx_r(direction: str, entry: float, sl: float, target: float) -> Optional[float]:
-    """Approximate R multiple for a target price.
-
-    BUY:  risk = entry - sl ; reward = target - entry
-    SELL: risk = sl - entry ; reward = entry - target
-    """
-    if entry is None or sl is None or target is None:
-        return None
-    if direction == "BUY":
-        risk = entry - sl
-        reward = target - entry
-    else:
-        risk = sl - entry
-        reward = entry - target
-    if risk <= 0:
-        return None
-    return round(reward / risk, 3)
-
-
 def on_execution(
     db: Session, command: models.Command, execution: models.Execution
 ) -> None:
