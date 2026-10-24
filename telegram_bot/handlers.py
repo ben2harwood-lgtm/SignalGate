@@ -330,9 +330,9 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def provider_invite(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Self-enrol a screenshot provider with a shared invite code (local demo only)."""
-    if config.require_license:
+    if config.require_license or not config.legacy_provider_demo_enabled:
         await update.message.reply_text(
-            "Legacy /provider enrolment is disabled in hosted Provider Edition. "
+            "Legacy /provider enrolment is disabled. "
             "Generate a feed-bound source token in the Provider Portal and use "
             "/connectprovider TOKEN."
         )
