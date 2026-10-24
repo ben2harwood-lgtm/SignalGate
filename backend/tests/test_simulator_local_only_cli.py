@@ -51,7 +51,7 @@ def test_cli_rejects_remote_origin_without_opening_client(
     monkeypatch, module, args
 ):
     monkeypatch.setattr(
-        module.sys, "argv",
+        sys, "argv",
         [module.__name__ + ".py", *args, "--backend", "https://remote.example"],
     )
     def _no_transport(*_args, **_kwargs):
@@ -104,7 +104,7 @@ def test_cli_rejects_bad_health_before_poll_or_write(
         return client
     monkeypatch.setattr(module.httpx, "Client", _client)
     monkeypatch.setattr(
-        module.sys, "argv",
+        sys, "argv",
         [module.__name__ + ".py", *args, "--backend", "http://127.0.0.1:8000"],
     )
     with pytest.raises(SystemExit):
