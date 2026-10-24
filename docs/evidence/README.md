@@ -10,8 +10,9 @@ Templates:
 
 - `MT5_ACCEPTANCE_RECEIPT_TEMPLATE.md`
 - `MT5_STAGE_EXIT_SUPPLEMENT_TEMPLATE.md` — blank PR #60 TP-stage broker-DEMO
-  evidence supplement (twelve NOT_RUN scenarios including five mandatory
-  split-fill rollback subcases; not external acceptance)
+  evidence supplement (thirteen NOT_RUN scenarios including five mandatory
+  split-fill rollback and five single-ticket uncertain-outcome subcases;
+  not external acceptance)
 - `SECURITY_REVIEW_RECEIPT_TEMPLATE.md`
 - `REGULATORY_PRIVACY_RECEIPT_TEMPLATE.md`
 - `PILOT_OPERATIONS_LOG_TEMPLATE.md`
