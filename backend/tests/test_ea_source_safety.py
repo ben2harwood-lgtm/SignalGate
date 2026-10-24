@@ -277,3 +277,65 @@ def test_unidentified_or_broker_mutated_open_positions_block_new_demo_orders():
     assert process.index(account_flat_guard) < process.index("AckReceived(command_id)")
     assert process.rindex(account_flat_guard) > process.index("AckReceived(command_id)")
     assert process.count("!IsDemoAccount()") >= 2
+
+
+def test_preorder_ack_journal_survives_restart_and_binds_context():
+    """Offline source guard; live terminal persistence still needs MT5 demo proof."""
+    init = EA.split("int OnInit()", 1)[1].split("void OnDeinit(", 1)[0]
+    persist = EA.split("bool LoadAckAbortJournal()", 1)[1].split(
+        "void RetryAckAbortAsTerminalFailure()", 1
+    )[0]
+    assert "LoadAckAbortJournal()" in init
+    assert "return(INIT_FAILED)" in init
+    assert 'const string ACK_ABORT_JOURNAL = "SignalGate_ack_abort.txt"' in EA
+    assert "FileIsExist(ACK_ABORT_JOURNAL)" in persist
+    assert "FILE_READ|FILE_TXT|FILE_UNICODE" in persist
+    assert "FILE_WRITE|FILE_TXT|FILE_UNICODE" in persist
+    assert "FileFlush(handle)" in persist
+    assert "AccountInfoInteger(ACCOUNT_LOGIN)" in persist
+    assert "AccountInfoString(ACCOUNT_SERVER)" in persist
+    assert "backend != BackendURL || user_id != UserID" in persist
+    assert "magic != IntegerToString(MagicNumber)" in persist
+    assert "FileDelete(ACK_ABORT_JOURNAL)" in persist
+    assert "LicenseKey" not in persist
+    assert "EAApiKey" not in persist
+
+
+def test_unconfirmed_ack_never_retries_order_and_blocks_following_polls():
+    process = EA.split("void ProcessCommand(", 1)[1].split(
+        "bool ExecuteSplitTicket(", 1
+    )[0]
+    timer = EA.split("void OnTimer()", 1)[1].split(
+        "void ProcessCommand(", 1
+    )[0]
+    assert process.index("SaveAckAbortJournal(command_id)") < process.index(
+        "AckReceived(command_id)"
+    )
+    assert process.index("ClearAckAbortJournal()") > process.index(
+        "AckReceived(command_id)"
+    )
+    assert process.index("ClearAckAbortJournal()") < process.index(
+        "ExecuteSplitTicket("
+    )
+    assert "if(!ClearAckAbortJournal())" in process
+    assert "RetryAckAbortAsTerminalFailure()" in process
+    assert "if(g_ack_abort_command_id != \"\")" in timer
+    assert timer.index("RetryAckAbortAsTerminalFailure()") < timer.index(
+        "if(!EnableTrading)"
+    )
+    assert timer.index("FileIsExist(ACK_ABORT_JOURNAL)") < timer.index(
+        "PollPendingCommand()"
+    )
+
+
+def test_ack_failure_recovery_sends_only_rate_limited_terminal_failed_receipt():
+    recovery = EA.split("void RetryAckAbortAsTerminalFailure()", 1)[1].split(
+        "//| OnInit", 1
+    )[0]
+    assert 'ReportError(g_ack_abort_command_id, "ACK_RECEIPT_UNCONFIRMED"' in recovery
+    assert "now - g_ack_abort_last_try < 30" in recovery
+    assert "PositionsTotal() != 0 || OrdersTotal() != 0" in recovery
+    assert "g_last_http_code >= 200 && g_last_http_code < 300" in recovery
+    assert "ClearAckAbortJournal()" in recovery
+    for never in ("AckReceived(", "PollPendingCommand(", "trade.Buy(", "trade.Sell("):
+        assert never not in recovery
