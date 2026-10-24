@@ -85,7 +85,9 @@ def test_tp_stage_receipts_require_exact_child_broker_deal_and_full_volume():
     assert "DEAL_ENTRY_OUT_BY" in stage
     assert "exited_volume += volume" in stage
     assert "g_child_open_volumes[child_index] - 1e-8" in stage
-    assert "else if(entry == DEAL_ENTRY_IN || entry == DEAL_ENTRY_INOUT)" in stage
+    assert "entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY" in stage
+    assert "opening_order" in stage
+    assert "opened_volume >= g_child_open_volumes[child_index] - 1e-8" in stage
 
 
 def test_final_stop_reason_uses_latest_matching_child_exit_not_earlier_stop():
@@ -443,3 +445,36 @@ def test_split_ticket_rollback_hold_blocks_even_explicit_demo_opt_in():
     assert init.index("if(SplitTicketDemoPartialMode)") < init.index("EventSetTimer(")
     assert "SplitTicketDemoPartialMode = true;" not in EA
 
+
+def test_multiple_opening_deals_require_exact_original_order_and_full_exit_volume():
+    """Source-only policy contract; no broker-DEMO scenario is accepted here."""
+    single = EA.split("bool ExecuteSingleTicket(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    split = EA.split("bool ExecuteSplitTicket(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    stage = EA.split("bool ChildClosedByReason(", 1)[1].split(
+        "bool AllTrackedChildrenClosedWithEvidence()", 1
+    )[0]
+    clear = EA.split("void ClearActiveCommand()", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert "g_child_order_ids[3]" in EA
+    assert "g_child_order_ids[0] = trade.ResultOrder();" in single
+    assert "g_child_order_ids[g_child_count] = trade.ResultOrder();" in split
+    assert "ArrayInitialize(g_child_order_ids, 0);" in clear
+    assert "ulong opening_order = g_child_order_ids[child_index];" in stage
+    assert "opening_order == 0" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_ORDER) != opening_order" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_TYPE) != opening_type" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_POSITION_ID) != position_id" in stage
+    assert "HistoryDealGetString(deal, DEAL_SYMBOL) != g_active_symbol" in stage
+    assert "deal == g_child_tickets[child_index]" in stage
+    assert "if(entry == DEAL_ENTRY_IN)" in stage
+    assert "opened_volume += volume;" in stage
+    assert "MathAbs(exited_volume - opened_volume) <= 1e-8" in stage
+    assert "ChildPositionStillOpen(position_id) || OrdersTotal() != 0" in stage
+    assert "entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY" in stage
+    assert "DEAL_ENTRY_OUT_BY" in stage

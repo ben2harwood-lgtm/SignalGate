@@ -56,6 +56,7 @@ double  g_active_tp1          = 0.0;
 double  g_active_tp2          = 0.0;
 double  g_active_tp3          = 0.0;
 ulong   g_child_tickets[3];               // opening deal tickets
+ulong   g_child_order_ids[3];             // original MT5 order bound to opening deals
 ulong   g_child_pos_ids[3];               // broker position ids for close-reason lookup
 int     g_child_tp_levels[3];             // TP stage actually assigned to each child
 double  g_child_open_volumes[3];          // actual broker-filled volume per child
@@ -555,6 +556,7 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
       }
 
       g_child_tickets[g_child_count] = trade.ResultDeal();
+      g_child_order_ids[g_child_count] = trade.ResultOrder();
       g_child_pos_ids[g_child_count] = PositionIdOfDeal(trade.ResultDeal());
       g_child_tp_levels[g_child_count] = i + 1;
       g_child_open_volumes[g_child_count] = filled_volume;
@@ -618,6 +620,7 @@ bool ExecuteSingleTicket(const string command_id, const string symbol,
    }
 
    g_child_tickets[0] = trade.ResultDeal();
+   g_child_order_ids[0] = trade.ResultOrder();
    g_child_pos_ids[0] = PositionIdOfDeal(trade.ResultDeal());
    g_child_tp_levels[0] = (tp3 > 0.0) ? 3 : ((tp2 > 0.0) ? 2 : 1);
    g_child_open_volumes[0] = executed_lot;
@@ -838,17 +841,25 @@ bool ChildClosedByReason(const int child_index, const long required_reason)
    if(child_index < 0 || child_index >= g_child_count)
       return(false);
    ulong position_id = g_child_pos_ids[child_index];
-   if(position_id == 0 || g_child_tickets[child_index] == 0 ||
+   ulong opening_order = g_child_order_ids[child_index];
+   if(position_id == 0 || opening_order == 0 ||
+      g_child_tickets[child_index] == 0 ||
       g_child_open_volumes[child_index] <= 0.0 ||
-      ChildPositionStillOpen(position_id))
-      return(false);
+      ChildPositionStillOpen(position_id) || OrdersTotal() != 0)
+      return(false); // unknown identity, open exposure or outstanding order
 
+   // One broker order may produce multiple DEAL_ENTRY_IN records on the same
+   // position. Only the original ResultOrder can authorise those fills.
+   if(g_active_direction != +1 && g_active_direction != -1)
+      return(false);
+   long opening_type = (g_active_direction == +1) ? DEAL_TYPE_BUY : DEAL_TYPE_SELL;
    datetime from = (g_open_time > 0) ? g_open_time - 60 : 0;
    if(!HistorySelect(from, TimeCurrent() + 60))
       return(false);
 
    bool opening_verified = false;
    bool exit_seen = false;
+   double opened_volume = 0.0;
    double exited_volume = 0.0;
    for(int i = 0; i < HistoryDealsTotal(); i++)
    {
@@ -860,15 +871,23 @@ bool ChildClosedByReason(const int child_index, const long required_reason)
          return(false);
 
       long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
-      if(deal == g_child_tickets[child_index])
+      if(entry == DEAL_ENTRY_IN)
       {
-         if(entry != DEAL_ENTRY_IN ||
-            HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber)
+         // Deal, order, position, symbol, direction and magic must agree;
+         // a distinct broker order adding exposure is never accepted.
+         if((ulong)HistoryDealGetInteger(deal, DEAL_ORDER) != opening_order ||
+            HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber ||
+            HistoryDealGetInteger(deal, DEAL_TYPE) != opening_type)
             return(false);
-         opening_verified = true;
+         double volume = HistoryDealGetDouble(deal, DEAL_VOLUME);
+         if(volume <= 0.0) return(false);
+         opened_volume += volume;
+         if(deal == g_child_tickets[child_index])
+            opening_verified = true;
       }
-      else if(entry == DEAL_ENTRY_IN || entry == DEAL_ENTRY_INOUT)
-         return(false); // externally increased or reversed exposure
+      else if(deal == g_child_tickets[child_index] ||
+              (entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY))
+         return(false); // missing seed, reversal or unknown entry kind
 
       if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_OUT_BY)
       {
@@ -882,8 +901,11 @@ bool ChildClosedByReason(const int child_index, const long required_reason)
          exit_seen = true;
       }
    }
+   // Cumulative broker-confirmed volume is stronger than ResultVolume,
+   // which may describe only one deal from a multi-deal market order.
    return(opening_verified && exit_seen &&
-          exited_volume >= g_child_open_volumes[child_index] - 1e-8);
+          opened_volume >= g_child_open_volumes[child_index] - 1e-8 &&
+          MathAbs(exited_volume - opened_volume) <= 1e-8);
 }
 
 bool AllTrackedChildrenClosedWithEvidence()
@@ -941,6 +963,7 @@ void ClearActiveCommand()
    g_effective_sl = 0.0;
    ArrayInitialize(g_child_pos_ids, 0);
    ArrayInitialize(g_child_tickets, 0);
+   ArrayInitialize(g_child_order_ids, 0);
    ArrayInitialize(g_child_tp_levels, 0);
    ArrayInitialize(g_child_open_volumes, 0.0);
 }
