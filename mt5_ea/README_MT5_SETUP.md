@@ -132,7 +132,10 @@ Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
   opening deals only where history binds each to the original MT5 ResultOrder,
   broker position ID, executed symbol, direction and magic. It verifies total
   broker opening volume against all closing volume, and refuses active orders,
-  unrelated increases, reversals or missing identity. This is an offline source
+  unrelated increases, reversals or missing identity. A final-closure event
+  additionally requires the entire dedicated DEMO account to be flat; fills
+  from the same broker order into a different position ID remain unaccepted.
+  This is an offline source
   correction only, pending official MetaEditor compile, independent review and
   genuine S14 multi-deal MT5 DEMO receipts. It does not repair ambiguous
   single-ticket send outcomes or prove the backend execution receipt includes

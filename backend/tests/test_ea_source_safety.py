@@ -469,7 +469,8 @@ def test_multiple_opening_deals_require_exact_original_order_and_full_exit_volum
     assert "HistoryDealGetInteger(deal, DEAL_ORDER) != opening_order" in stage
     assert "HistoryDealGetInteger(deal, DEAL_TYPE) != opening_type" in stage
     assert "HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber" in stage
-    assert "HistoryDealGetInteger(deal, DEAL_POSITION_ID) != position_id" in stage
+    assert "deal_position_id != position_id" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_ORDER) == opening_order" in stage
     assert "HistoryDealGetString(deal, DEAL_SYMBOL) != g_active_symbol" in stage
     assert "deal == g_child_tickets[child_index]" in stage
     assert "if(entry == DEAL_ENTRY_IN)" in stage
@@ -478,3 +479,21 @@ def test_multiple_opening_deals_require_exact_original_order_and_full_exit_volum
     assert "ChildPositionStillOpen(position_id) || OrdersTotal() != 0" in stage
     assert "entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY" in stage
     assert "DEAL_ENTRY_OUT_BY" in stage
+
+def test_full_close_refuses_hidden_demo_positions_or_untracked_same_order_fills():
+    """Source-only guard: explicit orphan/multi-position broker proof is NOT_RUN."""
+    manage = EA.split("void ManageActiveCommand()", 1)[1].split(
+        "//| Broker execution / close-reason helpers", 1
+    )[0]
+    child = EA.split("bool ChildClosedByReason(", 1)[1].split(
+        "bool AllTrackedChildrenClosedWithEvidence()", 1
+    )[0]
+    assert "open_children == 0 &&" in manage
+    assert "PositionsTotal() == 0 && OrdersTotal() == 0 &&" in manage
+    assert manage.index("PositionsTotal() == 0") < manage.index(
+        "AllTrackedChildrenClosedWithEvidence()"
+    )
+    assert "deal_position_id != position_id" in child
+    assert "HistoryDealGetInteger(deal, DEAL_ORDER) == opening_order" in child
+    assert "HistoryDealGetInteger(deal, DEAL_ENTRY) == DEAL_ENTRY_IN" in child
+    assert "return(false);" in child

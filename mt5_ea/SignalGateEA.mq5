@@ -664,7 +664,11 @@ void ManageActiveCommand()
 {
    string cid = g_active_command_id;
    int open_children = CountOpenChildren(g_active_symbol, cid);
-   bool fully_closed = (open_children == 0 && AllTrackedChildrenClosedWithEvidence());
+   // A broker-altered comment or a second position from the same partial
+   // order cannot make a non-flat dedicated DEMO account appear fully closed.
+   bool fully_closed = (open_children == 0 &&
+                        PositionsTotal() == 0 && OrdersTotal() == 0 &&
+                        AllTrackedChildrenClosedWithEvidence());
 
    // Only the final, position-bound broker exit may establish a stop-out.
    // A historical SL on a different child cannot classify a later manual exit.
@@ -865,8 +869,16 @@ bool ChildClosedByReason(const int child_index, const long required_reason)
    {
       ulong deal = HistoryDealGetTicket(i);
       if(deal == 0) continue;
-      if((ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID) != position_id)
+      ulong deal_position_id = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+      if(deal_position_id != position_id)
+      {
+         // Some hedging brokers may create another position for a fill on
+         // the same order. Do not ignore that untracked opening exposure.
+         if((ulong)HistoryDealGetInteger(deal, DEAL_ORDER) == opening_order &&
+            HistoryDealGetInteger(deal, DEAL_ENTRY) == DEAL_ENTRY_IN)
+            return(false);
          continue;
+      }
       if(HistoryDealGetString(deal, DEAL_SYMBOL) != g_active_symbol)
          return(false);
 
