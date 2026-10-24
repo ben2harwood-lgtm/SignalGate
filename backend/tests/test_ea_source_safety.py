@@ -221,6 +221,25 @@ def test_execution_report_uses_executed_symbol_precision():
     assert "DoubleToString(sl, digits)" in report
 
 
+def test_management_events_use_executed_symbol_precision_and_eight_digit_volume():
+    """Source-only report fidelity guard; broker DEMO receipts still required."""
+    event = EA.split("void ReportManagementEvent(", 1)[1].split(
+        "void ReportError(", 1
+    )[0]
+    assert "const string executed_symbol" in event
+    assert "SymbolInfoInteger(executed_symbol, SYMBOL_DIGITS)" in event
+    assert "DoubleToString(price, digits)" in event
+    assert "DoubleToString(sl_before, digits)" in event
+    assert "DoubleToString(sl_after, digits)" in event
+    assert "DoubleToString(lot_before, 8)" in event
+    assert "DoubleToString(lot_after, 8)" in event
+    assert "_Digits" not in event.split('string body = "{";', 1)[1]
+    # OPENED happens before g_active_symbol is set; use the explicit broker symbol.
+    assert EA.count('ReportManagementEvent(command_id, symbol, "OPENED"') == 2
+    assert EA.count("ReportManagementEvent(cid, g_active_symbol,") == 10
+    assert EA.count("ReportManagementEvent(cid,") == 10
+
+
 def test_ea_fails_closed_if_backend_does_not_acknowledge_command():
     process = EA.split("void ProcessCommand(", 1)[1].split(
         "//+------------------------------------------------------------------+", 1

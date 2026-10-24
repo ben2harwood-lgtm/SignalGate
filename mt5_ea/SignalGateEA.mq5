@@ -574,7 +574,7 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
    g_active_entry = exec_price;
    ReportExecutionSuccess(command_id, symbol, direction, exec_price,
                           executed_lot, sl, tp1, tp2, tp3);
-   ReportManagementEvent(command_id, "OPENED", "OPENED", "OPEN", "SUCCESS",
+   ReportManagementEvent(command_id, symbol, "OPENED", "OPENED", "OPEN", "SUCCESS",
                          exec_price, 0,0,0,0);
    return(true);
 }
@@ -627,7 +627,7 @@ bool ExecuteSingleTicket(const string command_id, const string symbol,
 
    ReportExecutionSuccess(command_id, symbol, direction, g_active_entry,
                           executed_lot, sl, tp1, tp2, tp3);
-   ReportManagementEvent(command_id, "OPENED", "OPENED", "OPEN", "SUCCESS",
+   ReportManagementEvent(command_id, symbol, "OPENED", "OPENED", "OPEN", "SUCCESS",
                          g_active_entry, 0,0,0,0);
    return(true);
 }
@@ -667,9 +667,9 @@ void ManageActiveCommand()
    // A historical SL on a different child cannot classify a later manual exit.
    if(fully_closed && CommandClosedByReason(DEAL_REASON_SL))
    {
-      ReportManagementEvent(cid, "STOP_LOSS_HIT", "FULLY_CLOSED", "", "SUCCESS",
+      ReportManagementEvent(cid, g_active_symbol, "STOP_LOSS_HIT", "FULLY_CLOSED", "", "SUCCESS",
                             g_effective_sl, 0,0, g_active_sl, g_effective_sl);
-      ReportManagementEvent(cid, "FULLY_CLOSED", "FULLY_CLOSED", "", "SUCCESS",
+      ReportManagementEvent(cid, g_active_symbol, "FULLY_CLOSED", "FULLY_CLOSED", "", "SUCCESS",
                             0,0,0,0,0);
       ClearActiveCommand();
       return;
@@ -682,9 +682,9 @@ void ManageActiveCommand()
       tp1_child >= 0 && ChildClosedByReason(tp1_child, DEAL_REASON_TP))
    {
       g_tp1_done = true;
-      ReportManagementEvent(cid, "TP1_REACHED", "OPENED", "", "SUCCESS",
+      ReportManagementEvent(cid, g_active_symbol, "TP1_REACHED", "OPENED", "", "SUCCESS",
                             g_active_tp1, 0,0,0,0);
-      ReportManagementEvent(cid, "TP1_CLOSE_SUCCESS", "TP1_DONE", "CLOSE_TP1",
+      ReportManagementEvent(cid, g_active_symbol, "TP1_CLOSE_SUCCESS", "TP1_DONE", "CLOSE_TP1",
                             "SUCCESS", g_active_tp1, 0,0,0,0);
       double old_sl = g_effective_sl;
       double breakeven_sl = AlignProtectiveStopToTick(
@@ -692,7 +692,7 @@ void ManageActiveCommand()
       bool moved = (breakeven_sl > 0.0 &&
                     MoveRemainingSL(g_active_symbol, cid, breakeven_sl));
       if(moved) g_effective_sl = breakeven_sl;
-      ReportManagementEvent(cid,
+      ReportManagementEvent(cid, g_active_symbol,
          moved ? "SL_MOVE_BREAKEVEN_SUCCESS" : "SL_MOVE_BREAKEVEN_FAILED",
          "TP1_DONE", "MOVE_SL_BREAKEVEN", moved ? "SUCCESS" : "FAILED",
          g_active_entry, 0,0, old_sl, breakeven_sl);
@@ -703,9 +703,9 @@ void ManageActiveCommand()
       tp2_child >= 0 && ChildClosedByReason(tp2_child, DEAL_REASON_TP))
    {
       g_tp2_done = true;
-      ReportManagementEvent(cid, "TP2_REACHED", "TP1_DONE", "", "SUCCESS",
+      ReportManagementEvent(cid, g_active_symbol, "TP2_REACHED", "TP1_DONE", "", "SUCCESS",
                             g_active_tp2, 0,0,0,0);
-      ReportManagementEvent(cid, "TP2_CLOSE_SUCCESS", "TP2_DONE", "CLOSE_TP2",
+      ReportManagementEvent(cid, g_active_symbol, "TP2_CLOSE_SUCCESS", "TP2_DONE", "CLOSE_TP2",
                             "SUCCESS", g_active_tp2, 0,0,0,0);
       double old_sl = g_effective_sl;
       double tp1_stop_sl = AlignProtectiveStopToTick(
@@ -713,7 +713,7 @@ void ManageActiveCommand()
       bool moved = (tp1_stop_sl > 0.0 &&
                     MoveRemainingSL(g_active_symbol, cid, tp1_stop_sl));
       if(moved) g_effective_sl = tp1_stop_sl;
-      ReportManagementEvent(cid,
+      ReportManagementEvent(cid, g_active_symbol,
          moved ? "SL_MOVE_TP1_SUCCESS" : "SL_MOVE_TP1_FAILED",
          "TP2_DONE", "MOVE_SL_TP1", moved ? "SUCCESS" : "FAILED",
          g_active_tp1, 0,0, old_sl, tp1_stop_sl);
@@ -732,10 +732,10 @@ void ManageActiveCommand()
          preceding_tps && ChildClosedByReason(tp3_child, DEAL_REASON_TP))
       {
          g_tp3_done = true;
-         ReportManagementEvent(cid, "TP3_CLOSE_SUCCESS", "TP3_DONE",
+         ReportManagementEvent(cid, g_active_symbol, "TP3_CLOSE_SUCCESS", "TP3_DONE",
                                "CLOSE_TP3", "SUCCESS", g_active_tp3, 0,0,0,0);
       }
-      ReportManagementEvent(cid, "FULLY_CLOSED", "FULLY_CLOSED", "", "SUCCESS",
+      ReportManagementEvent(cid, g_active_symbol, "FULLY_CLOSED", "FULLY_CLOSED", "", "SUCCESS",
                             0,0,0,0,0);
       ClearActiveCommand();
    }
@@ -1280,22 +1280,25 @@ void ReportExecutionSuccess(const string command_id, const string symbol,
    HttpPost(BackendURL + "/commands/" + command_id + "/execution", body);
 }
 
-void ReportManagementEvent(const string command_id, const string event_type,
+void ReportManagementEvent(const string command_id, const string executed_symbol,
+                           const string event_type,
                            const string stage, const string requested_action,
                            const string result, const double price,
                            const double lot_before, const double lot_after,
                            const double sl_before, const double sl_after)
 {
+   // The chart may have different precision from the broker-executed symbol.
+   int digits = (int)SymbolInfoInteger(executed_symbol, SYMBOL_DIGITS);
    string body = "{";
    body += "\"event_type\":\"" + event_type + "\",";
    body += "\"stage\":\"" + stage + "\",";
    body += "\"requested_action\":\"" + requested_action + "\",";
    body += "\"result\":\"" + result + "\",";
-   body += "\"price\":" + DoubleToString(price, _Digits) + ",";
-   body += "\"lot_size_before\":" + DoubleToString(lot_before, 2) + ",";
-   body += "\"lot_size_after\":" + DoubleToString(lot_after, 2) + ",";
-   body += "\"stop_loss_before\":" + DoubleToString(sl_before, _Digits) + ",";
-   body += "\"stop_loss_after\":" + DoubleToString(sl_after, _Digits);
+   body += "\"price\":" + DoubleToString(price, digits) + ",";
+   body += "\"lot_size_before\":" + DoubleToString(lot_before, 8) + ",";
+   body += "\"lot_size_after\":" + DoubleToString(lot_after, 8) + ",";
+   body += "\"stop_loss_before\":" + DoubleToString(sl_before, digits) + ",";
+   body += "\"stop_loss_after\":" + DoubleToString(sl_after, digits);
    body += "}";
    HttpPost(BackendURL + "/commands/" + command_id + "/management_event", body);
 }

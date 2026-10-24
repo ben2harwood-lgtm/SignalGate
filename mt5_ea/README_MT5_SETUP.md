@@ -123,6 +123,11 @@ Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
   catches broker-mutated/orphan positions after restart but also blocks new
   commands while unrelated/manual positions exist. It cannot prove orphan
   identity or reconstruct management state; broker-demo S8 remains `NOT_RUN`.
+- **Management-event receipt precision:** TP/SL/price values use the actual
+  executed broker symbol's digits (not the chart's `_Digits`); event lot fields
+  retain eight decimal places instead of rounding broker volume to two.
+  This prevents chart-symbol and fractional-volume evidence distortion, but
+  does **not** establish that an event occurred without DEMO broker receipts.
 - Broker history, position identifiers and live stop-loss readbacks can be
   unavailable or incomplete. Stage/SL checks must fail closed in these cases.
   Test rejected modifications, manual partial/final closes and broker-modified
