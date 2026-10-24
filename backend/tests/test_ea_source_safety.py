@@ -292,6 +292,8 @@ def test_preorder_ack_journal_survives_restart_and_binds_context():
     assert "FILE_READ|FILE_TXT|FILE_UNICODE" in persist
     assert "FILE_WRITE|FILE_TXT|FILE_UNICODE" in persist
     assert "FileFlush(handle)" in persist
+    # MQL5 FileWriteString returns byte count, UTF-16 write is 2 bytes/unit.
+    assert "written == (uint)(2 * StringLen(record))" in persist
     assert "AccountInfoInteger(ACCOUNT_LOGIN)" in persist
     assert "AccountInfoString(ACCOUNT_SERVER)" in persist
     assert "backend != BackendURL || user_id != UserID" in persist
