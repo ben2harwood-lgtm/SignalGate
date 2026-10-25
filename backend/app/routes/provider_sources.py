@@ -6,7 +6,7 @@ actions resolve to the persisted provider/feed binding.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from .. import crud
@@ -54,6 +54,7 @@ def _provider_binding_out(
 )
 def provider_create_source_invite(
     payload: ProviderSourceInviteCreate,
+    response: Response,
     principal: ProviderPrincipal = Depends(require_provider_principal),
     db: Session = Depends(get_db),
 ) -> ProviderSourceInviteOut:
@@ -73,6 +74,7 @@ def provider_create_source_invite(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
+    response.headers["Cache-Control"] = "no-store"
     return ProviderSourceInviteOut(
         invite_id=invite.id,
         feed_id=invite.feed_id,
@@ -251,6 +253,11 @@ def telegram_provider_source_extract(
         )
 
     extractor = get_extractor()
+    if settings.require_license and extractor.engine == "fake":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Synthetic screenshot extraction is unavailable in hosted mode.",
+        )
     extracted = extractor.extract(
         image_bytes,
         mime=file.content_type or "image/png",

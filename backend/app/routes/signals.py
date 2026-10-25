@@ -54,6 +54,11 @@ def extract_signal(
             detail="Signal image exceeds 5 MiB limit",
         )
     extractor = get_extractor()
+    if get_settings().require_license and extractor.engine == "fake":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Synthetic screenshot extraction is unavailable in hosted mode.",
+        )
     extracted = extractor.extract(image_bytes, mime=file.content_type or "image/png")
 
     parsed = (
