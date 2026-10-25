@@ -18,8 +18,47 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
+
+
+def validate_admin_backend_url(raw: str) -> str:
+    """Reject insecure or ambiguous admin API origins before any requests."""
+    # urlparse strips embedded TAB/LF and treats empty ?/# delimiters as
+    # empty fields. Refuse these before the privileged HTTP client exists.
+    if (
+        not raw
+        or raw != raw.strip()
+        or "\\" in raw
+        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw)
+    ):
+        raise ValueError("backend must be a clean absolute URL")
+    # urlparse() can include credential-bearing userinfo in ValueError for
+    # malformed Unicode authorities (NFKC) before we can reject userinfo.
+    # Never forward parser error text into operator/CI logs.
+    try:
+        parsed = urlparse(raw)
+        hostname = parsed.hostname
+        username = parsed.username
+        password = parsed.password
+    except ValueError:
+        raise ValueError("invalid backend URL authority") from None
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        raise ValueError("backend must be an absolute http(s) URL")
+    if username is not None or password is not None:
+        raise ValueError("credentials must not be embedded in the backend URL")
+    if parsed.path not in {"", "/"} or "?" in raw or "#" in raw:
+        raise ValueError("backend URL must be an origin without path, query or fragment")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("invalid backend port") from None
+    if parsed.netloc.endswith(":") or port == 0:
+        raise ValueError("invalid backend port")
+    if parsed.scheme != "https" and hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("non-local provider provisioning requires HTTPS")
+    return raw.rstrip("/")
 
 
 def slug(value: str) -> str:
@@ -43,6 +82,15 @@ def validate_credential_output(raw_path: str) -> Path:
     parent = path.parent if str(path.parent) else Path(".")
     if not parent.exists() or not parent.is_dir():
         raise ValueError(f"credential output parent does not exist: {parent}")
+
+    # The source repository is public. Avoid creating one-time raw credentials
+    # anywhere inside its checkout, including through a symlinked parent.
+    checkout = Path(__file__).resolve().parents[1]
+    resolved = path.resolve(strict=False)
+    if resolved == checkout or checkout in resolved.parents:
+        raise ValueError(
+            "credential output must be outside the SignalGate repository"
+        )
     return path
 
 
@@ -164,6 +212,11 @@ def main() -> int:
         except ValueError as exc:
             parser.error(str(exc))
 
+    try:
+        args.backend = validate_admin_backend_url(args.backend)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     headers = {"X-Admin-Id": args.admin_id}
     if args.admin_api_key:
         headers["X-Admin-API-Key"] = args.admin_api_key
@@ -171,21 +224,53 @@ def main() -> int:
     org_slug = args.organization_slug or slug(args.organization_name)
     provider_slug = args.provider_slug or slug(args.provider_name)
 
+    # Privileged tenant mutation must not inherit ambient proxy or CA-file
+    # overrides. TLS verification remains enabled with the platform trust store.
     with httpx.Client(
         base_url=args.backend.rstrip("/"),
         timeout=15.0,
         headers=headers,
+        follow_redirects=False,
+        trust_env=False,
     ) as client:
 
         def post(path: str, payload: dict | None = None) -> dict:
-            response = client.post(path, json=payload or {})
-            if response.status_code >= 400:
+            try:
+                response = client.post(path, json=payload or {})
+            except httpx.RequestError as exc:
+                # Exception strings can include request URLs or private headers.
                 print(
-                    f"Provisioning failed at {path}: {response.status_code} {response.text}",
+                    f"Provisioning API request failed ({type(exc).__name__}). "
+                    "The server may have applied an earlier request; inspect "
+                    "tenant state before retrying.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1) from None
+            if not 200 <= response.status_code < 300:
+                # Never echo an admin API's arbitrary error body into CLI/CI logs.
+                print(
+                    f"Provisioning API refused request (HTTP {response.status_code}). "
+                    "Response body suppressed; inspect tenant state before retrying.",
                     file=sys.stderr,
                 )
                 raise SystemExit(1)
-            return response.json()
+            try:
+                result = response.json()
+            except ValueError:
+                print(
+                    "Provisioning API returned invalid JSON. Inspect tenant "
+                    "state before retrying.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1) from None
+            if not isinstance(result, dict):
+                print(
+                    "Provisioning API returned an unexpected response type. "
+                    "Inspect tenant state before retrying.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+            return result
 
         org = post(
             "/admin/organizations",

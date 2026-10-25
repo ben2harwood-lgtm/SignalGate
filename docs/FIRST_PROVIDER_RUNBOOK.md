@@ -21,6 +21,16 @@ Use `scripts/provision_provider.py` or the equivalent authenticated admin workfl
 
 The provisioning CLI creates the initial feed **paused** and no longer prints the raw provider credential to ordinary stdout. Choose the credential-delivery path **before** provisioning.
 
+Before any tenant-creation request, the CLI rejects non-local plain HTTP endpoints and ambiguous origins. Use **HTTPS** for all remote admin APIs; `http://127.0.0.1`, `http://localhost` and `http://[::1]` are permitted for local-only demos. Never embed credentials, paths, queries or fragments in `--backend`. A rejected URL must produce no admin API request or credential file. Malformed authority parsing fails with generic, credential-free diagnostics rather than echoing the supplied URL into terminal logs.
+Privileged provisioning requests disable ambient HTTP proxy and CA-file
+overrides (`httpx.Client(trust_env=False)`) and do not follow redirects.
+This prevents unexpected `HTTPS_PROXY`, `ALL_PROXY`, `SSL_CERT_FILE` or
+`SSL_CERT_DIR` settings from changing the destination/trust of admin keys.
+Normal platform TLS verification remains enabled. Operators using a
+corporate proxy or private CA must arrange a separately trusted network/
+certificate route before using this provisioning CLI; ambient overrides
+are deliberately not an accepted credential-transport mechanism.
+
 Recommended secret-file flow (write the file outside the repository and deliver it through the approved private channel):
 
 ```bash
@@ -30,11 +40,20 @@ python scripts/provision_provider.py \
   --credential-output /secure/private/provider-onboarding-secret.json
 ```
 
-The secret file is created without overwrite and with owner-only mode where the operating system supports POSIX permissions. Delete it from the operator machine after confirmed secure delivery/rotation according to the agreed secret-handling process.
+The secret file is created without overwrite and with owner-only mode where the operating system supports POSIX permissions. The CLI refuses output paths inside the SignalGate source checkout (including symlinked parents), reducing accidental commits of raw one-time credentials to the public repository. Use a separate private directory, not the repository tree; still protect all other backup/sync locations. Delete the file from the operator machine after confirmed secure delivery/rotation according to the agreed secret-handling process.
 
 For an attended emergency/demo terminal only, `--show-secret` explicitly opts into displaying the one-time secret. Do not use that mode in captured CI/session logs.
 
 Treat an unexpectedly unpaused new feed as a setup failure and pause it before continuing.
+
+If the provisioning CLI reports a non-2xx response, transport failure, malformed JSON
+or an unexpected response shape, it intentionally suppresses backend response
+bodies and detailed exception strings in terminal/CI logs. **Do not retry blindly**:
+earlier organisation/provider/credential mutations may already have succeeded.
+Inspect tenant state through the authenticated admin interface and reconcile or
+rotate any issued credential before retrying. A private secret file may exist
+if failure occurred after credential issuance; handle it under the same secure
+credential-delivery/rotation procedure.
 
 Record:
 
@@ -95,7 +114,11 @@ See `docs/PILOT_PREFLIGHT.md`. Require a recorded PASS for demo-only mode, readi
 
 ## 6. Connect demo execution
 
-Use the accepted demo MT5 setup or the simulator.
+**Internal rehearsal only:** The broker-free simulator produces synthetic/API evidence, not actual MT5 DEMO broker fill, rejection, or reconciliation receipts. Mark every broker-dependent scenario `NOT_RUN` in simulator receipts. Simulator success is **not a substitute** for real MT5 DEMO acceptance and cannot authorise an external provider pilot or feed unpause.
+
+**External demo-provider pilot remains on HOLD.** Before unpausing any feed or starting a real-provider cohort, the coordinator must approve an independently reviewed successor candidate (frozen RC2 failed its official source compile), retain an official MetaEditor **0-error / 0-warning** compile receipt and regenerated **EX5** bound to the **exact candidate** source, obtain **real MT5 DEMO broker** scenario receipts (including broker order/deal/position identity and TP-stage exit attribution), and resolve the execution-safety **PR #60** holds on multi-fill accounting, uncertain acknowledgements, split rollback, and close attribution. Retain all applicable platform, external-security, regulatory, privacy, subscriber-consent, and pilot-agreement entry evidence required by `docs/BETA_ACCEPTANCE.md`. Clean CI, a successful compiler run, or broker-free tests do not by themselves establish G3, G8, or beta acceptance.
+
+**Keep the provider/feed paused and do not start the external pilot** while any required receipt or independent acceptance is missing. Genuine controlled MT5 DEMO broker evidence is a separately authorised acceptance activity; nothing in this simulator rehearsal grants broker execution authority. Real-money trading and automatic copying remain prohibited.
 
 Before unpausing:
 
