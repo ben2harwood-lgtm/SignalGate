@@ -597,3 +597,103 @@ def test_whitespace_around_one_valid_ticket_remains_normalized(client):
     )
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "matched"
+
+
+
+@pytest.mark.parametrize(
+    "tickets",
+    [
+        ["9001", "9001"],
+        ["9001", " 9001 "],
+        [" 9001 ", "9001"],
+    ],
+    ids=["exact-duplicate", "trailing-trim-alias", "leading-trim-alias"],
+)
+def test_duplicate_position_ticket_does_not_match_existing_execution(client, tickets):
+    """One reported ticket twice cannot impersonate two broker positions."""
+    cid = _reported_execution(client, "860")
+    snapshot = _snapshot()
+    snapshot["broker_tickets"] = tickets
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    assert "duplicate ticket entries" in response.json()["detail"]
+    with SessionLocal() as db:
+        original = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert original.status == "SUCCESS"
+        assert original.broker_ticket == "9001"
+        assert original.lot_size == pytest.approx(0.01)
+        command = db.query(models.Command).filter_by(id=cid).one()
+        assert command.status == "EXECUTED_OPEN"
+        audit = (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
+            .one()
+        )
+        assert "duplicate_broker_tickets" in audit.payload_json
+        assert '"tickets"' not in audit.payload_json
+        assert (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_MATCHED", entity_id=cid)
+            .count() == 0
+        )
+
+
+def test_duplicate_tickets_cannot_recover_unreported_broker_execution(client):
+    """SENT_TO_EA stays unresolved when broker evidence repeats one identity."""
+    user = register_user(client, "861")
+    signal = create_signal(client, _SIGNAL)
+    approval = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "861"},
+    )
+    assert approval.status_code == 200, approval.text
+    pending = client.get(
+        "/commands/pending",
+        params={"user_id": user["id"]},
+        headers=EA_HEADERS,
+    ).json()["command"]
+    assert pending is not None
+    cid = pending["command_id"]
+
+    snapshot = _snapshot()
+    snapshot["broker_tickets"] = ["9001", "9001"]
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    with SessionLocal() as db:
+        command = db.query(models.Command).filter_by(id=cid).one()
+        assert command.status == "SENT_TO_EA"
+        assert db.query(models.Execution).filter_by(command_id=cid).count() == 0
+        conflict = (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
+            .one()
+        )
+        assert "duplicate_broker_tickets" in conflict.payload_json
+        assert (
+            db.query(models.AuditLog)
+            .filter_by(event_type="EXECUTION_RECOVERED_FROM_BROKER_SNAPSHOT")
+            .count() == 0
+        )
+
+
+def test_two_distinct_known_position_ids_still_match(client):
+    """Distinct previously recorded tickets remain compatible with reconciliation."""
+    cid = _reported_execution(client, "862")
+    with SessionLocal() as db:
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        execution.child_tickets_json = '["9001", "9002"]'
+        db.commit()
+    snapshot = _snapshot()
+    snapshot["broker_tickets"] = ["9001", "9002"]
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "matched"
