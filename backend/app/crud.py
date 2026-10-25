@@ -2062,6 +2062,22 @@ def _broker_symbol_matches(command_symbol: str, observed_symbol: str) -> bool:
     )
 
 
+def _canonical_mt5_position_ticket(ticket: str) -> bool:
+    """MT5 position tickets are positive, unsigned 64-bit decimal integers.
+
+    The current EA serializes the broker's numeric position ticket as text.
+    Reject aliases, signed IDs, Unicode lookalikes and fabricated identifiers
+    rather than treating them as independent broker position evidence.
+    """
+    return (
+        1 <= len(ticket) <= 20
+        and ticket.isascii()
+        and ticket.isdecimal()
+        and ticket[0] != "0"
+        and int(ticket) <= (1 << 64) - 1
+    )
+
+
 def _snapshot_tickets(payload) -> list[str]:
     tickets = [str(ticket).strip() for ticket in payload.broker_tickets]
     if not any(tickets):
@@ -2070,6 +2086,10 @@ def _snapshot_tickets(payload) -> list[str]:
     # Never discard a blank broker ticket and then treat the rest as complete.
     if any(not ticket for ticket in tickets):
         raise BrokerReconciliationConflict("Broker snapshot contains blank ticket entries")
+    # A position cannot have a signed, zero, non-decimal or out-of-range
+    # MT5 ticket. Such an entry is not authoritative broker evidence.
+    if any(not _canonical_mt5_position_ticket(ticket) for ticket in tickets):
+        raise BrokerReconciliationConflict("Broker snapshot contains invalid MT5 ticket identifiers")
     # An EA enumerates one entry per open broker position. Repeating one
     # ticket is not evidence of two positions, even if aggregate volume fits.
     # Do not silently de-duplicate an incomplete/contradictory snapshot.
@@ -2103,6 +2123,8 @@ def reconcile_open_position(
             audit_reason = "missing_usable_broker_tickets"
         elif any(not ticket for ticket in sanitized_tickets):
             audit_reason = "blank_broker_tickets"
+        elif any(not _canonical_mt5_position_ticket(ticket) for ticket in sanitized_tickets):
+            audit_reason = "invalid_mt5_broker_tickets"
         elif len(set(sanitized_tickets)) != len(sanitized_tickets):
             audit_reason = "duplicate_broker_tickets"
         else:
