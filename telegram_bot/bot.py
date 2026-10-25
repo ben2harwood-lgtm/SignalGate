@@ -17,6 +17,10 @@ from config import config
 logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s", level=logging.INFO
 )
+# HTTPX INFO logs full Telegram Bot API URLs, including the token in /bot<TOKEN>/.
+# Keep application INFO messages without leaking bot credentials in request logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("signalgate.bot")
 
 

@@ -100,6 +100,13 @@ an **in-memory preview integrity guard**, not an authentication credential, a
 persistent queue or broker execution acceptance evidence. Restarting the bot
 invalidates old preview buttons; providers must send a new screenshot.
 
+Bot transport logging is intentionally restricted to WARNING and above for
+`httpx` and `httpcore`: HTTPX INFO request diagnostics include Telegram Bot API
+URLs containing the bot token. Never enable transport DEBUG/INFO with real bot
+credentials. The offline bot smoke checks this using `httpx.MockTransport` and
+a synthetic marker (including a negative control). This safeguard does **not**
+replace deployed log-review or independent security assurance.
+
 ## Security properties
 
 - one-time token stored only as SHA-256 hash;

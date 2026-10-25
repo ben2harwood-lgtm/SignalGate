@@ -479,6 +479,50 @@ def check_connectprovider_error_does_not_echo_backend_secrets() -> None:
     assert secret not in replies[0]
     assert "SYNTHETIC-ONE-TIME-TOKEN" not in replies[0]
 
+def check_telegram_httpx_token_log_privacy() -> None:
+    """Synthetic Bot API URLs must not reach HTTPX INFO transport logs."""
+    import io
+    import logging
+
+    marker = "123456789:OFFLINE_HTTPX_TOKEN_LOG_PROBE"
+    captured = io.StringIO()
+    recorder = logging.StreamHandler(captured)
+    recorder.setLevel(logging.INFO)
+    transport_logger = logging.getLogger("httpx")
+    original_level = transport_logger.level
+    original_propagate = transport_logger.propagate
+
+    def mock_telegram_request() -> None:
+        transport = httpx.MockTransport(
+            lambda _request: httpx.Response(200, json={"ok": True})
+        )
+        with httpx.Client(transport=transport) as client:
+            response = client.post(f"https://api.telegram.org/bot{marker}/getMe")
+            assert response.status_code == 200
+
+    # Capture in isolation: never print the synthetic token to normal CI logs.
+    transport_logger.addHandler(recorder)
+    transport_logger.propagate = False
+    try:
+        # Negative control: an INFO-level HTTPX logger reveals the URL token.
+        transport_logger.setLevel(logging.INFO)
+        mock_telegram_request()
+        assert marker in captured.getvalue(), "HTTPX leak control did not reproduce"
+        captured.seek(0)
+        captured.truncate(0)
+
+        # Restore actual bot transport logging and verify the leak is blocked.
+        transport_logger.setLevel(original_level)
+        mock_telegram_request()
+        assert marker not in captured.getvalue(), "Bot token reached HTTPX INFO logs"
+        assert original_level >= logging.WARNING, "HTTPX transport INFO logging enabled"
+        assert logging.getLogger("httpcore").getEffectiveLevel() >= logging.WARNING
+    finally:
+        transport_logger.removeHandler(recorder)
+        transport_logger.propagate = original_propagate
+        transport_logger.setLevel(original_level)
+
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -516,6 +560,7 @@ def main() -> int:
     assert sum(isinstance(h, MessageHandler) for h in all_handlers) >= 3, (
         "Screenshot/photo/text handler routing incomplete"
     )
+    check_telegram_httpx_token_log_privacy()
     check_backend_http_fail_closed()
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()
