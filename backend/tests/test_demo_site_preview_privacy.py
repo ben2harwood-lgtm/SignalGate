@@ -6,6 +6,7 @@ No broker, Telegram, customer information, external service or deployment.
 from __future__ import annotations
 
 import http.client
+import os
 import json
 from pathlib import Path
 import runpy
@@ -55,6 +56,41 @@ class PreviewPrivacyTests(unittest.TestCase):
             thread.join(timeout=3)
         after = log_path.read_bytes() if log_path.exists() else None
         self.assertEqual(after, previous, "Legacy request body must never reach disk")
+
+    def test_static_preview_restricts_get_to_mockups_not_caller_cwd(self) -> None:
+        module = runpy.run_path(str(SERVER_SOURCE), run_name="preview_test_module")
+        self.assertEqual(module["STATIC_ROOT"], SITE)
+        previous_cwd = Path.cwd()
+        server = None
+        thread = None
+        try:
+            # Reproduce a common invocation from the repository root, where
+            # serving the process CWD would reveal files outside site-mockups.
+            os.chdir(ROOT)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), module["SiteHandler"])
+            server.daemon_threads = True
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            try:
+                conn.request("GET", "/provider-edition.html")
+                page = conn.getresponse()
+                self.assertEqual(page.status, 200)
+                self.assertIn(b"SignalGate", page.read())
+
+                conn.request("GET", "/AGENTS.md")
+                private = conn.getresponse()
+                self.assertEqual(private.status, 404)
+                private.read()
+            finally:
+                conn.close()
+        finally:
+            if server is not None:
+                server.shutdown()
+                server.server_close()
+            if thread is not None:
+                thread.join(timeout=3)
+            os.chdir(previous_cwd)
 
     def test_legacy_html_does_not_submit_or_retain_personal_details(self) -> None:
         page = HTML.read_text(encoding="utf-8")

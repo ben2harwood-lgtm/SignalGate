@@ -7,12 +7,20 @@ from __future__ import annotations
 
 import json
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 HOST = "127.0.0.1"
 PORT = 8088
+STATIC_ROOT = Path(__file__).resolve().parent
 
 
 class SiteHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs) -> None:
+        # Serving the caller's CWD could expose repository files or local .env.
+        # The preview must only serve its own non-secret static mockup folder.
+        kwargs["directory"] = str(STATIC_ROOT)
+        super().__init__(*args, **kwargs)
+
     def do_POST(self) -> None:
         if self.path != "/api/demo-requests":
             self.send_error(404, "Not found")
