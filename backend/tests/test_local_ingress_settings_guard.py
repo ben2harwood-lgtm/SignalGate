@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import Settings
+from app.config import Settings, local_demo_http_ingress_is_loopback
 import app.main as main_module
 
 
@@ -111,3 +111,72 @@ def test_real_asgi_startup_refuses_advertised_public_local_auth_before_db(monkey
     with pytest.raises(RuntimeError, match="loopback BACKEND_HOST and BACKEND_BASE_URL"):
         with TestClient(main_module.app):
             pytest.fail("ASGI lifespan allowed advertised public local-auth mode")
+
+
+@pytest.mark.parametrize(
+    ("bound_server", "host", "allowed"),
+    [
+        (("127.0.0.1", 8000), "127.0.0.1:8000", True),
+        (("::1", 8000), "[::1]:8000", True),
+        (("localhost", 8000), "localhost:8000", True),
+        (("127.0.0.1", 8000), "localhost", True),
+        (("0.0.0.0", 8000), "127.0.0.1:8000", False),
+        (("192.0.2.22", 8000), "localhost:8000", False),
+        (("127.0.0.1", 8000), "api.example.invalid", False),
+        (("127.0.0.1", 8000), "127.0.0.1.evil.invalid", False),
+        (("127.0.0.1", 8000), "user@127.0.0.1", False),
+        (("127.0.0.1", 8000), "127.0.0.1:broken", False),
+        (("127.0.0.1", 8000), "127.0.0.1\r\nX-Evil: yes", False),
+        (("127.0.0.1", 8000), "", False),
+        (("127.0.0.1", 8000), None, False),
+        (None, "127.0.0.1:8000", False),
+        (("testserver", 80), "127.0.0.1", False),
+    ],
+)
+def test_actual_asgi_listener_and_untrusted_host_must_both_be_local(
+    bound_server, host, allowed
+):
+    # Pure offline scope simulation; never opens a public listening socket.
+    assert local_demo_http_ingress_is_loopback(bound_server, host) is allowed
+
+
+@pytest.mark.parametrize(
+    ("synthetic_bound_address", "host_header"),
+    [
+        ("0.0.0.0", "127.0.0.1:8000"),
+        ("192.0.2.44", "localhost:8000"),
+        ("127.0.0.1", "api.example.invalid"),
+        ("127.0.0.1", "127.0.0.1.evil.invalid"),
+    ],
+)
+def test_local_identity_routes_refuse_nonlocal_asgi_ingress(
+    monkeypatch, synthetic_bound_address, host_header
+):
+    # Settings claim a local service, but TestClient simulates a contradictory
+    # actual server tuple/Host. This is NOT a network or proxy penetration test.
+    monkeypatch.setattr(main_module.settings, "require_license", False)
+    monkeypatch.setattr(main_module.settings, "demo_only_mode", True)
+    monkeypatch.setattr(main_module.settings, "backend_host", "127.0.0.1")
+    monkeypatch.setattr(
+        main_module.settings, "backend_base_url", "http://127.0.0.1:8000"
+    )
+    with TestClient(
+        main_module.app, base_url=f"http://{synthetic_bound_address}:8000"
+    ) as test_client:
+        refused = test_client.get("/livez", headers={"Host": host_header})
+        assert refused.status_code == 403
+        assert refused.text == "Local demo ingress refused"
+        assert "api" not in refused.headers.get("server", "").lower()
+
+
+def test_local_ingress_allows_normal_loopback_request(client):
+    response = client.get("/livez")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_local_ingress_refuses_external_host_even_on_loopback_listener(client):
+    # Route execution is denied even if a proxy retains a public Host.
+    response = client.get("/livez", headers={"Host": "public.example.invalid"})
+    assert response.status_code == 403
+    assert response.text == "Local demo ingress refused"
