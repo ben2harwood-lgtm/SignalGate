@@ -794,3 +794,79 @@ def test_canonical_mt5_uint64_ticket_boundary_remains_accepted(client):
         execution = db.query(models.Execution).filter_by(command_id=cid).one()
         assert execution.broker_ticket == max_uint64_ticket
         assert db.query(models.Command).filter_by(id=cid).one().status == "EXECUTED_OPEN"
+
+
+@pytest.mark.parametrize(
+    "stored_primary",
+    ["", "0", "09001", "+9001", "9001 ", "18446744073709551616"],
+    ids=["empty", "zero", "padded", "signed", "whitespace", "uint64-overflow"],
+)
+def test_corrupt_stored_primary_cannot_be_masked_by_valid_child(
+    client, stored_primary
+):
+    """An otherwise matching child must not validate a corrupted primary ID."""
+    cid = _reported_execution(client, "865")
+    with SessionLocal() as db:
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        execution.broker_ticket = stored_primary
+        execution.child_tickets_json = '["9001"]'
+        db.commit()
+
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=_snapshot(), headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    assert "stored_ticket_payload" in response.json()["detail"]
+    with SessionLocal() as db:
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert execution.status == "SUCCESS"
+        assert execution.broker_ticket == stored_primary
+        assert execution.child_tickets_json == '["9001"]'
+        assert execution.lot_size == pytest.approx(0.01)
+        assert execution.executed_price == pytest.approx(2345.0)
+        audit = db.query(models.AuditLog).filter_by(
+            event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid
+        ).one()
+        assert "stored_ticket_payload" in audit.payload_json
+
+
+@pytest.mark.parametrize(
+    "stored_children",
+    [
+        "", '["9001", "09001"]', '["9001", "0"]',
+        '["9001", "9001"]', '["9001", "9001 "]',
+        '["9001", "+9002"]', '["9001", "18446744073709551616"]',
+    ],
+    ids=[
+        "invalid-json-empty", "padded", "zero", "duplicate", "whitespace",
+        "signed", "uint64-overflow",
+    ],
+)
+def test_corrupt_stored_child_cannot_be_masked_by_valid_primary(
+    client, stored_children
+):
+    """A matching primary must not turn an invalid child array into a MATCH."""
+    cid = _reported_execution(client, "866")
+    with SessionLocal() as db:
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        execution.child_tickets_json = stored_children
+        db.commit()
+
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=_snapshot(), headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    assert "stored_ticket_payload" in response.json()["detail"]
+    with SessionLocal() as db:
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert execution.status == "SUCCESS"
+        assert execution.broker_ticket == "9001"
+        assert execution.child_tickets_json == stored_children
+        assert execution.lot_size == pytest.approx(0.01)
+        assert execution.executed_price == pytest.approx(2345.0)
+        audit = db.query(models.AuditLog).filter_by(
+            event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid
+        ).one()
+        assert "stored_ticket_payload" in audit.payload_json
