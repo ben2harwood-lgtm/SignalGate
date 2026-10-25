@@ -28,8 +28,10 @@ def test_provider_consent_recovery_manual_close_and_evidence(client, db):
     assert pending["demo_only"] is True
     assert "raw_text" not in pending
 
-    # Deliberately omit the execution callback. A synthetic snapshot recovers it.
-    snapshot = {"broker_tickets": ["SYNTHETIC-9891"], "executed_symbol": "EURUSD.a",
+    # Deliberately omit the execution callback. This numeric ticket is a
+    # SYNTHETIC protocol-shape fixture, never actual broker-verified evidence.
+    synthetic_position_ticket = "9891"
+    snapshot = {"broker_tickets": [synthetic_position_ticket], "executed_symbol": "EURUSD.a",
                 "executed_direction": "BUY", "executed_price": 1.085,
                 "lot_size": pending["lot_size"], "stop_loss": 1.08}
     recovered = client.post(f"/commands/{cid}/reconcile_open_position", headers=EA_HEADERS, json=snapshot)
@@ -51,7 +53,7 @@ def test_provider_consent_recovery_manual_close_and_evidence(client, db):
     history = next(row for row in evidence["history"] if row["command_id"] == cid)
     assert history["command_status"] == "FULLY_CLOSED"
     assert history["reconciliation_state"] == "RECONCILED_CLOSED"
-    assert history["execution"]["broker_ticket"] == "SYNTHETIC-9891"
+    assert history["execution"]["broker_ticket"] == synthetic_position_ticket
     assert history["ledger"]["result_status"] == "CLOSED_UNATTRIBUTED"
     assert history["ledger"]["r_result"] is None
     assert len(history["management_events"]) == 1

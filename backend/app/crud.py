@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import secrets
 from typing import List, Optional
 
@@ -2061,11 +2062,40 @@ def _broker_symbol_matches(command_symbol: str, observed_symbol: str) -> bool:
     )
 
 
+def _canonical_mt5_position_ticket(ticket: str) -> bool:
+    """MT5 position tickets are positive, unsigned 64-bit decimal integers.
+
+    The current EA serializes the broker's numeric position ticket as text.
+    Reject aliases, signed IDs, Unicode lookalikes and fabricated identifiers
+    rather than treating them as independent broker position evidence.
+    """
+    return (
+        1 <= len(ticket) <= 20
+        and ticket.isascii()
+        and ticket.isdecimal()
+        and ticket[0] != "0"
+        and int(ticket) <= (1 << 64) - 1
+    )
+
+
 def _snapshot_tickets(payload) -> list[str]:
-    tickets = [str(ticket).strip() for ticket in payload.broker_tickets if str(ticket).strip()]
-    if not tickets:
+    tickets = [str(ticket).strip() for ticket in payload.broker_tickets]
+    if not any(tickets):
         raise BrokerReconciliationConflict("Broker snapshot contains no usable tickets")
-    return list(dict.fromkeys(tickets))
+    # An otherwise recognised position must not mask an invalid second entry.
+    # Never discard a blank broker ticket and then treat the rest as complete.
+    if any(not ticket for ticket in tickets):
+        raise BrokerReconciliationConflict("Broker snapshot contains blank ticket entries")
+    # A position cannot have a signed, zero, non-decimal or out-of-range
+    # MT5 ticket. Such an entry is not authoritative broker evidence.
+    if any(not _canonical_mt5_position_ticket(ticket) for ticket in tickets):
+        raise BrokerReconciliationConflict("Broker snapshot contains invalid MT5 ticket identifiers")
+    # An EA enumerates one entry per open broker position. Repeating one
+    # ticket is not evidence of two positions, even if aggregate volume fits.
+    # Do not silently de-duplicate an incomplete/contradictory snapshot.
+    if len(set(tickets)) != len(tickets):
+        raise BrokerReconciliationConflict("Broker snapshot contains duplicate ticket entries")
+    return tickets
 
 
 def reconcile_open_position(
@@ -2080,7 +2110,33 @@ def reconcile_open_position(
     """
     from . import ledger
 
-    tickets = _snapshot_tickets(payload)
+    # Even a ticketless/whitespace-only broker snapshot is a safety conflict.
+    # Persist a private, non-identifying receipt before rejecting it; the API
+    # handler commits this audit on BrokerReconciliationConflict (HTTP 409).
+    try:
+        tickets = _snapshot_tickets(payload)
+    except BrokerReconciliationConflict:
+        # Distinguish an entirely unusable snapshot from one with an
+        # untracked blank entry. Never log the incoming untrusted ticket data.
+        sanitized_tickets = [str(ticket).strip() for ticket in payload.broker_tickets]
+        if not any(sanitized_tickets):
+            audit_reason = "missing_usable_broker_tickets"
+        elif any(not ticket for ticket in sanitized_tickets):
+            audit_reason = "blank_broker_tickets"
+        elif any(not _canonical_mt5_position_ticket(ticket) for ticket in sanitized_tickets):
+            audit_reason = "invalid_mt5_broker_tickets"
+        elif len(set(sanitized_tickets)) != len(sanitized_tickets):
+            audit_reason = "duplicate_broker_tickets"
+        else:
+            audit_reason = "invalid_broker_tickets"
+        add_audit(
+            db,
+            "BROKER_RECONCILIATION_CONFLICT",
+            "command",
+            command.id,
+            {"conflicts": [audit_reason]},
+        )
+        raise
     conflicts: list[str] = []
     if not _broker_symbol_matches(command.symbol, payload.executed_symbol):
         conflicts.append("symbol")
@@ -2092,22 +2148,101 @@ def reconcile_open_position(
     if existing is not None:
         if existing.status != "SUCCESS":
             conflicts.append("existing_execution_status")
+        # A terminal/expired command cannot truthfully be reconciled as an
+        # OPEN broker position merely because its old execution ticket matches.
+        if command.status not in {
+            "EXECUTED_OPEN", "PARTIAL_TP1_DONE", "PARTIAL_TP2_DONE"
+        }:
+            conflicts.append("command_state")
         if existing.executed_direction and existing.executed_direction != payload.executed_direction:
             conflicts.append("existing_direction")
         if existing.executed_symbol and not _broker_symbol_matches(
             command.symbol, existing.executed_symbol
         ):
             conflicts.append("existing_symbol")
+        # A requested symbol can have several broker-specific suffixes.
+        # Matching the requested prefix is not evidence that two different
+        # executed broker instruments represent the same position.
+        if existing.executed_symbol and (
+            existing.executed_symbol.upper() != payload.executed_symbol.upper()
+        ):
+            conflicts.append("existing_executed_symbol")
         existing_tickets: set[str] = set()
-        if existing.broker_ticket:
-            existing_tickets.add(str(existing.broker_ticket))
-        if existing.child_tickets_json:
+        # Stored successful-execution identities are evidence, not a permissive
+        # lookup cache: one corrupt primary or child must poison the entire
+        # comparison, even when another ticket would otherwise match.
+        if existing.broker_ticket is not None:
+            primary = str(existing.broker_ticket)
+            if not _canonical_mt5_position_ticket(primary):
+                conflicts.append("stored_ticket_payload")
+            else:
+                existing_tickets.add(primary)
+        if existing.child_tickets_json is not None:
             try:
-                existing_tickets.update(str(x) for x in json.loads(existing.child_tickets_json))
+                stored_children = json.loads(existing.child_tickets_json)
+                # MT5 deal and position identifiers have different meanings,
+                # but both are canonical positive decimal uint64 values. This
+                # shape check does NOT establish deal-to-position ownership.
+                if not isinstance(stored_children, list) or any(
+                    isinstance(ticket, bool)
+                    or not isinstance(ticket, (str, int))
+                    or not _canonical_mt5_position_ticket(str(ticket))
+                    for ticket in stored_children
+                ):
+                    raise ValueError("invalid stored child broker identities")
+                children = [str(ticket) for ticket in stored_children]
+                if len(set(children)) != len(children):
+                    raise ValueError("repeated stored child broker identities")
+                existing_tickets.update(children)
             except (TypeError, ValueError, json.JSONDecodeError):
                 conflicts.append("stored_ticket_payload")
-        if existing_tickets and not (existing_tickets & set(tickets)):
+        # A successful execution with no persisted broker-ticket identity
+        # cannot be validated against a later snapshot merely because the
+        # requested symbol, direction and quantity happen to agree.
+        if not existing_tickets:
+            conflicts.append("missing_stored_broker_identity")
+        # A snapshot may contain fewer positions after a partial close, but
+        # even one *additional* unowned ticket must not become authoritative
+        # merely because another ticket happens to match the old execution.
+        elif not set(tickets).issubset(existing_tickets):
             conflicts.append("broker_tickets")
+
+        # A still-open broker position must not silently validate a SUCCESS
+        # execution that understated filled exposure or used the wrong price.
+        # Once a partial-close event has been recorded, remaining open volume
+        # can legitimately be lower than the original execution volume.
+        if command.status == "EXECUTED_OPEN":
+            if existing.lot_size is None or not math.isclose(
+                existing.lot_size, payload.lot_size, rel_tol=1e-9, abs_tol=1e-8
+            ):
+                conflicts.append("existing_open_lot_size")
+            if existing.executed_price is None or not math.isclose(
+                existing.executed_price,
+                payload.executed_price,
+                rel_tol=1e-9,
+                abs_tol=1e-8,
+            ):
+                conflicts.append("existing_open_price")
+
+        # A successful partial close can reduce, but never increase, the
+        # original execution exposure. Reusing a matching broker ticket does
+        # not authorise a new/increased fill on that position.
+        if command.status in {"PARTIAL_TP1_DONE", "PARTIAL_TP2_DONE"}:
+            if (
+                existing.lot_size is None
+                or not math.isfinite(existing.lot_size)
+                or not math.isfinite(payload.lot_size)
+                or (
+                    payload.lot_size > existing.lot_size
+                    and not math.isclose(
+                        payload.lot_size,
+                        existing.lot_size,
+                        rel_tol=1e-9,
+                        abs_tol=1e-8,
+                    )
+                )
+            ):
+                conflicts.append("existing_open_lot_size")
 
         if conflicts:
             add_audit(
