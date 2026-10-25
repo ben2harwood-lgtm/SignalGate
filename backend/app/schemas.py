@@ -308,9 +308,12 @@ class BrokerPositionReconcileRequest(BaseModel):
     broker_tickets: List[str] = Field(min_length=1, max_length=20)
     executed_symbol: str = Field(min_length=1, max_length=80)
     executed_direction: Literal["BUY", "SELL"]
-    executed_price: float = Field(gt=0)
-    lot_size: float = Field(gt=0)
-    stop_loss: Optional[float] = Field(default=None, gt=0)
+    # Infinity passes a positive-only float bound in Pydantic, but can poison
+    # recovered broker exposure/price and downstream audit/ledger records.
+    # Reject it at the API boundary, before any reconciliation state mutation.
+    executed_price: float = Field(gt=0, allow_inf_nan=False)
+    lot_size: float = Field(gt=0, allow_inf_nan=False)
+    stop_loss: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 class BrokerPositionReconcileResponse(BaseModel):
