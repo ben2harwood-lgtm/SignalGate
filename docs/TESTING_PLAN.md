@@ -139,6 +139,14 @@ Then run and retain receipts for the scenarios in `docs/MT5_ACCEPTANCE.md`, incl
 9. EA restart with an open SignalGate position blocks new polling until reconciled/flat;
 10. conflicting broker snapshot fails closed.
 
+Synthetic reconciliation negatives must reject **blank, duplicate or unowned broker
+position-ticket entries** without upgrading an unresolved command or declaring a
+stored execution matched. Audit receipts must survive those conflicts. Duplicated
+entries are not independent broker-position evidence. These tests do **not** prove
+the correspondence of an MT5 opening **deal** identifier with its distinct
+broker **position** identifier; that interoperability remains a separate
+MT5 DEMO acceptance HOLD requiring real broker receipts.
+
 ## External assurance
 
 Repository CI cannot close these gates:
