@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from ipaddress import ip_address
 from typing import List, Optional
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -30,6 +32,35 @@ def sqlalchemy_driver_url(database_url: str) -> str:
     if database_url.startswith("postgresql://"):
         return "postgresql+psycopg2://" + database_url[len("postgresql://"):]
     return database_url
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Never resolve arbitrary hostnames when guarding local header auth."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _local_demo_base_url_is_loopback(value: str) -> bool:
+    """Reject externally advertised URLs without accepting deceptive hosts."""
+    try:
+        parts = urlsplit(value)
+        # Accessing .port also validates malformed port syntax.
+        _ = parts.port
+        return (
+            parts.scheme in {"http", "https"}
+            and bool(parts.netloc)
+            and parts.username is None
+            and parts.password is None
+            and not parts.query
+            and not parts.fragment
+            and _is_loopback_host(parts.hostname or "")
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def _get_bool(key: str, default: bool) -> bool:
@@ -137,6 +168,18 @@ class Settings:
             )
 
         if not self.require_license:
+            # Header-only local-demo identities are never suitable for an
+            # explicitly public bind or advertised API URL. This protects
+            # normal settings-driven launches, but cannot discover a manually
+            # overridden Uvicorn bind or an undisclosed reverse proxy.
+            if (
+                not _is_loopback_host(self.backend_host)
+                or not _local_demo_base_url_is_loopback(self.backend_base_url)
+            ):
+                raise RuntimeError(
+                    "Unlicensed local demo requires loopback "
+                    "BACKEND_HOST and BACKEND_BASE_URL."
+                )
             return
 
         if self.database_url.startswith("sqlite"):
