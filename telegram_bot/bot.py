@@ -17,6 +17,10 @@ from config import config
 logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s", level=logging.INFO
 )
+# HTTPX INFO logs full Telegram Bot API URLs, including the token in /bot<TOKEN>/.
+# Keep application INFO messages without leaking bot credentials in request logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("signalgate.bot")
 
 
@@ -58,7 +62,7 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.PHOTO, handlers.on_photo))
     app.add_handler(MessageHandler(filters.Document.IMAGE, handlers.on_document))
     app.add_handler(
-        CallbackQueryHandler(handlers.on_signal_preview, pattern=r"^SIG(OK|EDIT|NO)$")
+        CallbackQueryHandler(handlers.on_signal_preview, pattern=r"^SIG(OK|EDIT|NO)(?::[0-9a-f]{16})?$")
     )
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.on_text)

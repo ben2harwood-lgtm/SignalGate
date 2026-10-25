@@ -11,6 +11,14 @@ import asyncio
 import os
 from pathlib import Path
 import sys
+
+# Python -O / PYTHONOPTIMIZE removes assertions, including the safety checks
+# below. Refuse a misleading green acceptance receipt before importing the bot.
+if sys.flags.optimize:
+    raise SystemExit(
+        "SignalGate offline smoke refuses optimized Python: "
+        "assertions must run to validate safety invariants"
+    )
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -225,7 +233,8 @@ def check_screenshot_extraction_fail_closed() -> None:
     )
     assert requests == ["/provider-sources/telegram/extract"]
     assert len(replies) == 1 and "Read from your screenshot" in replies[0]
-    assert state == {"pending_signal_text": "EURUSD BUY SL 1.05 TP1 1.07"}
+    assert state["pending_signal_text"] == "EURUSD BUY SL 1.05 TP1 1.07"
+    assert len(state["pending_preview_token"]) == 16
     assert not warnings
 
 
@@ -242,7 +251,7 @@ def check_malformed_pending_confirmation_fails_closed() -> None:
         return "created"
 
     class Query:
-        data = "SIGOK"
+        data = "SIGOK:" + ("b" * 16)
 
         async def answer(self):
             return None
@@ -250,7 +259,10 @@ def check_malformed_pending_confirmation_fails_closed() -> None:
         async def edit_message_text(self, message):
             replies.append(message)
 
-    context = SimpleNamespace(user_data={"pending_signal_text": ["bad"], "awaiting_edit": True})
+    context = SimpleNamespace(user_data={
+        "pending_signal_text": ["bad"], "awaiting_edit": True,
+        "pending_preview_token": "b" * 16,
+    })
     update = SimpleNamespace(callback_query=Query())
     with (
         patch.object(handlers, "_can_submit_provider_signal", connected),
@@ -260,6 +272,139 @@ def check_malformed_pending_confirmation_fails_closed() -> None:
     assert len(replies) == 1 and "nothing to send" in replies[0].lower()
     assert calls == [], "Malformed user state reached signal creation"
     assert context.user_data == {}, "Malformed confirmation left pending state"
+
+
+def check_preview_keyboard_token_contract() -> None:
+    """Telegram markup must carry matching, short, preview-bound callback data."""
+    from keyboards import extract_preview_keyboard
+
+    token = "a" * 16
+    keyboard = extract_preview_keyboard(True, token)
+    actions = [
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+    ]
+    assert actions == [f"SIGOK:{token}", f"SIGEDIT:{token}", f"SIGNO:{token}"]
+    assert all(len(action.encode("utf-8")) <= 64 for action in actions)
+    invalid_keyboard = extract_preview_keyboard(False, token)
+    assert [
+        button.callback_data
+        for row in invalid_keyboard.inline_keyboard
+        for button in row
+    ] == [f"SIGEDIT:{token}", f"SIGNO:{token}"]
+    for bad in ("", "a" * 65, "INVALID"):
+        try:
+            extract_preview_keyboard(True, bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Unsafe preview identifier accepted")
+
+
+def check_preview_callback_identity_and_single_use() -> None:
+    """Old A button must not act on B text; a valid B confirms only once."""
+    calls = []
+    replies = []
+
+    async def connected(_update):
+        return True
+
+    async def disconnected(_update):
+        return False
+
+    async def broadcast(_update, _context, raw_text):
+        calls.append(raw_text)
+        return "synthetic-created"
+
+    class Query:
+        def __init__(self, data):
+            self.data = data
+            self.message = SimpleNamespace(text="Offline screenshot preview")
+
+        async def answer(self):
+            return None
+
+        async def edit_message_text(self, message):
+            replies.append(message)
+
+    token_a, token_b = "a" * 16, "b" * 16
+    state = {"pending_signal_text": "B-SIGNAL", "pending_preview_token": token_b}
+    context = SimpleNamespace(user_data=state)
+
+    async def click(data, authorised=connected):
+        update = SimpleNamespace(callback_query=Query(data))
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", authorised),
+            patch.object(handlers, "_create_and_broadcast", broadcast),
+        ):
+            await handlers.on_signal_preview(update, context)
+
+    for data in (
+        f"SIGOK:{token_a}", f"SIGEDIT:{token_a}", f"SIGNO:{token_a}",
+        "SIGOK", "SIGOK:short", None,
+    ):
+        replies.clear()
+        asyncio.run(click(data))
+        assert calls == [], f"Stale/malformed callback attempted creation: {data}"
+        assert state == {
+            "pending_signal_text": "B-SIGNAL", "pending_preview_token": token_b
+        }, f"Stale callback corrupted newer preview: {data}"
+        assert len(replies) == 1 and "expired" in replies[0].lower()
+
+    replies.clear()
+    asyncio.run(click(f"SIGOK:{token_b}"))
+    assert calls == ["B-SIGNAL"]
+    assert state == {}, "A completed confirmation left reusable preview state"
+    assert "synthetic-created" in replies[-1]
+    replies.clear()
+    asyncio.run(click(f"SIGOK:{token_b}"))
+    assert calls == ["B-SIGNAL"], "Repeated confirmation created duplicate signal"
+    assert len(replies) == 1 and "expired" in replies[0].lower()
+
+    state.update({"pending_signal_text": "C-SIGNAL", "pending_preview_token": token_b})
+    asyncio.run(click(f"SIGEDIT:{token_b}"))
+    assert state.get("awaiting_edit") is True
+    assert "C-SIGNAL" in replies[-1]
+    asyncio.run(click(f"SIGNO:{token_b}"))
+    assert state == {}
+    assert calls == ["B-SIGNAL"]
+
+    # A newer preview can arrive while provider verification awaits HTTP.
+    # Old confirmation/edit/cancel must recheck identity after the await.
+    for old_action in ("SIGOK", "SIGEDIT", "SIGNO"):
+        state.clear()
+        state.update({"pending_signal_text": "OLD", "pending_preview_token": token_b})
+        async def superseded(_update):
+            await asyncio.sleep(0)
+            state.clear()
+            state.update({"pending_signal_text": "NEW", "pending_preview_token": token_a})
+            return True
+
+        replies.clear()
+        asyncio.run(click(f"{old_action}:{token_b}", authorised=superseded))
+        assert state == {"pending_signal_text": "NEW", "pending_preview_token": token_a}
+        assert calls == ["B-SIGNAL"]
+        assert len(replies) == 1 and "expired" in replies[0].lower()
+
+    # Revocation of the old source must not wipe a newer preview created during I/O.
+    state.clear()
+    state.update({"pending_signal_text": "OLD", "pending_preview_token": token_b})
+    async def revoked_after_supersession(_update):
+        await asyncio.sleep(0)
+        state.clear()
+        state.update({"pending_signal_text": "NEW", "pending_preview_token": token_a})
+        return False
+
+    asyncio.run(click(f"SIGOK:{token_b}", authorised=revoked_after_supersession))
+    assert state == {"pending_signal_text": "NEW", "pending_preview_token": token_a}
+    assert calls == ["B-SIGNAL"]
+
+    state.clear()
+    state.update({"pending_signal_text": "D-SIGNAL", "pending_preview_token": token_b})
+    asyncio.run(click(f"SIGOK:{token_b}", authorised=disconnected))
+    assert state == {}, "Revocation left an old preview confirmable"
+    assert calls == ["B-SIGNAL"]
 
 
 def check_hosted_legacy_provider_status_never_grants_identity() -> None:
@@ -342,6 +487,50 @@ def check_connectprovider_error_does_not_echo_backend_secrets() -> None:
     assert secret not in replies[0]
     assert "SYNTHETIC-ONE-TIME-TOKEN" not in replies[0]
 
+def check_telegram_httpx_token_log_privacy() -> None:
+    """Synthetic Bot API URLs must not reach HTTPX INFO transport logs."""
+    import io
+    import logging
+
+    marker = "123456789:OFFLINE_HTTPX_TOKEN_LOG_PROBE"
+    captured = io.StringIO()
+    recorder = logging.StreamHandler(captured)
+    recorder.setLevel(logging.INFO)
+    transport_logger = logging.getLogger("httpx")
+    original_level = transport_logger.level
+    original_propagate = transport_logger.propagate
+
+    def mock_telegram_request() -> None:
+        transport = httpx.MockTransport(
+            lambda _request: httpx.Response(200, json={"ok": True})
+        )
+        with httpx.Client(transport=transport) as client:
+            response = client.post(f"https://api.telegram.org/bot{marker}/getMe")
+            assert response.status_code == 200
+
+    # Capture in isolation: never print the synthetic token to normal CI logs.
+    transport_logger.addHandler(recorder)
+    transport_logger.propagate = False
+    try:
+        # Negative control: an INFO-level HTTPX logger reveals the URL token.
+        transport_logger.setLevel(logging.INFO)
+        mock_telegram_request()
+        assert marker in captured.getvalue(), "HTTPX leak control did not reproduce"
+        captured.seek(0)
+        captured.truncate(0)
+
+        # Restore actual bot transport logging and verify the leak is blocked.
+        transport_logger.setLevel(original_level)
+        mock_telegram_request()
+        assert marker not in captured.getvalue(), "Bot token reached HTTPX INFO logs"
+        assert original_level >= logging.WARNING, "HTTPX transport INFO logging enabled"
+        assert logging.getLogger("httpcore").getEffectiveLevel() >= logging.WARNING
+    finally:
+        transport_logger.removeHandler(recorder)
+        transport_logger.propagate = original_propagate
+        transport_logger.setLevel(original_level)
+
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -370,17 +559,22 @@ def main() -> int:
         for p in callback_patterns
     ), "Explicit YES/NO subscriber approval callback missing"
     assert any(
-        p.match("SIGOK") and p.match("SIGEDIT") and p.match("SIGNO")
+        p.match("SIGOK:" + "a" * 16)
+        and p.match("SIGEDIT:" + "a" * 16)
+        and p.match("SIGNO:" + "a" * 16)
         for p in callback_patterns
     ), "Provider screenshot preview/confirm/edit/cancel callbacks missing"
 
     assert sum(isinstance(h, MessageHandler) for h in all_handlers) >= 3, (
         "Screenshot/photo/text handler routing incomplete"
     )
+    check_telegram_httpx_token_log_privacy()
     check_backend_http_fail_closed()
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()
     check_malformed_pending_confirmation_fails_closed()
+    check_preview_keyboard_token_contract()
+    check_preview_callback_identity_and_single_use()
     check_hosted_legacy_provider_status_never_grants_identity()
     check_connectprovider_error_does_not_echo_backend_secrets()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")

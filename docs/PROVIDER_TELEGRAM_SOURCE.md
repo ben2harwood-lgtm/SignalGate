@@ -78,6 +78,37 @@ backend payload echoed into logs or Telegram. Offline mocked-transport checks
 exercise these boundaries; they are **not** actual Telegram delivery or MT5
 demo-account acceptance evidence.
 
+## Screenshot preview confirmation integrity
+
+Each rendered screenshot preview gets a fresh, short callback identifier; Confirm,
+Edit and Cancel buttons carry that identifier. Only the **current** matching
+preview can be acted on. Buttons in older Telegram messages, previous fixed
+`SIGOK`/`SIGEDIT`/`SIGNO` messages, malformed callbacks, repeated Confirm
+actions and lost in-memory preview state fail closed. An old button cannot
+confirm or cancel the newer screenshot's text. Confirmable state is consumed
+before the backend signal-creation call, so repeated taps cannot reuse it.
+
+The bot still rechecks provider-source permission before each valid callback,
+then rechecks the preview identifier **after** that asynchronous lookup, so a
+newer screenshot arriving during the lookup cannot be confirmed, edited or
+cancelled by the earlier button. Revoked sources clear the matching outstanding
+preview rather than forwarding it; a superseded preview is never cleared by
+the older request.
+The source's backend remains responsible for identity, tenant policy,
+subscriber consent and idempotent signal processing. The binding here is
+an **in-memory preview integrity guard**, not an authentication credential, a
+persistent queue or broker execution acceptance evidence. Restarting the bot
+invalidates old preview buttons; providers must send a new screenshot.
+
+Bot transport logging is intentionally restricted to WARNING and above for
+`httpx` and `httpcore`: HTTPX INFO request diagnostics include Telegram Bot API
+URLs containing the bot token. Never enable transport DEBUG/INFO with real bot
+credentials. The offline bot smoke checks this using `httpx.MockTransport` and
+a synthetic marker (including a negative control). This safeguard does **not**
+replace deployed log-review or independent security assurance.
+The same offline smoke refuses Python `-O`, `-OO` or `PYTHONOPTIMIZE`,
+which would otherwise disable its assertion-based checks and print a false PASS.
+
 ## Security properties
 
 - one-time token stored only as SHA-256 hash;
