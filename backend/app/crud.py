@@ -2117,7 +2117,19 @@ def reconcile_open_position(
             existing_tickets.add(str(existing.broker_ticket))
         if existing.child_tickets_json:
             try:
-                existing_tickets.update(str(x) for x in json.loads(existing.child_tickets_json))
+                stored_children = json.loads(existing.child_tickets_json)
+                # A successful execution's child identities are a JSON array
+                # of ticket IDs, never arbitrary JSON object keys or string
+                # characters. Bad stored evidence must not authorise a match
+                # even if the separately stored primary ticket still agrees.
+                if not isinstance(stored_children, list) or any(
+                    isinstance(ticket, bool)
+                    or not isinstance(ticket, (str, int))
+                    or not str(ticket).strip()
+                    for ticket in stored_children
+                ):
+                    raise ValueError("invalid stored child broker identities")
+                existing_tickets.update(str(ticket) for ticket in stored_children)
             except (TypeError, ValueError, json.JSONDecodeError):
                 conflicts.append("stored_ticket_payload")
         # A successful execution with no persisted broker-ticket identity
