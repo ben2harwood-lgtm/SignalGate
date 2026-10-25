@@ -2081,7 +2081,20 @@ def reconcile_open_position(
     """
     from . import ledger
 
-    tickets = _snapshot_tickets(payload)
+    # Even a ticketless/whitespace-only broker snapshot is a safety conflict.
+    # Persist a private, non-identifying receipt before rejecting it; the API
+    # handler commits this audit on BrokerReconciliationConflict (HTTP 409).
+    try:
+        tickets = _snapshot_tickets(payload)
+    except BrokerReconciliationConflict:
+        add_audit(
+            db,
+            "BROKER_RECONCILIATION_CONFLICT",
+            "command",
+            command.id,
+            {"conflicts": ["missing_usable_broker_tickets"]},
+        )
+        raise
     conflicts: list[str] = []
     if not _broker_symbol_matches(command.symbol, payload.executed_symbol):
         conflicts.append("symbol")
