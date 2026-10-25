@@ -402,3 +402,43 @@ def test_valid_child_ticket_list_can_match_known_surviving_position(
     )
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "matched"
+
+
+@pytest.mark.parametrize(
+    "unusable_tickets",
+    [[""], [" \t "], ["", "   "]],
+    ids=["empty", "whitespace", "mixed-empty"],
+)
+def test_unusable_ticket_snapshot_has_durable_private_conflict_receipt(
+    client, unusable_tickets
+):
+    """A ticketless snapshot fails closed *and* retains an audit receipt."""
+    cid = _reported_execution(client, "854")
+    snapshot = _snapshot()
+    snapshot["broker_tickets"] = unusable_tickets
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    assert "no usable tickets" in response.json()["detail"]
+    with SessionLocal() as db:
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert execution.status == "SUCCESS"
+        assert execution.broker_ticket == "9001"
+        assert execution.lot_size == pytest.approx(0.01)
+        command = db.query(models.Command).filter_by(id=cid).one()
+        assert command.status == "EXECUTED_OPEN"
+        conflict = (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
+            .one()
+        )
+        assert "missing_usable_broker_tickets" in conflict.payload_json
+        assert "9001" not in conflict.payload_json
+        assert (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_MATCHED", entity_id=cid)
+            .count()
+            == 0
+        )
