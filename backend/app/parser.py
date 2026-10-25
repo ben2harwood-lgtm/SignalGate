@@ -7,6 +7,7 @@ unsupported symbols are rejected before anything can become a trade command.
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Optional
@@ -75,7 +76,9 @@ def _unique_match(pattern: str, text: str) -> tuple[Optional[str], bool]:
 
 
 def _positive(value: Optional[float]) -> bool:
-    return value is not None and value > 0
+    # Python converts very long decimal tokens to infinity; never treat
+    # non-finite prices as a valid stop, target or entry.
+    return value is not None and math.isfinite(value) and value > 0
 
 
 def _detect_symbols(upper: str) -> set[str]:
