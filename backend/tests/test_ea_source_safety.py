@@ -497,3 +497,26 @@ def test_full_close_refuses_hidden_demo_positions_or_untracked_same_order_fills(
     assert "HistoryDealGetInteger(deal, DEAL_ORDER) == opening_order" in child
     assert "HistoryDealGetInteger(deal, DEAL_ENTRY) == DEAL_ENTRY_IN" in child
     assert "return(false);" in child
+
+
+def test_mt5_setup_holds_failed_frozen_rc2_and_requires_real_successor_evidence():
+    """Doc-only guard: synthetic and compiler results cannot clear demo gate."""
+    setup = (Path(__file__).parents[2] / "mt5_ea" / "README_MT5_SETUP.md").read_text(
+        encoding="utf-8"
+    )
+    compile_gate = setup.split("## 1. Compile the exact candidate EA", 1)[1].split(
+        "## 2. Allow the backend URL", 1
+    )[0]
+    assert "release/signalgate-demo-rc2-2026-09-19" in compile_gate
+    assert "3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2" in compile_gate
+    assert "35464044898" in compile_gate
+    assert "18 errors / 4 warnings" in compile_gate
+    assert "newly approved successor candidate" in compile_gate
+    assert "0 errors / 0 warnings" in compile_gate
+    assert "newly generated EX5" in compile_gate
+    assert "PR #60 is DRAFT / HOLD" in compile_gate
+    assert "opening-DEAL-versus-POSITION identity" in compile_gate
+    assert "actual controlled MT5 DEMO broker receipts" in compile_gate
+    assert "synthetic/source tests or a compiler log do not replace" in compile_gate
+    assert "EnableTrading=false" in compile_gate
+    assert "exact frozen candidate SHA" not in compile_gate

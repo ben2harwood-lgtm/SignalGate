@@ -11,7 +11,11 @@ for approved, structured commands and places **demo trades only**.
 
 ## 1. Compile the exact candidate EA
 
-For release acceptance, prefer the automated evidence harness in `docs/MT5_ACCEPTANCE.md` rather than manually compiling an untracked copy. It binds the compiler receipt to the exact frozen candidate SHA and requires **0 errors / 0 warnings**.
+For a **newly approved successor candidate**, use the automated evidence harness in `docs/MT5_ACCEPTANCE.md` and retain an official MetaEditor receipt bound to that exact candidate commit/source hash, with **0 errors / 0 warnings** and a newly generated EX5. A compiler PASS is necessary but is **not** broker-demo or external acceptance.
+
+**Frozen RC2 is NOT eligible for broker-demo acceptance.** The exact EA source at `release/signalgate-demo-rc2-2026-09-19` (`3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2`) failed [official MetaEditor run 35464044898](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464044898) with **18 errors / 4 warnings**. A later successor candidate's clean compile cannot retroactively validate frozen RC2.
+
+**PR #60 is DRAFT / HOLD, not broker-demo accepted.** An independently reviewed successor must resolve original-order multi-deal volume/weighted-price reporting, opening-DEAL-versus-POSITION identity, uncertain acknowledgement/broker outcomes, split rollback and per-stage TP-exit attribution. Retain actual controlled MT5 DEMO broker receipts for the exact successor; synthetic/source tests or a compiler log do not replace them. Leave `EnableTrading=false` for unapproved candidates; the manual setup instructions below are preparatory only and do not authorise broker orders.
 
 For a normal manual install:
 
