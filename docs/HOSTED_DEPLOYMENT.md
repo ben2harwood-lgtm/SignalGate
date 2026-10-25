@@ -149,6 +149,8 @@ Hosted provider signal source is feed-bound.
 
 Use `docs/PROVIDER_TELEGRAM_SOURCE.md`.
 
+The one-time `connection_token` issuance response sends `Cache-Control: no-store` so HTTP caches are instructed not to retain it. This does not erase browser memory, terminal transcripts, screenshots, or copied tokens; deliver tokens privately and revoke any exposed invite.
+
 Do not configure a shared hosted provider API key or shared provider invite code in place of the one-time source binding flow.
 
 ## 9. Backup and restore

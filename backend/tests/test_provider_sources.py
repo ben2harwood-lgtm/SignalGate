@@ -54,6 +54,26 @@ def _connect(client, invite, telegram_user_id, headers=None):
     )
 
 
+def test_source_invite_issuance_disables_http_caching(client, db):
+    """An authenticated one-time source token must not be reusable from an HTTP cache."""
+    provider, feed, key = _provider(db, "source-invite-cache")
+    issued = client.post(
+        "/providers/me/source-invites",
+        json={"feed_id": feed.id, "expires_minutes": 60},
+        headers=_headers(provider, key),
+    )
+    assert issued.status_code == 200, issued.text
+    assert issued.json()["connection_token"].startswith("sgs_")
+    assert issued.headers.get("cache-control") == "no-store"
+
+    listed = client.get("/providers/me/source-invites", headers=_headers(provider, key))
+    assert listed.status_code == 200, listed.text
+    same_invite = next(
+        row for row in listed.json() if row["invite_id"] == issued.json()["invite_id"]
+    )
+    assert same_invite["connection_token"] is None
+
+
 def test_source_token_returned_once_but_never_persisted_or_listed(client, db):
     provider, feed, key = _provider(db, "source-token")
     created = _source_invite(client, provider, feed, key)
