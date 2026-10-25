@@ -2,6 +2,28 @@
 
 Use this sequence after the machine-green release candidate. Do not skip a gate by relabelling repository evidence as external evidence. Track every receipt in `docs/ACCEPTANCE_EVIDENCE_INDEX.md` and use the blank templates in `docs/evidence/`.
 
+> **25 October 2026 — frozen RC2 EA compiler gate FAILED (historical correction).**
+> The frozen `release/signalgate-demo-rc2-2026-09-19` EA at
+> `3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2` failed the [official
+> exact-source MetaEditor compile](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464044898)
+> with **18 errors, 4 warnings**. The successful September repository
+> integration CI [run 35459129106](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35459129106)
+> is **not a MetaEditor pass**. Later MetaEditor success on a different
+> post-RC source does not retroactively certify frozen RC2. **Do not use
+> the frozen RC2 EA for broker-demo acceptance**; this remains a historical
+> evidence artifact. Broker-demo scenarios against an eligible successor
+> are **NOT_RUN** until genuine receipts are collected. No real-money or
+> automatic-copy operation is authorised.
+>
+> Before any controlled DEMO-broker execution, pin an **independently reviewed
+> successor candidate**, complete exact-SHA integration/security CI, obtain
+> an official MetaEditor **0 errors / 0 warnings** compiler receipt and
+> verify a **newly generated EX5** bound to that candidate. Resolve the
+> execution-critical **PR #60** broker identity, multi-fill, ambiguous-send,
+> split-rollback and stage-exit holds through independent review and actual
+> controlled DEMO-broker evidence; synthetic/unit tests cannot close them.
+> Without those prerequisites, keep execution and G3 acceptance **ON HOLD**.
+
 ## 1. Freeze the candidate
 
 Record:
@@ -14,6 +36,19 @@ Record:
 - any accepted exception.
 
 Do not change runtime code during an acceptance run. A runtime change creates a new candidate and invalidates receipts that depend on the old binary/source.
+
+When producing assessor ZIPs with `scripts/build_acceptance_bundle.py`, use its
+default verified-source mode. The declared candidate must match checkout HEAD,
+and every packaged file is read from that commit's immutable, regular Git blob,
+**not** from mutable working-tree content. Uncommitted edits, untracked files,
+and replaced local symlinks cannot be represented as SHA-verified source.
+Committed symlinks and non-regular tree entries are refused. Review the
+`MANIFEST.json` and its per-file hashes before sharing the bundle.
+
+`--allow-unverified-source` is only for explicitly labelled local draft
+packages and **does not** establish candidate provenance or release acceptance.
+To provide altered source for review, create a new candidate commit and rerun
+the appropriate build, compiler and acceptance checks.
 
 ## 2. MetaEditor + MT5 demo acceptance
 
@@ -32,6 +67,12 @@ Retain:
 - scenario-by-scenario result;
 - matching backend audit/ledger/reconciliation evidence;
 - defect disposition for every failure.
+
+For any successor candidate, verify the prerequisites above **before**
+attempting controlled DEMO-broker scenarios. For every scenario, record the
+actual MT5 terminal/broker result and matching backend evidence, or keep it
+`NOT_RUN`. Neither a source-level test nor an official MetaEditor compile
+alone establishes broker execution or PR #60 attribution acceptance.
 
 Do not use real-money accounts.
 

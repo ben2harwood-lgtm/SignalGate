@@ -100,6 +100,37 @@ def _git_head(repo_root: Path) -> str | None:
     return head if FULL_SHA_RE.fullmatch(head) else None
 
 
+def _read_committed_regular_file(repo_root: Path, candidate_sha: str, relative: str) -> bytes:
+    """Package immutable Git blob bytes, never mutable working-tree content."""
+    try:
+        listing = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-tree", "-z", "--full-tree",
+             candidate_sha, "--", relative],
+            check=True, capture_output=True,
+        ).stdout
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"could not inspect candidate tree for {relative}") from exc
+
+    entries = [entry for entry in listing.split(b"\x00") if entry]
+    if len(entries) != 1:
+        raise FileNotFoundError(f"required committed bundle file is missing: {relative}")
+    metadata, sep, found_path = entries[0].partition(b"\t")
+    fields = metadata.split()
+    if (
+        not sep or found_path != relative.encode("utf-8") or len(fields) != 3
+        or fields[0] not in (b"100644", b"100755") or fields[1] != b"blob"
+        or re.fullmatch(rb"[0-9a-f]{40}|[0-9a-f]{64}", fields[2]) is None
+    ):
+        raise ValueError(f"bundle source must be a committed regular file: {relative}")
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo_root), "cat-file", "blob", fields[2].decode("ascii")],
+            check=True, capture_output=True,
+        ).stdout
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"could not read committed Git blob for {relative}") from exc
+
+
 def build_bundle(
     *,
     repo_root: Path,
@@ -130,10 +161,16 @@ def build_bundle(
     selected = _normalise_paths(paths if paths is not None else PROFILES[profile])
     files: list[tuple[str, bytes]] = []
     for relative in selected:
-        source = repo_root / relative
-        if not source.is_file():
-            raise FileNotFoundError(f"required bundle file is missing: {relative}")
-        files.append((relative, source.read_bytes()))
+        if verify_source:
+            # A matching HEAD does not prove working files are clean. Read the
+            # candidate's immutable Git blobs, not mutable or symlinked paths.
+            content = _read_committed_regular_file(repo_root, candidate_sha, relative)
+        else:
+            source = repo_root / relative
+            if not source.is_file():
+                raise FileNotFoundError(f"required bundle file is missing: {relative}")
+            content = source.read_bytes()
+        files.append((relative, content))
 
     manifest = {
         "schema": "signalgate-acceptance-bundle-v1",

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import zipfile
 from pathlib import Path
@@ -145,3 +146,96 @@ def test_unverified_source_is_explicitly_marked(tmp_path):
     )
     assert manifest["source_tree_verified"] is False
     assert manifest["source_head"] is None
+
+
+
+def _committed_fixture(tmp_path):
+    """A genuine, isolated Git repository; no remote, credentials or broker."""
+    root = tmp_path / "synthetic-repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Synthetic Evidence Test"], cwd=root, check=True)
+    (root / "evidence.txt").write_text("COMMITTED_SOURCE\n", encoding="utf-8")
+    subprocess.run(["git", "add", "evidence.txt"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "frozen synthetic fixture"], cwd=root, check=True)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    return root, sha
+
+
+def test_verified_bundle_contains_committed_not_dirty_worktree_bytes(tmp_path):
+    root, sha = _committed_fixture(tmp_path)
+    (root / "evidence.txt").write_text("UNCOMMITTED_PRIVATE_BYTES\n", encoding="utf-8")
+    output = tmp_path / "verified.zip"
+    manifest = bundle.build_bundle(
+        repo_root=root, output_path=output, candidate_sha=sha,
+        profile="test", paths=("evidence.txt",),
+    )
+    assert manifest["source_tree_verified"] is True
+    with zipfile.ZipFile(output) as archive:
+        assert archive.read("evidence.txt") == b"COMMITTED_SOURCE\n"
+        assert b"UNCOMMITTED_PRIVATE_BYTES" not in archive.read("evidence.txt")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks can require Windows privileges")
+def test_verified_bundle_does_not_follow_replaced_worktree_symlink(tmp_path):
+    root, sha = _committed_fixture(tmp_path)
+    secret = tmp_path / "external-secret.txt"
+    secret.write_text("PRIVATE_UNTRACKED_SECRET", encoding="utf-8")
+    (root / "evidence.txt").unlink()
+    (root / "evidence.txt").symlink_to(secret)
+    output = tmp_path / "symlink-replaced.zip"
+    bundle.build_bundle(
+        repo_root=root, output_path=output, candidate_sha=sha,
+        profile="test", paths=("evidence.txt",),
+    )
+    with zipfile.ZipFile(output) as archive:
+        assert archive.read("evidence.txt") == b"COMMITTED_SOURCE\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks can require Windows privileges")
+def test_verified_bundle_rejects_symlink_in_committed_tree(tmp_path):
+    root, _ = _committed_fixture(tmp_path)
+    secret = tmp_path / "private-source.txt"
+    secret.write_text("DO_NOT_PACKAGE", encoding="utf-8")
+    (root / "linked.txt").symlink_to(secret)
+    subprocess.run(["git", "add", "linked.txt"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "synthetic symlink"], cwd=root, check=True)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    output = tmp_path / "must-not-exist.zip"
+    with pytest.raises(ValueError, match="committed regular file"):
+        bundle.build_bundle(
+            repo_root=root, output_path=output, candidate_sha=sha,
+            profile="test", paths=("linked.txt",),
+        )
+    assert not output.exists()
+
+
+def test_verified_bundle_rejects_untracked_requested_file(tmp_path):
+    root, sha = _committed_fixture(tmp_path)
+    (root / "not-committed.txt").write_text("PRIVATE", encoding="utf-8")
+    output = tmp_path / "must-not-exist.zip"
+    with pytest.raises(FileNotFoundError, match="committed bundle file"):
+        bundle.build_bundle(
+            repo_root=root, output_path=output, candidate_sha=sha,
+            profile="test", paths=("not-committed.txt",),
+        )
+    assert not output.exists()
+
+
+def test_verified_bundle_can_read_committed_blob_after_worktree_deletion(tmp_path):
+    root, sha = _committed_fixture(tmp_path)
+    (root / "evidence.txt").unlink()
+    output = tmp_path / "verified.zip"
+    bundle.build_bundle(
+        repo_root=root, output_path=output, candidate_sha=sha,
+        profile="test", paths=("evidence.txt",),
+    )
+    with zipfile.ZipFile(output) as archive:
+        assert archive.read("evidence.txt") == b"COMMITTED_SOURCE\n"
