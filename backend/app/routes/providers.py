@@ -48,7 +48,12 @@ def _bad_request(exc: ValueError) -> HTTPException:
 @router.get("/provider-portal", response_class=HTMLResponse, include_in_schema=False)
 def provider_portal() -> HTMLResponse:
     path = Path(__file__).resolve().parents[1] / "provider_portal.html"
-    return HTMLResponse(path.read_text(encoding="utf-8"))
+    # Portal sessions retain operator credentials and one-time tokens in memory.
+    # No-store reduces caching risk; it does not guarantee browser memory eviction.
+    return HTMLResponse(
+        path.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/admin/organizations")

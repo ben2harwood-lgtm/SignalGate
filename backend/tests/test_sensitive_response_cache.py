@@ -59,3 +59,12 @@ def test_provider_issuance_rotation_and_invite_are_not_cacheable(client, db):
     rotated = client.post("/providers/me/credentials/rotate", headers=headers)
     _must_not_cache(rotated, "api_key")
     assert rotated.json()["api_key"] != issued.json()["api_key"]
+
+
+def test_provider_portal_shell_is_not_cacheable(client):
+    """The browser page retains credentials and one-time tokens in page memory."""
+    response = client.get("/provider-portal")
+    assert response.status_code == 200
+    assert response.headers.get("cache-control") == "no-store"
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Connect your provider tenant" in response.text
