@@ -180,3 +180,18 @@ def test_local_ingress_refuses_external_host_even_on_loopback_listener(client):
     response = client.get("/livez", headers={"Host": "public.example.invalid"})
     assert response.status_code == 403
     assert response.text == "Local demo ingress refused"
+
+
+@pytest.mark.parametrize(
+    "host_values",
+    [
+        [("Host", "127.0.0.1:8000"), ("Host", "public.example.invalid")],
+        [("Host", "127.0.0.1:8000"), ("Host", "127.0.0.1:8000")],
+    ],
+)
+def test_local_ingress_refuses_duplicate_host_headers(client, host_values):
+    # A reverse proxy and application must never disagree over which Host
+    # supplied authority for a local-only request.
+    response = client.get("/livez", headers=host_values)
+    assert response.status_code == 403
+    assert response.text == "Local demo ingress refused"
