@@ -6,8 +6,11 @@ __pycache__/
 venv/
 env/
 
-# Env / secrets
+# Env / secrets. Do not ignore the checked-in, placeholder-only templates.
 .env
+.env.*
+!.env.example
+!.env.hosted.example
 telegram_bot/provider_ids.json
 
 # Database
@@ -39,7 +42,9 @@ SignalGate_share.zip
 # Local demo-site request log
 site-mockups/demo-requests.jsonl
 
-# Local acceptance evidence (may contain machine/environment details)
+# Local generated evidence (may contain machine details or private receipts)
+artifacts/
+# Keep explicit patterns as documentation of historical output locations.
 artifacts/mt5-acceptance/
 
 # Provider preflight receipts; contain operating metadata and stay local

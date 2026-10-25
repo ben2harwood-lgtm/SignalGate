@@ -1,6 +1,9 @@
 .git
 .github
 .env
+**/.env
+**/.env.*
+artifacts/
 *.db
 __pycache__/
 *.py[cod]
