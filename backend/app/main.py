@@ -86,7 +86,30 @@ def create_app() -> FastAPI:
                 request.scope.get("server"), host_values[0]
             )
         ):
-            return PlainTextResponse("Local demo ingress refused", status_code=403)
+            # Denials are security-relevant, even when no route is reached.
+            # Mint a private ID rather than accepting an attacker-supplied
+            # correlation header; never log the untrusted Host or URL.
+            refused_id = uuid.uuid4().hex
+            request_logger.warning(
+                json.dumps(
+                    {
+                        "event": "http_request",
+                        "request_id": refused_id,
+                        "method": request.method,
+                        "path": "[local-ingress-refused]",
+                        "status": 403,
+                        "latency_ms": 0.0,
+                        "security_event": "LOCAL_DEMO_INGRESS_REFUSED",
+                    },
+                    separators=(",", ":"),
+                )
+            )
+            denied = PlainTextResponse("Local demo ingress refused", status_code=403)
+            denied.headers["X-Request-Id"] = refused_id
+            denied.headers["X-Content-Type-Options"] = "nosniff"
+            denied.headers["X-Frame-Options"] = "DENY"
+            denied.headers["Referrer-Policy"] = "no-referrer"
+            return denied
 
         request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
         started = time.perf_counter()
