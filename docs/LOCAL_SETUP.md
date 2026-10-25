@@ -25,6 +25,17 @@ python ../scripts/init_db.py          # create tables + seed settings
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+**Local identity-header authentication is loopback-only by configuration.** When
+`REQUIRE_LICENSE=false`, startup now refuses explicitly non-loopback
+`BACKEND_HOST` or `BACKEND_BASE_URL` values, including public domains and
+all-interface binds. Keep both pointed at `127.0.0.1`, `::1` or `localhost`.
+This is a **partial** issue #108 defence: an operator overriding Uvicorn's
+`--host` independently of `BACKEND_HOST`, or exposing the local listener
+through a reverse proxy, can bypass the configuration-only signal. **Never
+publish the local identity-header API externally.** Hosted demo pilots require
+the separate licensed/HTTPS/PostgreSQL controls and actual security acceptance;
+this setting check is not external ingress assurance.
+
 Check it: open http://127.0.0.1:8000/health → should show
 `{"status":"ok","demo_only_mode":true,"admin_paused":false}`.
 Interactive API docs: http://127.0.0.1:8000/docs
