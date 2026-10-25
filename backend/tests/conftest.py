@@ -43,7 +43,9 @@ def fresh_db():
 @pytest.fixture
 def client():
     # TestClient triggers startup events (init_db + seed) which is harmless.
-    with TestClient(app) as c:
+    # Model an explicitly loopback ASGI server; the default synthetic
+    # "testserver" hostname is not an authorised local-demo listener.
+    with TestClient(app, base_url="http://127.0.0.1:8000") as c:
         yield c
 
 
