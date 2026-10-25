@@ -512,7 +512,7 @@ def test_non_finite_broker_recovery_cannot_create_execution(client):
         )
 
 
-@pytest.mark.parametrize("blank_entry", ["", "   ", "\\t"])
+@pytest.mark.parametrize("blank_entry", ["", "   ", chr(9)])
 def test_mixed_blank_position_ticket_never_authorizes_snapshot(client, blank_entry):
     """A familiar position cannot hide a second unusable broker identity."""
     cid = _reported_execution(client, "857")
@@ -537,7 +537,7 @@ def test_mixed_blank_position_ticket_never_authorizes_snapshot(client, blank_ent
             .one()
         )
         assert "blank_broker_tickets" in audit.payload_json
-        assert blank_entry not in audit.payload_json or not blank_entry
+        assert '"tickets"' not in audit.payload_json
         assert (
             db.query(models.AuditLog)
             .filter_by(event_type="BROKER_RECONCILIATION_MATCHED", entity_id=cid)
@@ -581,7 +581,7 @@ def test_mixed_blank_ticket_cannot_create_recovered_execution(client):
         assert "blank_broker_tickets" in audit.payload_json
         assert (
             db.query(models.AuditLog)
-            .filter_by(event_type="EXECUTION_RECOVERED_FROM_BROKER_SNAPSHOT", entity_id=cid)
+            .filter_by(event_type="EXECUTION_RECOVERED_FROM_BROKER_SNAPSHOT")
             .count() == 0
         )
 
