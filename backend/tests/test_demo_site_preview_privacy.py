@@ -1,0 +1,121 @@
+"""Isolated privacy regression for the historical SignalGate demo-site preview.
+
+Uses only synthetic contact details and an ephemeral loopback HTTP server.
+No broker, Telegram, customer information, external service or deployment.
+"""
+from __future__ import annotations
+
+import http.client
+import os
+import json
+from pathlib import Path
+import runpy
+import threading
+from http.server import ThreadingHTTPServer
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SITE = ROOT / "site-mockups"
+SERVER_SOURCE = SITE / "site_server.py"
+HTML = SITE / "site-2-editorial-transparency.html"
+
+
+class PreviewPrivacyTests(unittest.TestCase):
+    def test_legacy_request_post_fails_closed_and_never_persists(self) -> None:
+        module = runpy.run_path(str(SERVER_SOURCE), run_name="preview_test_module")
+        handler_class = module["SiteHandler"]
+        log_path = SITE / "demo-requests.jsonl"
+        previous = log_path.read_bytes() if log_path.exists() else None
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_class)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            try:
+                payload = json.dumps({
+                    "reference": "SYNTHETIC-ONLY",
+                    "name": "Fictional Person",
+                    "email": "person@example.invalid",
+                })
+                conn.request("POST", "/api/demo-requests", payload,
+                             {"Content-Type": "application/json"})
+                response = conn.getresponse()
+                data = json.loads(response.read())
+                self.assertEqual(response.status, 410)
+                self.assertEqual(response.getheader("Cache-Control"), "no-store")
+                self.assertEqual(response.getheader("X-Content-Type-Options"), "nosniff")
+                self.assertIs(data["ok"], False)
+                self.assertIn("disabled", data["error"])
+            finally:
+                conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+        after = log_path.read_bytes() if log_path.exists() else None
+        self.assertEqual(after, previous, "Legacy request body must never reach disk")
+
+    def test_static_preview_restricts_get_to_mockups_not_caller_cwd(self) -> None:
+        module = runpy.run_path(str(SERVER_SOURCE), run_name="preview_test_module")
+        self.assertEqual(module["STATIC_ROOT"], SITE)
+        previous_cwd = Path.cwd()
+        server = None
+        thread = None
+        try:
+            # Reproduce a common invocation from the repository root, where
+            # serving the process CWD would reveal files outside site-mockups.
+            os.chdir(ROOT)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), module["SiteHandler"])
+            server.daemon_threads = True
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            try:
+                conn.request("GET", "/provider-edition.html")
+                page = conn.getresponse()
+                self.assertEqual(page.status, 200)
+                self.assertIn(b"SignalGate", page.read())
+
+                for path in (
+                    "/AGENTS.md",               # repository root
+                    "/site_server.py",          # executable source
+                    "/README.md",               # preview directory source
+                    "/demo-requests.jsonl",     # ignored historical contact log
+                    "/",                        # directory listing
+                    "/provider-edition.html?x=1", # unlisted URL variant
+                ):
+                    with self.subTest(path=path):
+                        conn.request("GET", path)
+                        private = conn.getresponse()
+                        self.assertEqual(private.status, 404)
+                        private.read()
+
+                conn.request("HEAD", "/demo-requests.jsonl")
+                private_head = conn.getresponse()
+                self.assertEqual(private_head.status, 404)
+                private_head.read()
+            finally:
+                conn.close()
+        finally:
+            if server is not None:
+                server.shutdown()
+                server.server_close()
+            if thread is not None:
+                thread.join(timeout=3)
+            os.chdir(previous_cwd)
+
+    def test_legacy_html_does_not_submit_or_retain_personal_details(self) -> None:
+        page = HTML.read_text(encoding="utf-8")
+        self.assertNotIn("localStorage.setItem", page)
+        self.assertNotIn("localStorage.getItem", page)
+        self.assertNotIn('fetch("/api/demo-requests"', page)
+        self.assertNotIn("storedRequests()", page)
+        self.assertIn('localStorage.removeItem("signalgate_demo_requests")', page)
+        self.assertIn("not submitted or saved", page)
+        self.assertIn("fictional details", page.lower())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -616,26 +616,27 @@
           <li><span class="tick">✓</span><span>No payment details for the demo request.</span></li>
           <li><span class="tick">✓</span><span>No live account connection in v1.</span></li>
           <li><span class="tick">✓</span><span>Every trade still needs your approval tap.</span></li>
-          <li><span class="tick">✓</span><span>Request details are saved locally when served through the included preview server.</span></li>
+          <li><span class="tick">✓</span><span>Historical preview only: no request is sent, saved or received. Use fictional details.</span></li>
         </ul>
       </aside>
 
       <form class="request-card" id="demoForm" novalidate>
-        <h3>Demo request</h3>
+        <h3>Demo request preview — fictional details only</h3>
+        <p class="form-note">This historical mockup does not submit or retain enquiries. Do not enter real names, contact details or account information.</p>
         <div class="form-grid">
           <div class="field">
             <label for="name">Name</label>
-            <input id="name" name="name" autocomplete="name" required>
+            <input id="name" name="name" autocomplete="off" placeholder="Demo Person" required>
             <div class="field-error" data-error-for="name"></div>
           </div>
           <div class="field">
             <label for="email">Email</label>
-            <input id="email" name="email" type="email" autocomplete="email" required>
+            <input id="email" name="email" type="email" autocomplete="off" placeholder="demo@example.invalid" required>
             <div class="field-error" data-error-for="email"></div>
           </div>
           <div class="field">
             <label for="telegram">Telegram handle</label>
-            <input id="telegram" name="telegram" placeholder="@yourhandle">
+            <input id="telegram" name="telegram" autocomplete="off" placeholder="@demo_handle">
             <div class="field-error" data-error-for="telegram"></div>
           </div>
           <div class="field">
@@ -681,8 +682,8 @@
           <div class="field-error" data-error-for="consent"></div>
           <div class="form-actions">
             <button class="btn btn-p" type="submit">Prepare demo request</button>
-            <button class="btn btn-s" type="button" id="copyLatestRequest">Copy latest request</button>
-            <span class="form-note">No live account. No card. Approval-only.</span>
+            <button class="btn btn-s" type="button" id="copyLatestRequest">Copy preview</button>
+            <span class="form-note">Fictional preview only; no submission or browser storage.</span>
           </div>
         </div>
         <div class="success-panel" id="successPanel" role="status" aria-live="polite"></div>
@@ -778,7 +779,9 @@
 
   <script>
     (() => {
-      const storageKey = "signalgate_demo_requests";
+      // Remove PII previously cached by the old legacy prototype, if accessible.
+      // No new form content is ever placed in browser storage.
+      try { window.localStorage.removeItem("signalgate_demo_requests"); } catch { /* storage may be blocked */ }
       const form = document.getElementById("demoForm");
       const successPanel = document.getElementById("successPanel");
       const planSelect = document.getElementById("plan");
@@ -795,33 +798,7 @@
         toastTimer = window.setTimeout(() => toast.classList.remove("show"), 2600);
       };
 
-      const storedRequests = () => {
-        try {
-          return JSON.parse(localStorage.getItem(storageKey) || "[]");
-        } catch {
-          return [];
-        }
-      };
-
-      const saveRequest = async (request) => {
-        const all = storedRequests();
-        all.unshift(request);
-        localStorage.setItem(storageKey, JSON.stringify(all.slice(0, 20)));
-        latestRequest = request;
-        if (location.protocol === "http:" || location.protocol === "https:") {
-          try {
-            const response = await fetch("/api/demo-requests", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(request)
-            });
-            return response.ok;
-          } catch {
-            return false;
-          }
-        }
-        return false;
-      };
+      // The preview is in-memory only. No server API, localStorage or analytics.
 
       const requestText = (request) => [
         `SignalGate demo request ${request.reference}`,
@@ -898,7 +875,7 @@
         });
       });
 
-      form.addEventListener("submit", async (event) => {
+      form.addEventListener("submit", (event) => {
         event.preventDefault();
         if (!validate()) {
           showToast("Check the highlighted fields");
@@ -906,7 +883,7 @@
         }
         const formData = new FormData(form);
         const now = new Date();
-        const reference = `SG-DEMO-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${String(storedRequests().length + 1).padStart(3, "0")}`;
+        const reference = `SG-DEMO-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${now.getTime()}`;
         const request = {
           reference,
           createdAt: now.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }),
@@ -918,17 +895,14 @@
           signalSource: String(formData.get("signalSource") || ""),
           message: String(formData.get("message") || "").trim()
         };
-        const savedToServer = await saveRequest(request);
-        const saveLine = savedToServer
-          ? "Your request has been saved to the local demo request log and is ready for onboarding."
-          : "Your request details are saved in this browser and ready to copy for onboarding.";
-        successPanel.innerHTML = `<b>Demo request prepared.</b><div class="ref">${request.reference}</div><p style="margin-top:8px">${saveLine}</p>`;
+        latestRequest = request;
+        successPanel.innerHTML = `<b>Fictional preview prepared — not submitted or saved.</b><div class="ref">${request.reference}</div><p style="margin-top:8px">This draft exists only in this tab until you reload or close it. Nothing was sent or stored. Copy it only for a local design walkthrough.</p>`;
         successPanel.classList.add("show");
         showToast("Demo request prepared");
       });
 
       document.getElementById("copyLatestRequest").addEventListener("click", async () => {
-        const request = latestRequest || storedRequests()[0];
+        const request = latestRequest;
         if (!request) {
           showToast("Prepare a request first");
           document.getElementById("demo-request").scrollIntoView({ behavior: "smooth" });

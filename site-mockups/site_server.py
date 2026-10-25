@@ -1,62 +1,69 @@
-"""Local preview server for the SignalGate demo site.
+"""Loopback-only server for historical SignalGate site design previews.
 
-Serves the static mockup files and accepts demo requests at
-POST /api/demo-requests, writing them to demo-requests.jsonl.
+This is not a lead-intake service. The legacy request POST route is disabled
+and never reads, forwards or persists submitted personal data.
 """
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
 
 HOST = "127.0.0.1"
 PORT = 8088
-REQUEST_LOG = Path(__file__).with_name("demo-requests.jsonl")
-MAX_BODY_BYTES = 32_000
+STATIC_ROOT = Path(__file__).resolve().parent
+
+# The HTML designs are self-contained. Never serve ignored contact logs, source,
+# .env files, directory listings, or operator-created symlinks as static assets.
+PUBLIC_PAGES = frozenset({
+    "/provider-edition.html",
+    "/site-1-quant-desk.html",
+    "/site-2-editorial-transparency.html",
+    "/site-3-verified-accountable.html",
+    "/direction-1-quant-desk.html",
+    "/direction-2-editorial-transparency.html",
+    "/direction-3-verified-accountable.html",
+})
 
 
 class SiteHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs) -> None:
+        # Serving the caller's CWD could expose repository files or local .env.
+        # The preview must only serve its own non-secret static mockup folder.
+        kwargs["directory"] = str(STATIC_ROOT)
+        super().__init__(*args, **kwargs)
+
+    def do_GET(self) -> None:
+        if self.path not in PUBLIC_PAGES:
+            self.send_error(404, "Preview page not found")
+            return
+        super().do_GET()
+
+    def do_HEAD(self) -> None:
+        if self.path not in PUBLIC_PAGES:
+            self.send_error(404, "Preview page not found")
+            return
+        super().do_HEAD()
+
     def do_POST(self) -> None:
         if self.path != "/api/demo-requests":
             self.send_error(404, "Not found")
             return
 
-        try:
-            content_length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            self.send_error(400, "Bad content length")
-            return
-
-        if content_length <= 0 or content_length > MAX_BODY_BYTES:
-            self.send_error(400, "Bad request size")
-            return
-
-        raw_body = self.rfile.read(content_length)
-        try:
-            payload: dict[str, Any] = json.loads(raw_body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            self.send_error(400, "Invalid JSON")
-            return
-
-        required = ["reference", "name", "email", "plan", "platform", "signalSource"]
-        missing = [key for key in required if not str(payload.get(key, "")).strip()]
-        if missing:
-            self.send_error(422, "Missing required fields")
-            return
-
-        payload["receivedAt"] = datetime.now(timezone.utc).isoformat()
-        with REQUEST_LOG.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
-
-        self._send_json({"ok": True, "reference": payload["reference"]})
+        # This July design mockup is not an authorised personal-data collector.
+        # Close without parsing even a well-formed request body.
+        self.close_connection = True
+        self._send_json(
+            {"ok": False, "error": "Design preview only; request intake disabled."},
+            status=410,
+        )
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         super().end_headers()
 
-    def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+    def _send_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -67,9 +74,11 @@ class SiteHandler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     server = ThreadingHTTPServer((HOST, PORT), SiteHandler)
-    print(f"SignalGate demo site running at http://{HOST}:{PORT}/site-2-editorial-transparency.html")
-    print(f"Demo requests will be written to {REQUEST_LOG}")
+    print(f"SignalGate historical site preview: http://{HOST}:{PORT}/site-2-editorial-transparency.html")
+    print("Demo request intake DISABLED; no contact details are stored.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopping SignalGate demo site.")
+        print("\nStopping SignalGate site preview.")
+    finally:
+        server.server_close()
