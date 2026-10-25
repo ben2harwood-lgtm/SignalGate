@@ -79,8 +79,12 @@ def create_app() -> FastAPI:
         # dispatching any route that trusts local identity headers. This cannot
         # identify a reverse proxy that rewrites Host to loopback; local mode
         # must still never be exposed through an external proxy.
-        if not settings.require_license and not local_demo_http_ingress_is_loopback(
-            request.scope.get("server"), request.headers.get("host")
+        host_values = request.headers.getlist("host")
+        if not settings.require_license and (
+            len(host_values) != 1
+            or not local_demo_http_ingress_is_loopback(
+                request.scope.get("server"), host_values[0]
+            )
         ):
             return PlainTextResponse("Local demo ingress refused", status_code=403)
 
