@@ -61,13 +61,26 @@ def collect(
     with httpx.Client(base_url=backend, timeout=15, follow_redirects=False) as client:
         ready = client.get("/readyz")
         health = client.get("/health")
-        metrics = client.get(
-            "/admin/metrics",
-            headers={"X-Admin-Id": admin_id, "X-Admin-API-Key": admin_api_key},
+        ready_data, ready_ok = _read_object(ready)
+        health_data, health_ok = _read_object(health)
+
+        # Never send an admin API key to a backend already reporting failed
+        # readiness, unhealthy status or a non-demo mode. These public probes
+        # are a precondition, NOT authentication of the server or source SHA.
+        preflight_ok = (
+            ready_ok and ready_data.get("status") == "ready"
+            and health_ok and health_data.get("status") == "ok"
+            and health_data.get("demo_only_mode") is True
         )
-    ready_data, ready_ok = _read_object(ready)
-    health_data, health_ok = _read_object(health)
-    metrics_data, metrics_ok = _read_object(metrics)
+        metrics = None
+        if preflight_ok:
+            metrics = client.get(
+                "/admin/metrics",
+                headers={"X-Admin-Id": admin_id, "X-Admin-API-Key": admin_api_key},
+            )
+    metrics_data, metrics_ok = (
+        _read_object(metrics) if metrics is not None else ({}, False)
+    )
 
     checks = {
         "readiness": ready_ok and ready_data.get("status") == "ready",
@@ -104,6 +117,7 @@ def collect(
         "origin": backend,
         "candidate_sha_operator_declared": candidate_sha,
         "candidate_sha_verified_by_backend": False,
+        "authenticated_metrics_attempted": metrics is not None,
         "scope": "single_readonly_observation_not_slo_or_alerting",
         "result": result,
         "checks": checks,
@@ -112,7 +126,7 @@ def collect(
         "http_status_codes": {
             "readyz": ready.status_code,
             "health": health.status_code,
-            "admin_metrics": metrics.status_code,
+            "admin_metrics": metrics.status_code if metrics is not None else None,
         },
     }
 
