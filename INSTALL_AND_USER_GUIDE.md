@@ -4,6 +4,8 @@ SignalGate is now a **provider-agnostic, tenant-scoped, demo-only** platform. Th
 
 > **Do not use real-money accounts.** The frozen demo release candidate is `release/signalgate-demo-rc2-2026-09-19`.
 
+**Frozen RC2 MT5 compiler HOLD:** Exact EA source `3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2` **FAILED** official MetaEditor run `35464044898` (**18 errors / 4 warnings**). Do **not** use frozen RC2 for MT5 broker-demo acceptance. A separately approved, independently reviewed successor must resolve PR #60 execution-safety holds, produce a new EX5 from an exact-source 0-error / 0-warning compile, and retain genuine DEMO broker scenario receipts. Green backend CI or a clean compile of different source cannot clear frozen RC2.
+
 ## 1. Choose your path
 
 ### Local developer / simulator
@@ -65,7 +67,7 @@ Use:
 - `docs/MT5_ACCEPTANCE.md`
 - `docs/evidence/MT5_ACCEPTANCE_RECEIPT_TEMPLATE.md`
 
-Compile the exact candidate source in MetaEditor and retain 0-error / 0-warning evidence before treating the MT5 lane as externally accepted.
+Never treat frozen RC2 as broker-demo accepted. For a separately approved successor, retain an exact-source 0-error / 0-warning MetaEditor log and regenerated EX5, then perform the required DEMO broker scenarios with genuine receipts. A clean compile or synthetic tests alone do **not** close MT5/external acceptance.
 
 ## 2. Local demo quick start
 
@@ -139,6 +141,7 @@ Key rules:
 - customer/account identity and licence must match the subscriber/account owning the command;
 - keep the EA's demo-only guard enabled;
 - use the formal MT5 acceptance scenarios for release evidence.
+- do not use frozen RC2 for broker-demo acceptance; require a reviewed successor and resolution of PR #60's execution-safety holds first.
 
 Do not guess user ids or reuse one customer's licence for another customer.
 
