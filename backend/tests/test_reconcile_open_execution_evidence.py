@@ -337,3 +337,68 @@ def test_same_recorded_broker_suffix_allows_matching_snapshot(client):
     )
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "matched"
+
+
+
+@pytest.mark.parametrize(
+    ("stored_children", "observed_ticket"),
+    [
+        ('{"9002":"forged-key"}', "9002"),
+        ('"9002"', "9001"),
+        ('["9002", null]', "9002"),
+        ('["9002", true]', "9002"),
+        ('["9002", {"nested":"ticket"}]', "9002"),
+        ('["9002", ""]', "9001"),
+    ],
+    ids=["object-keys", "scalar-string", "null", "boolean", "nested", "empty-id"],
+)
+def test_invalid_stored_child_tickets_never_authorize_broker_match(
+    client, stored_children, observed_ticket
+):
+    """Malformed persisted child evidence cannot authorize any open snapshot."""
+    cid = _reported_execution(client, "852")
+    with SessionLocal() as db:
+        original = db.query(models.Execution).filter_by(command_id=cid).one()
+        original.child_tickets_json = stored_children
+        db.commit()
+
+    snapshot = _snapshot()
+    snapshot["broker_tickets"] = [observed_ticket]
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    assert "stored_ticket_payload" in response.json()["detail"]
+    with SessionLocal() as db:
+        original = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert original.broker_ticket == "9001"
+        assert original.child_tickets_json == stored_children
+        assert original.lot_size == pytest.approx(0.01)
+        assert original.executed_price == pytest.approx(2345.0)
+        audit = (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
+            .one()
+        )
+        assert "stored_ticket_payload" in audit.payload_json
+
+
+@pytest.mark.parametrize("stored_children", ['["9001", "9002"]', "[9001, 9002]"])
+def test_valid_child_ticket_list_can_match_known_surviving_position(
+    client, stored_children
+):
+    """Retain compatibility with real string and legacy integral ticket IDs."""
+    cid = _reported_execution(client, "853")
+    with SessionLocal() as db:
+        original = db.query(models.Execution).filter_by(command_id=cid).one()
+        original.child_tickets_json = stored_children
+        db.commit()
+    snapshot = _snapshot()
+    snapshot["broker_tickets"] = ["9002"]
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "matched"
