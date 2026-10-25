@@ -78,10 +78,24 @@ class PreviewPrivacyTests(unittest.TestCase):
                 self.assertEqual(page.status, 200)
                 self.assertIn(b"SignalGate", page.read())
 
-                conn.request("GET", "/AGENTS.md")
-                private = conn.getresponse()
-                self.assertEqual(private.status, 404)
-                private.read()
+                for path in (
+                    "/AGENTS.md",               # repository root
+                    "/site_server.py",          # executable source
+                    "/README.md",               # preview directory source
+                    "/demo-requests.jsonl",     # ignored historical contact log
+                    "/",                        # directory listing
+                    "/provider-edition.html?x=1", # unlisted URL variant
+                ):
+                    with self.subTest(path=path):
+                        conn.request("GET", path)
+                        private = conn.getresponse()
+                        self.assertEqual(private.status, 404)
+                        private.read()
+
+                conn.request("HEAD", "/demo-requests.jsonl")
+                private_head = conn.getresponse()
+                self.assertEqual(private_head.status, 404)
+                private_head.read()
             finally:
                 conn.close()
         finally:

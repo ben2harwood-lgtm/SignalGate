@@ -13,6 +13,18 @@ HOST = "127.0.0.1"
 PORT = 8088
 STATIC_ROOT = Path(__file__).resolve().parent
 
+# The HTML designs are self-contained. Never serve ignored contact logs, source,
+# .env files, directory listings, or operator-created symlinks as static assets.
+PUBLIC_PAGES = frozenset({
+    "/provider-edition.html",
+    "/site-1-quant-desk.html",
+    "/site-2-editorial-transparency.html",
+    "/site-3-verified-accountable.html",
+    "/direction-1-quant-desk.html",
+    "/direction-2-editorial-transparency.html",
+    "/direction-3-verified-accountable.html",
+})
+
 
 class SiteHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs) -> None:
@@ -20,6 +32,18 @@ class SiteHandler(SimpleHTTPRequestHandler):
         # The preview must only serve its own non-secret static mockup folder.
         kwargs["directory"] = str(STATIC_ROOT)
         super().__init__(*args, **kwargs)
+
+    def do_GET(self) -> None:
+        if self.path not in PUBLIC_PAGES:
+            self.send_error(404, "Preview page not found")
+            return
+        super().do_GET()
+
+    def do_HEAD(self) -> None:
+        if self.path not in PUBLIC_PAGES:
+            self.send_error(404, "Preview page not found")
+            return
+        super().do_HEAD()
 
     def do_POST(self) -> None:
         if self.path != "/api/demo-requests":
