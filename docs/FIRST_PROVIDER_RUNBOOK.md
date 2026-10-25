@@ -114,7 +114,11 @@ See `docs/PILOT_PREFLIGHT.md`. Require a recorded PASS for demo-only mode, readi
 
 ## 6. Connect demo execution
 
-Use the accepted demo MT5 setup or the simulator.
+**Internal rehearsal only:** The broker-free simulator produces synthetic/API evidence, not actual MT5 DEMO broker fill, rejection, or reconciliation receipts. Mark every broker-dependent scenario `NOT_RUN` in simulator receipts. Simulator success is **not a substitute** for real MT5 DEMO acceptance and cannot authorise an external provider pilot or feed unpause.
+
+**External demo-provider pilot remains on HOLD.** Before unpausing any feed or starting a real-provider cohort, the coordinator must approve an independently reviewed successor candidate (frozen RC2 failed its official source compile), retain an official MetaEditor **0-error / 0-warning** compile receipt and regenerated **EX5** bound to the **exact candidate** source, obtain **real MT5 DEMO broker** scenario receipts (including broker order/deal/position identity and TP-stage exit attribution), and resolve the execution-safety **PR #60** holds on multi-fill accounting, uncertain acknowledgements, split rollback, and close attribution. Retain all applicable platform, external-security, regulatory, privacy, subscriber-consent, and pilot-agreement entry evidence required by `docs/BETA_ACCEPTANCE.md`. Clean CI, a successful compiler run, or broker-free tests do not by themselves establish G3, G8, or beta acceptance.
+
+**Keep the provider/feed paused and do not start the external pilot** while any required receipt or independent acceptance is missing. Genuine controlled MT5 DEMO broker evidence is a separately authorised acceptance activity; nothing in this simulator rehearsal grants broker execution authority. Real-money trading and automatic copying remain prohibited.
 
 Before unpausing:
 
