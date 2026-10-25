@@ -442,3 +442,71 @@ def test_unusable_ticket_snapshot_has_durable_private_conflict_receipt(
             .count()
             == 0
         )
+
+
+@pytest.mark.parametrize(
+    "numeric_field", ["executed_price", "lot_size", "stop_loss"]
+)
+@pytest.mark.parametrize("bad_value", ["Infinity", "1e999"])
+def test_non_finite_broker_reconciliation_fields_rejected_by_api(
+    client, numeric_field, bad_value
+):
+    """No successful match or state update may rely on infinite broker values."""
+    cid = _reported_execution(client, "855")
+    snapshot = _snapshot()
+    snapshot[numeric_field] = bad_value
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 422, response.text
+    with SessionLocal() as db:
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert execution.broker_ticket == "9001"
+        assert execution.lot_size == pytest.approx(0.01)
+        assert execution.executed_price == pytest.approx(2345.0)
+        assert (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_MATCHED", entity_id=cid)
+            .count()
+            == 0
+        )
+
+
+def test_non_finite_broker_recovery_cannot_create_execution(client):
+    """Reject Infinity even before a first successful execution is recorded."""
+    user = register_user(client, "856")
+    signal = create_signal(client, _SIGNAL)
+    approval = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "856"},
+    )
+    assert approval.status_code == 200, approval.text
+    command = client.get(
+        "/commands/pending",
+        params={"user_id": user["id"]},
+        headers=EA_HEADERS,
+    ).json()["command"]
+    assert command is not None
+    cid = command["command_id"]
+
+    snapshot = _snapshot()
+    snapshot["lot_size"] = "Infinity"
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 422, response.text
+    with SessionLocal() as db:
+        command_row = db.query(models.Command).filter_by(id=cid).one()
+        assert command_row.status == "SENT_TO_EA"
+        assert (
+            db.query(models.Execution).filter_by(command_id=cid).count()
+            == 0
+        )
+        assert (
+            db.query(models.AuditLog)
+            .filter_by(event_type="EXECUTION_RECOVERED_FROM_BROKER_SNAPSHOT")
+            .count()
+            == 0
+        )
