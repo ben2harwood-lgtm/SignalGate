@@ -9,9 +9,9 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 
-from .config import get_settings
+from .config import get_settings, local_demo_http_ingress_is_loopback
 from .database import SessionLocal, init_db
 from .routes import admin, commands, ea, health, provider_sources, providers, signals, users
 
@@ -74,6 +74,16 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def _request_observability(request: Request, call_next):
+        # Uvicorn may be invoked with --host independently of BACKEND_HOST.
+        # Reject nonlocal actual ASGI listeners and nonlocal Host values before
+        # dispatching any route that trusts local identity headers. This cannot
+        # identify a reverse proxy that rewrites Host to loopback; local mode
+        # must still never be exposed through an external proxy.
+        if not settings.require_license and not local_demo_http_ingress_is_loopback(
+            request.scope.get("server"), request.headers.get("host")
+        ):
+            return PlainTextResponse("Local demo ingress refused", status_code=403)
+
         request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
         started = time.perf_counter()
         status_code = 500
