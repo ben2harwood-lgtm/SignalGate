@@ -54,7 +54,9 @@ def test_root_guides_disclose_failed_frozen_rc2_compiler() -> None:
 def test_root_guides_cannot_direct_frozen_rc2_into_broker_acceptance() -> None:
     for path in ROOT_GUIDES:
         content = path.read_text(encoding="utf-8")
-        assert "do not use frozen RC2" in content.lower() or "do **not** use frozen RC2" in content.lower() or "do NOT use the frozen RC2 EA".lower() in content.lower()
+        lowered = content.lower()
+        assert ("do not use the frozen rc2 ea" in lowered
+                or "do **not** use frozen rc2" in lowered)
         assert "PR #60" in content
         assert "independently reviewed" in content
         assert "0-error / 0-warning" in content
