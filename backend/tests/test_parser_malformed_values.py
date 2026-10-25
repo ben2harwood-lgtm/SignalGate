@@ -35,6 +35,8 @@ def test_malformed_price_fields_never_produce_valid_trade(signal):
     "EURUSD BUY ENTRY MARKET SL 1.0800 TP1 1.0900",
     "EURUSD BUY SL: 1.0800, TP1: 1.0900; TP2: 1.0950",
     "XAUUSD BUY SL 2343 TP1 2353 TP2 2358",
+    "EURUSD BUY SL:1.0800,TP1:1.0900;TP2:1.0950",
+    "EURUSD BUY ENTRY 1.0850;SL 1.0800;TP1 1.0900",
 ])
 def test_plain_decimal_and_market_formats_remain_valid(signal):
     assert parse_signal(signal).is_valid
