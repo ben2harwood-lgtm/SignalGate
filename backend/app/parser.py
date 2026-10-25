@@ -122,6 +122,18 @@ def parse_signal(
     if re.search(r"\d[E][-+]?\d", upper):
         return _reject(result, "Scientific notation is not allowed in prices")
 
+    # Numeric regex matching alone could accept the prefix of "1.09.2" or
+    # "1.09USD". In particular, a malformed ENTRY must not become MARKET.
+    # Check complete labelled tokens before any parsed value is trusted.
+    for field, token in re.findall(
+        r"\b(ENTRY|SL|TP1?|TP2|TP3)\b\s*[:=]?\s*(\S+)", upper
+    ):
+        value = token.rstrip(",;")
+        if field == "ENTRY" and value == "MARKET":
+            continue
+        if re.fullmatch(_NUM, value) is None:
+            return _reject(result, f"Malformed {field} value (use a plain decimal)")
+
     canonical_symbols = _detect_symbols(upper)
     if not canonical_symbols:
         return _reject(
