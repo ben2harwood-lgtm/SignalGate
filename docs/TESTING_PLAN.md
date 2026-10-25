@@ -146,10 +146,14 @@ reports numeric broker position tickets; accept only positive, unpadded,
 ASCII-decimal uint64 strings (after surrounding whitespace normalization),
 not signed IDs, Unicode lookalikes, zero or overflow. Invalid identity audit
 receipts must survive these conflicts without storing the untrusted ticket list.
-Duplicated entries are not independent broker-position evidence. These tests
-are **broker-free** and do **not** prove the correspondence of an MT5 opening
-**deal** identifier with its distinct broker **position** identifier; that
-interoperability remains a separate MT5 DEMO acceptance HOLD requiring
+Duplicated entries are not independent broker-position evidence. Reconciliation
+must also reject malformed **previously stored** primary or child execution
+identifiers, including duplicate child IDs, even when another stored identifier
+would otherwise match the snapshot. Such contradictions produce a durable
+private conflict and never rewrite the original successful execution.
+These tests are **broker-free** and do **not** prove the correspondence of an
+MT5 opening **deal** identifier with its distinct broker **position** identifier;
+that interoperability remains a separate MT5 DEMO acceptance HOLD requiring
 real broker receipts.
 
 ## External assurance
