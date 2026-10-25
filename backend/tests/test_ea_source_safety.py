@@ -30,14 +30,20 @@ def test_ea_rejects_limit_and_verifies_broker_fill_retcode():
     assert "TRADE_RETCODE_DONE_PARTIAL" in EA
 
 
+
 def test_ea_distinguishes_stop_and_tp_from_broker_deal_reason():
     assert "CommandClosedByReason(DEAL_REASON_SL)" in EA
-    assert "CommandClosedByReason(DEAL_REASON_TP)" in EA
+    assert "ChildClosedByReason(tp1_child, DEAL_REASON_TP)" in EA
+    assert "ChildClosedByReason(tp2_child, DEAL_REASON_TP)" in EA
+    assert "ChildClosedByReason(tp3_child, DEAL_REASON_TP)" in EA
     assert "DEAL_POSITION_ID" in EA
+    assert "DEAL_TIME_MSC" in EA
     assert "STOP_LOSS_HIT" in EA
-    full_close = EA.split("if(open_children == 0)", 1)[1]
-    assert "CommandClosedByReason" in full_close
-
+    manage = EA.split("void ManageActiveCommand()", 1)[1].split(
+        "//| Broker execution / close-reason helpers", 1
+    )[0]
+    assert "fully_closed && CommandClosedByReason(DEAL_REASON_SL)" in manage
+    assert "AllTrackedChildrenClosedWithEvidence()" in manage
 
 def test_ea_resolves_broker_symbol_suffix_and_netting_fallback():
     assert "ResolveBrokerSymbol(requested)" in EA
@@ -46,11 +52,96 @@ def test_ea_resolves_broker_symbol_suffix_and_netting_fallback():
     assert "g_split_mode" in EA
 
 
-def test_unknown_full_close_is_not_forced_to_tp3():
-    block = EA.split("// Full close. Only attribute TP3", 1)[1].split("//+------------------------------------------------------------------+", 1)[0]
-    assert "CommandClosedByReason(DEAL_REASON_TP)" in block
-    assert "FULLY_CLOSED" in block
 
+def test_unknown_full_close_is_not_forced_to_tp3():
+    block = EA.split("// Full close: TP3 is credited only to its own child", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert "if(fully_closed)" in block
+    assert "ChildClosedByReason(tp3_child, DEAL_REASON_TP)" in block
+    assert "preceding_tps" in block
+    assert "FULLY_CLOSED" in block
+    assert "CommandClosedByReason(DEAL_REASON_TP)" not in block
+
+
+def test_tp_stage_receipts_require_exact_child_broker_deal_and_full_volume():
+    manage = EA.split("void ManageActiveCommand()", 1)[1].split(
+        "//| Broker execution / close-reason helpers", 1
+    )[0]
+    for stage in (1, 2, 3):
+        assert f"ChildClosedByReason(tp{stage}_child, DEAL_REASON_TP)" in manage
+    assert "open_children <= (g_child_count" not in manage
+    assert "CommandClosedByReason(DEAL_REASON_TP)" not in manage
+    stage = EA.split("bool ChildClosedByReason(", 1)[1].split(
+        "bool AllTrackedChildrenClosedWithEvidence()", 1
+    )[0]
+    assert "ChildPositionStillOpen(position_id)" in stage
+    assert "g_child_tickets[child_index]" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_POSITION_ID)" in stage
+    assert "HistoryDealGetString(deal, DEAL_SYMBOL)" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_REASON) != required_reason" in stage
+    assert "DEAL_ENTRY_OUT" in stage
+    assert "DEAL_ENTRY_OUT_BY" in stage
+    assert "exited_volume += volume" in stage
+    assert "g_child_open_volumes[child_index] - 1e-8" in stage
+    assert "entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY" in stage
+    assert "opening_order" in stage
+    assert "opened_volume >= g_child_open_volumes[child_index] - 1e-8" in stage
+
+
+def test_final_stop_reason_uses_latest_matching_child_exit_not_earlier_stop():
+    helper = EA.split("bool CommandClosedByReason(", 1)[1].split(
+        "void ClearActiveCommand()", 1
+    )[0]
+    assert "IsChildPosition(position_id)" in helper
+    assert "DEAL_TIME_MSC" in helper
+    assert "latest_ticket" in helper
+    assert "latest_reason == reason" in helper
+    assert "return(true)" not in helper
+
+
+def test_tied_latest_broker_exit_reasons_refuse_stop_out_attribution():
+    """Source guard only: actual equal-ms broker exit evidence is still required."""
+    helper = EA.split("bool CommandClosedByReason(", 1)[1].split(
+        "void ClearActiveCommand()", 1
+    )[0]
+    assert "DEAL_POSITION_ID" in helper
+    assert "IsChildPosition(position_id)" in helper
+    assert "HistoryDealGetInteger(deal, DEAL_TIME_MSC)" in helper
+    assert "bool latest_ambiguous = false;" in helper
+    assert "if(at_msc > latest_msc)" in helper
+    assert "latest_ambiguous = false;" in helper
+    assert "else if(at_msc == latest_msc && deal_reason != latest_reason)" in helper
+    assert "latest_ambiguous = true;" in helper
+    assert (
+        "return(latest_ticket != 0 && !latest_ambiguous && latest_reason == reason);"
+        in helper
+    )
+    assert "deal > latest_ticket" not in helper
+
+
+def test_server_confirmed_stop_move_requires_readback_and_a_matching_child():
+    guard = EA.split("bool MoveRemainingSL(", 1)[1].split(
+        "//| Close all children", 1
+    )[0]
+    assert "IsChildPosition(position_id)" in guard
+    assert "POSITION_IDENTIFIER" in guard
+    assert 'PositionGetString(POSITION_COMMENT) != "SG:" + command_id' in guard
+    assert "trade.ResultRetcode()" in guard
+    assert "retcode != TRADE_RETCODE_DONE" in guard
+    assert "PositionSelectByTicket(ticket)" in guard
+    assert "MathAbs(PositionGetDouble(POSITION_SL) - new_sl) > tolerance" in guard
+    assert "return(all_ok && seen > 0)" in guard
+
+
+def test_trading_starts_explicitly_off_for_demo_account():
+    assert "input bool   EnableTrading              = false;" in EA
+    timer = EA.split("void OnTimer()", 1)[1].split(
+        "void ProcessCommand(", 1
+    )[0]
+    assert "if(!EnableTrading)" in timer
+    assert timer.index("if(!EnableTrading)") < timer.index("PollPendingCommand()")
 
 def test_ea_continuously_reconciles_open_broker_positions():
     assert "int ReconcileOpenPositions()" in EA
@@ -72,3 +163,360 @@ def test_ea_continuously_reconciles_open_broker_positions():
     assert "if(open_sg_commands > 0)" in timer
     assert "PollPendingCommand()" in timer
     assert timer.index("if(open_sg_commands > 0)") < timer.index("PollPendingCommand()")
+
+
+
+def test_ea_child_position_ownership_uses_exact_command_comment():
+    assert 'comment == "SG:" + command_id' in EA
+    assert 'PositionGetString(POSITION_COMMENT) != "SG:" + command_id' in EA
+    count = EA.split("int CountOpenChildren(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    move = EA.split("bool MoveRemainingSL(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    close = EA.split("void CloseAllChildren(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert "StringFind(comment, command_id)" not in count
+    assert "StringFind(PositionGetString(POSITION_COMMENT), command_id)" not in move
+    assert "StringFind(PositionGetString(POSITION_COMMENT), command_id)" not in close
+
+
+def test_ea_never_increases_configured_lot_to_broker_minimum_or_step():
+    block = EA.split("bool NormalizeLot(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert "if(lot < minlot || lot > maxlot)" in block
+    assert "return(false);" in block
+    assert "MathFloor" in block
+    assert "MathRound" not in block
+    assert "lot = minlot" not in block
+    assert "lot = maxlot" not in block
+
+
+def test_execution_report_uses_actual_broker_filled_volume_and_weighted_price():
+    split = EA.split("bool ExecuteSplitTicket(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    single = EA.split("bool ExecuteSingleTicket(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    report = EA.split("void ReportExecutionSuccess(", 1)[1].split(
+        "void ReportManagementEvent(", 1
+    )[0]
+    assert "trade.ResultVolume()" in split
+    assert "weighted_exec_price" in split
+    assert "weighted_exec_price / executed_lot" in split
+    assert "trade.ResultVolume()" in single
+    assert "const double executed_lot" in report
+    assert 'body += "\\\"lot_size\\\":" + DoubleToString(executed_lot, 8)' in report
+    assert "TP1Lot + TP2Lot + TP3Lot" not in report
+
+
+def test_execution_report_uses_executed_symbol_precision():
+    report = EA.split("void ReportExecutionSuccess(", 1)[1].split(
+        "void ReportManagementEvent(", 1
+    )[0]
+    assert "SymbolInfoInteger(symbol, SYMBOL_DIGITS)" in report
+    assert "DoubleToString(exec_price, digits)" in report
+    assert "DoubleToString(sl, digits)" in report
+
+
+def test_management_events_use_executed_symbol_precision_and_eight_digit_volume():
+    """Source-only report fidelity guard; broker DEMO receipts still required."""
+    event = EA.split("void ReportManagementEvent(", 1)[1].split(
+        "void ReportError(", 1
+    )[0]
+    assert "const string executed_symbol" in event
+    assert "SymbolInfoInteger(executed_symbol, SYMBOL_DIGITS)" in event
+    assert "DoubleToString(price, digits)" in event
+    assert "DoubleToString(sl_before, digits)" in event
+    assert "DoubleToString(sl_after, digits)" in event
+    assert "DoubleToString(lot_before, 8)" in event
+    assert "DoubleToString(lot_after, 8)" in event
+    assert "_Digits" not in event.split('string body = "{";', 1)[1]
+    # OPENED happens before g_active_symbol is set; use the explicit broker symbol.
+    assert EA.count('ReportManagementEvent(command_id, symbol, "OPENED"') == 2
+    assert EA.count("ReportManagementEvent(cid, g_active_symbol,") == 10
+    assert EA.count("ReportManagementEvent(cid,") == 10
+
+
+def test_ea_fails_closed_if_backend_does_not_acknowledge_command():
+    process = EA.split("void ProcessCommand(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    ack = EA.split("bool AckReceived(", 1)[1].split(
+        "void SendHeartbeat(", 1
+    )[0]
+    assert "if(!AckReceived(command_id))" in process
+    assert "refusing broker execution" in process
+    assert "g_last_http_code >= 200 && g_last_http_code < 300" in ack
+
+
+def test_http_helpers_reject_non_2xx_responses():
+    http = EA.split("string HttpGet(", 1)[1].split(
+        "//+------------------------------------------------------------------+\n//| Backend calls", 1
+    )[0]
+    assert http.count("code < 200 || code >= 300") >= 2
+    assert "g_last_http_code = code" in http
+
+
+def test_broker_suffix_resolution_refuses_ambiguous_matches():
+    block = EA.split("string ResolveBrokerSymbol(", 1)[1].split(
+        "bool ExecutionFilled(", 1
+    )[0]
+    assert "matches != 1" in block
+    assert "Ambiguous broker symbol suffix match" in block
+    assert "refusing to guess" in block
+
+
+def test_ea_accepts_only_positive_demo_account_mode_at_start_and_each_timer():
+    """Source guard: no negative-only 'not REAL' account classification."""
+    helper = EA.split("bool IsDemoAccount()", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert "ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO" in helper
+    assert "IsLiveAccount" not in EA
+    init = EA.split("int OnInit()", 1)[1].split("void OnDeinit(", 1)[0]
+    timer = EA.split("void OnTimer()", 1)[1].split("void ProcessCommand(", 1)[0]
+    assert "if(!IsDemoAccount())" in init
+    assert "if(!IsDemoAccount())" in timer
+    assert timer.index("if(!IsDemoAccount())") < timer.index("if(!EnableTrading)")
+
+
+def test_unidentified_or_broker_mutated_open_positions_block_new_demo_orders():
+    """All existing positions/orders block even if comment or magic is lost."""
+    timer = EA.split("void OnTimer()", 1)[1].split("void ProcessCommand(", 1)[0]
+    process = EA.split("void ProcessCommand(", 1)[1].split(
+        "bool ExecuteSplitTicket(", 1
+    )[0]
+    account_flat_guard = "PositionsTotal() != 0 || OrdersTotal() != 0"
+    assert account_flat_guard in timer
+    assert timer.index(account_flat_guard) < timer.index("PollPendingCommand()")
+    assert process.count(account_flat_guard) >= 2
+    assert process.index(account_flat_guard) < process.index("AckReceived(command_id)")
+    assert process.rindex(account_flat_guard) > process.index("AckReceived(command_id)")
+    assert process.count("!IsDemoAccount()") >= 2
+
+
+def test_preorder_ack_journal_survives_restart_and_binds_context():
+    """Offline source guard; live terminal persistence still needs MT5 demo proof."""
+    init = EA.split("int OnInit()", 1)[1].split("void OnDeinit(", 1)[0]
+    persist = EA.split("bool LoadAckAbortJournal()", 1)[1].split(
+        "void RetryAckAbortAsTerminalFailure()", 1
+    )[0]
+    assert "LoadAckAbortJournal()" in init
+    assert "return(INIT_FAILED)" in init
+    assert 'const string ACK_ABORT_JOURNAL = "SignalGate_ack_abort.txt"' in EA
+    assert "FileIsExist(ACK_ABORT_JOURNAL)" in persist
+    assert "FILE_READ|FILE_TXT|FILE_UNICODE" in persist
+    assert "FILE_WRITE|FILE_TXT|FILE_UNICODE" in persist
+    assert "FileFlush(handle)" in persist
+    # MQL5 FileWriteString returns byte count, UTF-16 write is 2 bytes/unit.
+    assert "written == (uint)(2 * StringLen(record))" in persist
+    assert "AccountInfoInteger(ACCOUNT_LOGIN)" in persist
+    assert "AccountInfoString(ACCOUNT_SERVER)" in persist
+    assert "backend != BackendURL || user_id != UserID" in persist
+    assert "magic != IntegerToString(MagicNumber)" in persist
+    assert "FileDelete(ACK_ABORT_JOURNAL)" in persist
+    assert "LicenseKey" not in persist
+    assert "EAApiKey" not in persist
+
+
+def test_unconfirmed_ack_never_retries_order_and_blocks_following_polls():
+    process = EA.split("void ProcessCommand(", 1)[1].split(
+        "bool ExecuteSplitTicket(", 1
+    )[0]
+    timer = EA.split("void OnTimer()", 1)[1].split(
+        "void ProcessCommand(", 1
+    )[0]
+    assert process.index("SaveAckAbortJournal(command_id)") < process.index(
+        "AckReceived(command_id)"
+    )
+    assert process.index("ClearAckAbortJournal()") > process.index(
+        "AckReceived(command_id)"
+    )
+    assert process.index("ClearAckAbortJournal()") < process.index(
+        "ExecuteSplitTicket("
+    )
+    assert "if(!ClearAckAbortJournal())" in process
+    assert "RetryAckAbortAsTerminalFailure()" in process
+    assert "if(g_ack_abort_command_id != \"\")" in timer
+    assert timer.index("RetryAckAbortAsTerminalFailure()") < timer.index(
+        "if(!EnableTrading)"
+    )
+    assert timer.index("FileIsExist(ACK_ABORT_JOURNAL)") < timer.index(
+        "PollPendingCommand()"
+    )
+
+
+def test_ack_failure_recovery_sends_only_rate_limited_terminal_failed_receipt():
+    recovery = EA.split("void RetryAckAbortAsTerminalFailure()", 1)[1].split(
+        "//| OnInit", 1
+    )[0]
+    assert 'ReportError(g_ack_abort_command_id, "ACK_RECEIPT_UNCONFIRMED"' in recovery
+    assert "now - g_ack_abort_last_try < 30" in recovery
+    assert "PositionsTotal() != 0 || OrdersTotal() != 0" in recovery
+    assert "g_last_http_code >= 200 && g_last_http_code < 300" in recovery
+    assert "ClearAckAbortJournal()" in recovery
+    for never in ("AckReceived(", "PollPendingCommand(", "trade.Buy(", "trade.Sell("):
+        assert never not in recovery
+
+def test_all_split_ticket_lots_are_validated_before_first_broker_order():
+    """An invalid TP2/TP3 lot must not require rolling back an earlier fill."""
+    split = EA.split("bool ExecuteSplitTicket(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert split.count("for(int i = 0; i < 3; i++)") == 2
+    assert split.count("NormalizeLot(symbol, lots[i])") == 1
+    preflight = split.split("for(int i = 0; i < 3; i++)", 1)[1].split(
+        "for(int i = 0; i < 3; i++)", 1
+    )[0]
+    assert "if(tps[i] <= 0.0)" in preflight
+    assert 'ReportError(command_id, "LOT_SIZE_INVALID"' in preflight
+    assert "return(false);" in preflight
+    assert "CloseAllChildren(" not in preflight
+    assert split.index("NormalizeLot(symbol, lots[i])") < split.index("trade.Buy(")
+    assert split.index("NormalizeLot(symbol, lots[i])") < split.index("trade.Sell(")
+
+def test_weighted_breakeven_stop_is_tick_aligned_and_directional():
+    """Offline guard only: actual tick/rejection proof requires MT5 DEMO."""
+    helper = EA.split("double AlignProtectiveStopToTick(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert "SYMBOL_TRADE_TICK_SIZE" in helper
+    assert "SYMBOL_DIGITS" in helper
+    assert "direction == +1" in helper
+    assert "MathFloor(tick_count + 1e-9)" in helper
+    assert "MathCeil(tick_count - 1e-9)" in helper
+    assert "NormalizeDouble(snapped_ticks * tick, digits)" in helper
+    assert "if(tick <= 0.0 || proposed_sl <= 0.0" in helper
+
+    management = EA.split("void ManageActiveCommand()", 1)[1].split(
+        "string ResolveBrokerSymbol(", 1
+    )[0]
+    assert "g_active_entry, g_active_direction" in management
+    assert "g_active_tp1, g_active_direction" in management
+    assert "MoveRemainingSL(g_active_symbol, cid, breakeven_sl)" in management
+    assert "MoveRemainingSL(g_active_symbol, cid, tp1_stop_sl)" in management
+    assert "if(moved) g_effective_sl = breakeven_sl;" in management
+    assert "if(moved) g_effective_sl = tp1_stop_sl;" in management
+    assert "old_sl, breakeven_sl" in management
+    assert "old_sl, tp1_stop_sl" in management
+    assert "if(moved) g_effective_sl = g_active_entry" not in management
+
+def test_hosted_empty_user_id_is_permitted_without_weakening_ack_journal_binding():
+    """Hosted customer licence owns the command; blank local UserID is valid."""
+    required = EA.split("bool AckJournalSafeField(", 1)[1].split(
+        "bool AckJournalSafeOptionalField(", 1
+    )[0]
+    optional = EA.split("bool AckJournalSafeOptionalField(", 1)[1].split(
+        "bool LoadAckAbortJournal(", 1
+    )[0]
+    persist = EA.split("bool SaveAckAbortJournal(", 1)[1].split(
+        "bool ClearAckAbortJournal(", 1
+    )[0]
+    load = EA.split("bool LoadAckAbortJournal(", 1)[1].split(
+        "bool SaveAckAbortJournal(", 1
+    )[0]
+    assert 'value != ""' in required
+    assert 'value != ""' not in optional
+    assert 'StringFind(value, "\\r") < 0' in optional
+    assert 'StringFind(value, "\\n") < 0' in optional
+    assert "!AckJournalSafeOptionalField(UserID)" in persist
+    assert "!AckJournalSafeField(UserID)" not in persist
+    assert "!AckJournalSafeField(command_id)" in persist
+    assert "!AckJournalSafeField(server)" in persist
+    assert "!AckJournalSafeField(BackendURL)" in persist
+    assert "backend != BackendURL || user_id != UserID" in load
+    assert "!AckJournalSafeField(command_id)" in load
+    assert "FileFlush(handle)" in persist
+
+
+def test_split_ticket_rollback_hold_blocks_even_explicit_demo_opt_in():
+    """Source-only fail-closed gate while split rollback can misreport FAILED."""
+    assert "input bool   SplitTicketDemoPartialMode = false;" in EA
+    init = EA.split("int OnInit()", 1)[1].split("void OnDeinit(", 1)[0]
+    assert "if(SplitTicketDemoPartialMode)" in init
+    hold = init.split("if(SplitTicketDemoPartialMode)", 1)[1].split("}", 1)[0]
+    assert "return(INIT_FAILED);" in hold
+    assert "split-ticket mode on HOLD" in hold
+    assert init.index("if(SplitTicketDemoPartialMode)") < init.index("EventSetTimer(")
+    assert "SplitTicketDemoPartialMode = true;" not in EA
+
+
+def test_multiple_opening_deals_require_exact_original_order_and_full_exit_volume():
+    """Source-only policy contract; no broker-DEMO scenario is accepted here."""
+    single = EA.split("bool ExecuteSingleTicket(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    split = EA.split("bool ExecuteSplitTicket(", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    stage = EA.split("bool ChildClosedByReason(", 1)[1].split(
+        "bool AllTrackedChildrenClosedWithEvidence()", 1
+    )[0]
+    clear = EA.split("void ClearActiveCommand()", 1)[1].split(
+        "//+------------------------------------------------------------------+", 1
+    )[0]
+    assert "g_child_order_ids[3]" in EA
+    assert "g_child_order_ids[0] = trade.ResultOrder();" in single
+    assert "g_child_order_ids[g_child_count] = trade.ResultOrder();" in split
+    assert "ArrayInitialize(g_child_order_ids, 0);" in clear
+    assert "ulong opening_order = g_child_order_ids[child_index];" in stage
+    assert "opening_order == 0" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_ORDER) != opening_order" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_TYPE) != opening_type" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber" in stage
+    assert "deal_position_id != position_id" in stage
+    assert "HistoryDealGetInteger(deal, DEAL_ORDER) == opening_order" in stage
+    assert "HistoryDealGetString(deal, DEAL_SYMBOL) != g_active_symbol" in stage
+    assert "deal == g_child_tickets[child_index]" in stage
+    assert "if(entry == DEAL_ENTRY_IN)" in stage
+    assert "opened_volume += volume;" in stage
+    assert "MathAbs(exited_volume - opened_volume) <= 1e-8" in stage
+    assert "ChildPositionStillOpen(position_id) || OrdersTotal() != 0" in stage
+    assert "entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY" in stage
+    assert "DEAL_ENTRY_OUT_BY" in stage
+
+def test_full_close_refuses_hidden_demo_positions_or_untracked_same_order_fills():
+    """Source-only guard: explicit orphan/multi-position broker proof is NOT_RUN."""
+    manage = EA.split("void ManageActiveCommand()", 1)[1].split(
+        "//| Broker execution / close-reason helpers", 1
+    )[0]
+    child = EA.split("bool ChildClosedByReason(", 1)[1].split(
+        "bool AllTrackedChildrenClosedWithEvidence()", 1
+    )[0]
+    assert "open_children == 0 &&" in manage
+    assert "PositionsTotal() == 0 && OrdersTotal() == 0 &&" in manage
+    assert manage.index("PositionsTotal() == 0") < manage.index(
+        "AllTrackedChildrenClosedWithEvidence()"
+    )
+    assert "deal_position_id != position_id" in child
+    assert "HistoryDealGetInteger(deal, DEAL_ORDER) == opening_order" in child
+    assert "HistoryDealGetInteger(deal, DEAL_ENTRY) == DEAL_ENTRY_IN" in child
+    assert "return(false);" in child
+
+
+def test_mt5_setup_holds_failed_frozen_rc2_and_requires_real_successor_evidence():
+    """Doc-only guard: synthetic and compiler results cannot clear demo gate."""
+    setup = (Path(__file__).parents[2] / "mt5_ea" / "README_MT5_SETUP.md").read_text(
+        encoding="utf-8"
+    )
+    compile_gate = setup.split("## 1. Compile the exact candidate EA", 1)[1].split(
+        "## 2. Allow the backend URL", 1
+    )[0]
+    assert "release/signalgate-demo-rc2-2026-09-19" in compile_gate
+    assert "3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2" in compile_gate
+    assert "35464044898" in compile_gate
+    assert "18 errors / 4 warnings" in compile_gate
+    assert "newly approved successor candidate" in compile_gate
+    assert "0 errors / 0 warnings" in compile_gate
+    assert "newly generated EX5" in compile_gate
+    assert "PR #60 is DRAFT / HOLD" in compile_gate
+    assert "opening-DEAL-versus-POSITION identity" in compile_gate
+    assert "actual controlled MT5 DEMO broker receipts" in compile_gate
+    assert "synthetic/source tests or a compiler log do not replace" in compile_gate
+    assert "EnableTrading=false" in compile_gate
+    assert "exact frozen candidate SHA" not in compile_gate

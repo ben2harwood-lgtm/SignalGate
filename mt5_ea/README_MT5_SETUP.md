@@ -3,12 +3,19 @@
 This Expert Advisor connects MetaTrader 5 to the SignalGate backend. It polls
 for approved, structured commands and places **demo trades only**.
 
-> ⚠️ **Demo only.** The EA refuses to run on a live account. v1 has no live
-> trading support by design. Use a broker **demo** account.
+> ⚠️ **Demo only.** The EA requires a positively identified MT5 DEMO account;
+> REAL, CONTEST and unknown modes are refused at startup and each timer cycle.
+> Use a dedicated **flat** broker demo account for testing. Any existing open
+> position or pending order blocks new command polling, even if its broker
+> comment/magic was changed or lost after a restart.
 
 ## 1. Compile the exact candidate EA
 
-For release acceptance, prefer the automated evidence harness in `docs/MT5_ACCEPTANCE.md` rather than manually compiling an untracked copy. It binds the compiler receipt to the exact frozen candidate SHA and requires **0 errors / 0 warnings**.
+For a **newly approved successor candidate**, use the automated evidence harness in `docs/MT5_ACCEPTANCE.md` and retain an official MetaEditor receipt bound to that exact candidate commit/source hash, with **0 errors / 0 warnings** and a newly generated EX5. A compiler PASS is necessary but is **not** broker-demo or external acceptance.
+
+**Frozen RC2 is NOT eligible for broker-demo acceptance.** The exact EA source at `release/signalgate-demo-rc2-2026-09-19` (`3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2`) failed [official MetaEditor run 35464044898](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464044898) with **18 errors / 4 warnings**. A later successor candidate's clean compile cannot retroactively validate frozen RC2.
+
+**PR #60 is DRAFT / HOLD, not broker-demo accepted.** An independently reviewed successor must resolve original-order multi-deal volume/weighted-price reporting, opening-DEAL-versus-POSITION identity, uncertain acknowledgement/broker outcomes, split rollback and per-stage TP-exit attribution. Retain actual controlled MT5 DEMO broker receipts for the exact successor; synthetic/source tests or a compiler log do not replace them. Leave `EnableTrading=false` for unapproved candidates; the manual setup instructions below are preparatory only and do not authorise broker orders.
 
 For a normal manual install:
 
@@ -31,7 +38,11 @@ URL is whitelisted:
 
 ## 3. Enable algo trading
 
-- Click the **Algo Trading** toolbar button so it is green/enabled.
+- Keep the **Algo Trading** toolbar switch OFF while inspecting inputs. Enable
+  it only for an independently reviewed, exact-commit build on a positively
+  identified **DEMO** account, after the MT5 demo-scenario gate is satisfied.
+- `EnableTrading` also defaults to **false**. This per-EA input and the MT5
+  toolbar switch are separate; neither bypasses the demo-only guard.
 
 ## 4. Attach to a chart
 
@@ -41,9 +52,10 @@ URL is whitelisted:
    - `BackendURL` = the exact backend URL you whitelisted;
    - `LicenseKey` = **your one-time customer EA licence** in hosted Provider Edition;
    - `EAApiKey` = the server's EA service credential supplied through the approved onboarding channel;
-   - `UserID` = local-demo compatibility only; hosted ownership is resolved from `LicenseKey`;
+   - `UserID` = local-demo compatibility only (may be empty in hosted mode); hosted ownership is resolved from `LicenseKey`;
    - `DemoOnlyMode` = `true` (leave as-is);
-   - `SplitTicketDemoPartialMode` = `true` on a hedging demo account (the EA safely falls back on non-hedging/netting accounts).
+   - `SplitTicketDemoPartialMode` = `false` **required**. Split mode fails `OnInit` while partial-fill rollback/server-close verification is on HOLD; do not change it to `true` for demo testing;
+   - `EnableTrading` = `false` until independent EA review, exact MetaEditor compile and controlled MT5 broker-DEMO acceptance are complete.
 4. Click OK. A smiley face in the top-right of the chart means it is running.
 
 ## 5. Inputs reference
@@ -56,16 +68,18 @@ URL is whitelisted:
 | `EAApiKey` | `local-demo-ea-key` | EA service credential. Hosted calls require this in addition to the customer licence. |
 | `PollIntervalSeconds` | `2` | How often to poll/manage |
 | `SingleTicketFixedLot` | `0.01` | Lot for single-ticket fallback mode |
-| `SplitTicketDemoPartialMode` | `true` | Open 3 child tickets for 50/25/25 |
+| `SplitTicketDemoPartialMode` | `false` | **Temporary safety HOLD:** `true` refuses EA startup until S11/R1–R5 rollback proof and independent review. The remaining path is single-ticket demo only, still subject to all execution gates. |
 | `TP1Lot` / `TP2Lot` / `TP3Lot` | `0.02 / 0.01 / 0.01` | Child lots |
 | `MagicNumber` | `440044` | EA position tag |
 | `DemoOnlyMode` | `true` | Hard safety; EA won't run if false/live |
 | `MaxSpreadPoints` | `500` | Reject if spread above this |
 | `MaxSlippagePoints` | `100` | Deviation allowance |
-| `EnableTrading` | `true` | Master on/off |
+| `EnableTrading` | `false` | **OFF by default.** Per-EA input; explicitly enable only for an accepted demo build. Not an emergency position-flattening switch. |
 | `SymbolOverride` | `""` | Force a chart symbol name if broker differs |
 
-## 6. How it trades (split-ticket demo partial mode)
+## 6. How split-ticket demo partial mode is intended to trade (CURRENTLY BLOCKED)
+
+**Split-ticket broker submission is disabled at EA startup.** A later-child rejection may leave a previously filled DEMO position open; the existing rollback does not check close retcode, position identity and confirmed flatness before reporting `FAILED`. This is a protective interim restriction, **not a rollback fix, demo acceptance or permission to turn on trading**. Leave `SplitTicketDemoPartialMode=false` and `EnableTrading=false` until independently reviewed corrections and genuine broker-DEMO evidence are recorded. The single-ticket path is not externally accepted either.
 
 A single 0.01 lot position **cannot** be partially closed 50/25/25 (that needs
 0.005 lots, below the 0.01 lot step). So in demo we open **three child
@@ -76,13 +90,23 @@ positions** that together emulate partial profit-taking:
 - TP3 child: `TP3Lot` (0.01), TP = TP3
 - Total demo exposure: ~0.04 lots, all sharing the same initial SL.
 
-Management:
-- When the TP1 child closes → report `TP1_CLOSE_SUCCESS`, move remaining child
-  SLs to **breakeven** (open price).
-- When the TP2 child closes → report `TP2_CLOSE_SUCCESS`, move TP3 child SL to
-  **TP1**.
-- When the TP3 child closes → report `TP3_CLOSE_SUCCESS` then `FULLY_CLOSED`.
-- If price hits SL on remaining tickets → `STOP_LOSS_HIT`.
+Management (pending independent review and real demo-broker validation):
+- TP-stage success requires the **assigned child's** original opening deal and
+  position identifier, and full-volume TP exit history. A child count or an
+  earlier child's TP exit cannot establish another milestone.
+- Following verified TP1/TP2 exits, remaining stops target breakeven/TP1.
+  The volume-weighted broker entry stays unchanged for execution reporting, but
+  protective SL prices are rounded to the broker's `SYMBOL_TRADE_TICK_SIZE`
+  (BUY down, SELL up) before submitting a stop request. A rounded target still
+  requires broker `DONE` and matching current-position SL readback; broker
+  rejections/unknowns remain failures and are not automatically retried.
+- TP3 is credited only for its own broker TP exit and proven earlier milestones.
+  Manual or unknown full closes are never fabricated as TP successes.
+- `STOP_LOSS_HIT` uses the **latest matching broker exit**, not an earlier SL.
+  When distinct final exits share a broker millisecond but report conflicting
+  reasons, stop-out attribution fails closed rather than sorting by deal ticket.
+  `FULLY_CLOSED` then records closure without asserting a verified stop reason.
+- These are source changes awaiting MetaEditor and actual broker-demo proof.
 
 Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
 0.01 lot, full close at the final TP, no impossible partials).
@@ -93,11 +117,58 @@ Set `SplitTicketDemoPartialMode = false` to use single-ticket fallback (one
   deterministic extractor (`JsonGet*`) tuned to the **exact** backend command
   shape. It is not a general JSON parser; if the backend payload shape changes,
   update those helpers. No external/unbundled libraries are required.
-- **Demo/live detection** relies on `ACCOUNT_TRADE_MODE`. Most brokers report
-  this correctly, but if a broker misreports it, keep `DemoOnlyMode = true`
-  and only attach to a known demo account.
-- TP-hit detection is inferred from child positions closing (broker-side TP),
-  which is robust for the demo split-ticket design.
+- **Positive DEMO detection** requires `ACCOUNT_TRADE_MODE_DEMO` at startup
+  and every timer cycle. REAL, CONTEST and unknown values fail closed. A broker
+  that misreports its account mode is an unresolved external dependency; verify
+  the terminal account independently before any controlled broker-demo tests.
+- **Flat account prerequisite:** when no command is actively managed in memory,
+  fresh polling is blocked by *any* open position or pending order, regardless
+  of symbol, position comment or magic. This conservative demo-only isolation
+  catches broker-mutated/orphan positions after restart but also blocks new
+  commands while unrelated/manual positions exist. It cannot prove orphan
+  identity or reconstruct management state; broker-demo S8 remains `NOT_RUN`.
+- **Management-event receipt precision:** TP/SL/price values use the actual
+  executed broker symbol's digits (not the chart's `_Digits`); event lot fields
+  retain eight decimal places instead of rounding broker volume to two.
+  This prevents chart-symbol and fractional-volume evidence distortion, but
+  does **not** establish that an event occurred without DEMO broker receipts.
+- **Multiple broker deals per order:** the close-evidence guard permits extra
+  opening deals only where history binds each to the original MT5 ResultOrder,
+  broker position ID, executed symbol, direction and magic. It verifies total
+  broker opening volume against all closing volume, and refuses active orders,
+  unrelated increases, reversals or missing identity. A final-closure event
+  additionally requires the entire dedicated DEMO account to be flat; fills
+  from the same broker order into a different position ID remain unaccepted.
+  This is an offline source
+  correction only, pending official MetaEditor compile, independent review and
+  genuine S14 multi-deal MT5 DEMO receipts. It does not repair ambiguous
+  single-ticket send outcomes or prove the backend execution receipt includes
+  complete multi-deal exposure.
+- Broker history, position identifiers and live stop-loss readbacks can be
+  unavailable or incomplete. Stage/SL checks must fail closed in these cases.
+  Test rejected modifications, manual partial/final closes and broker-modified
+  comments on a controlled **demo** terminal before accepting the candidate.
+- `EnableTrading = false` pauses timer processing, including management and
+  reconciliation; it **does not flatten positions** or cancel broker-side
+  stops/targets. Check positions and manage them separately before pausing.
+- **Pre-order acknowledgement uncertainty:** before sending `/commands/{id}/received`,
+  the EA writes `SignalGate_ack_abort.txt` under that terminal's MQL5 Files
+  folder, binding the claimed command to the broker-DEMO login/server, backend
+  URL, user ID and magic number (never storing licences/API secrets).
+  If acknowledgement fails or its HTTP outcome is unknown, the EA sends **no
+  broker order** and blocks all further polling. It retries only the *same*
+  `FAILED / ACK_RECEIPT_UNCONFIRMED` execution receipt, at most every 30
+  seconds, until the backend confirms it. The journal survives terminal
+  restarts; mismatched/unreadable journals cause startup refusal. Recovery
+  runs even with `EnableTrading=false`; it will not claim "no execution"
+  while the DEMO account has any position or pending order. Do not delete a
+  stuck journal merely to turn trading on: inspect broker history, backend
+  receipts and the account/terminal binding, then involve the coordinator.
+  This is a **fail-closed pre-order transport correction**, not proof of
+  reliable broker execution or an automatic re-offer/ACK retry. It cannot
+  eliminate every crash window between positive acknowledgement, journal
+  clearance and broker submission; ambiguous outcomes still require real
+  demo-broker reconciliation and independent review.
 
 ## 8. Error codes the EA reports
 

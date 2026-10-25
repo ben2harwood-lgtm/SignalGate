@@ -28,7 +28,7 @@ input string LicenseKey                 = "local-demo";
 input string EAApiKey                   = "local-demo-ea-key";
 input int    PollIntervalSeconds        = 2;
 input double SingleTicketFixedLot       = 0.01;
-input bool   SplitTicketDemoPartialMode = true;
+input bool   SplitTicketDemoPartialMode = false;
 input double TP1Lot                     = 0.02;
 input double TP2Lot                     = 0.01;
 input double TP3Lot                     = 0.01;
@@ -36,7 +36,7 @@ input long   MagicNumber                = 440044;
 input bool   DemoOnlyMode               = true;
 input int    MaxSpreadPoints            = 500;
 input int    MaxSlippagePoints          = 100;
-input bool   EnableTrading              = true;
+input bool   EnableTrading              = false;
 input string SymbolOverride             = "";
 
 //--- Globals -------------------------------------------------------------
@@ -56,7 +56,10 @@ double  g_active_tp1          = 0.0;
 double  g_active_tp2          = 0.0;
 double  g_active_tp3          = 0.0;
 ulong   g_child_tickets[3];               // opening deal tickets
+ulong   g_child_order_ids[3];             // original MT5 order bound to opening deals
 ulong   g_child_pos_ids[3];               // broker position ids for close-reason lookup
+int     g_child_tp_levels[3];             // TP stage actually assigned to each child
+double  g_child_open_volumes[3];          // actual broker-filled volume per child
 int     g_child_count         = 0;
 datetime g_open_time          = 0;
 bool    g_tp1_done            = false;
@@ -64,6 +67,139 @@ bool    g_tp2_done            = false;
 bool    g_tp3_done            = false;
 double  g_effective_sl        = 0.0;
 bool    g_split_mode          = true;
+int     g_last_http_code      = 0;
+// A pre-order acknowledgement may have been accepted despite a lost HTTP reply.
+// Until its terminal FAILED receipt is confirmed, no new command may execute.
+string  g_ack_abort_command_id = "";
+datetime g_ack_abort_last_try = 0;
+const string ACK_ABORT_JOURNAL = "SignalGate_ack_abort.txt";
+
+//+------------------------------------------------------------------+
+//| Durable fail-closed outcome for uncertain PRE-ORDER acknowledgement |
+//| The journal contains only demo account/binding context and command ID,
+//| never credentials. It is deliberately terminal-failure-only; it NEVER
+//| retries acknowledgement or sends a broker order after an unknown reply.
+//+------------------------------------------------------------------+
+bool AckJournalSafeField(const string value)
+{
+   return(value != "" && StringFind(value, "\r") < 0 &&
+          StringFind(value, "\n") < 0);
+}
+
+// The hosted EA authenticates by customer licence, not local-demo UserID.
+// An empty UserID is valid, but a CR/LF would corrupt journal line binding.
+bool AckJournalSafeOptionalField(const string value)
+{
+   return(StringFind(value, "\r") < 0 && StringFind(value, "\n") < 0);
+}
+
+bool LoadAckAbortJournal()
+{
+   if(!FileIsExist(ACK_ABORT_JOURNAL))
+      return(true);
+
+   int handle = FileOpen(ACK_ABORT_JOURNAL, FILE_READ|FILE_TXT|FILE_UNICODE);
+   if(handle == INVALID_HANDLE)
+      return(false);
+   string version = FileReadString(handle);
+   string login = FileReadString(handle);
+   string server = FileReadString(handle);
+   string backend = FileReadString(handle);
+   string user_id = FileReadString(handle);
+   string magic = FileReadString(handle);
+   string command_id = FileReadString(handle);
+   FileClose(handle);
+
+   if(version != "SG_ACK_ABORT_V1" ||
+      login != IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) ||
+      server != AccountInfoString(ACCOUNT_SERVER) ||
+      backend != BackendURL || user_id != UserID ||
+      magic != IntegerToString(MagicNumber) ||
+      !AckJournalSafeField(command_id))
+   {
+      Print("FATAL: ACK-abort journal is unreadable or bound to a different ",
+            "account/configuration. No trading; operator reconciliation required.");
+      return(false);
+   }
+   g_ack_abort_command_id = command_id;
+   Print("SignalGate: restored pending pre-order ACK failure receipt for ",
+         command_id, "; no orders permitted until outcome is confirmed.");
+   return(true);
+}
+
+bool SaveAckAbortJournal(const string command_id)
+{
+   // A second EA/chart or leftover file must never be overwritten.
+   if(g_ack_abort_command_id != "" || FileIsExist(ACK_ABORT_JOURNAL))
+      return(false);
+
+   // Hold in memory BEFORE any possible write failure.
+   g_ack_abort_command_id = command_id;
+   string login = IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
+   string server = AccountInfoString(ACCOUNT_SERVER);
+   string magic = IntegerToString(MagicNumber);
+   if(!AckJournalSafeField(command_id) ||
+      !AckJournalSafeField(server) || !AckJournalSafeField(BackendURL) ||
+      !AckJournalSafeOptionalField(UserID))
+      return(false);
+
+   string record = "SG_ACK_ABORT_V1\r\n" + login + "\r\n" +
+                   server + "\r\n" + BackendURL + "\r\n" +
+                   UserID + "\r\n" + magic + "\r\n" +
+                   command_id + "\r\n";
+   int handle = FileOpen(ACK_ABORT_JOURNAL, FILE_WRITE|FILE_TXT|FILE_UNICODE);
+   if(handle == INVALID_HANDLE)
+      return(false);
+   uint written = FileWriteString(handle, record);
+   FileFlush(handle);
+   FileClose(handle);
+   // FileWriteString returns BYTES, not characters. FILE_UNICODE uses 2 bytes
+   // per UTF-16 code unit; comparing to character count would reject success.
+   return(written == (uint)(2 * StringLen(record)));
+}
+
+bool ClearAckAbortJournal()
+{
+   if(!FileIsExist(ACK_ABORT_JOURNAL) || !FileDelete(ACK_ABORT_JOURNAL))
+      return(false);
+   g_ack_abort_command_id = "";
+   g_ack_abort_last_try = 0;
+   return(true);
+}
+
+void RetryAckAbortAsTerminalFailure()
+{
+   if(g_ack_abort_command_id == "")
+      return;
+   // Fail closed on unknown account mode or any potentially related fill.
+   if(!IsDemoAccount() || PositionsTotal() != 0 || OrdersTotal() != 0)
+   {
+      Print("SignalGate: ACK outcome requires manual broker reconciliation; ",
+            "no terminal failure reported with positions/orders present.");
+      return;
+   }
+
+   datetime now = TimeLocal();
+   if(g_ack_abort_last_try != 0 && now >= g_ack_abort_last_try &&
+      now - g_ack_abort_last_try < 30)
+      return; // rate-limit retries; no new polling meanwhile
+   g_ack_abort_last_try = now;
+
+   // A lost pre-order ACK reply NEVER results in an automatic broker order.
+   // This exact FAILED callback is idempotent in the backend; repeat only
+   // until the server confirms the terminal receipt with a 2xx response.
+   ReportError(g_ack_abort_command_id, "ACK_RECEIPT_UNCONFIRMED",
+               "Pre-order acknowledgement unconfirmed; EA sent no broker order");
+   if(g_last_http_code >= 200 && g_last_http_code < 300)
+   {
+      if(!ClearAckAbortJournal())
+         Print("SignalGate: terminal failure recorded, but local journal ",
+               "could not be cleared; execution remains blocked.");
+   }
+   else
+      Print("SignalGate: terminal ACK failure receipt not yet confirmed; ",
+            "polling and execution remain blocked. HTTP=", g_last_http_code);
+}
 
 //+------------------------------------------------------------------+
 //| OnInit                                                            |
@@ -78,13 +214,31 @@ int OnInit()
       return(INIT_FAILED);
    }
 
-   // SAFETY: refuse to run against a live account.
-   if(IsLiveAccount())
+   // Positive-only DEMO check: contest, real and unknown accounts all fail.
+   if(!IsDemoAccount())
    {
-      Print("FATAL: Account appears to be LIVE. SignalGate is demo only. Refusing.");
+      Print("FATAL: Account is not positively identified as MT5 DEMO. Refusing.");
       ReportDemoOnlyViolation();
       return(INIT_FAILED);
    }
+
+   // TEMPORARY SAFETY HOLD: child #1 may fill before a later broker rejection.
+   // The current split rollback cannot prove server-confirmed flattening and
+   // may incorrectly publish FAILED while an open DEMO position remains.
+   // Never permit the unsafe split path, even if someone changes the input.
+   // Remove this hold only with reviewed rollback/reconciliation code plus
+   // genuine MT5 broker-DEMO S11/R1-R5 evidence; default OFF is insufficient.
+   if(SplitTicketDemoPartialMode)
+   {
+      Print("FATAL: split-ticket mode on HOLD pending verified rollback; ",
+            "no broker orders permitted. Keep EnableTrading OFF.");
+      return(INIT_FAILED);
+   }
+
+   // A saved unknown ACK outcome survives terminal restarts. Never restart
+   // execution until its exact original command has a terminal receipt.
+   if(!LoadAckAbortJournal())
+      return(INIT_FAILED);
 
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(MaxSlippagePoints);
@@ -121,6 +275,25 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
+   // Account switches must not convert this DEMO-only EA into an order sender.
+   if(!IsDemoAccount())
+   {
+      Print("SignalGate: account no longer confirmed DEMO; timer blocked.");
+      return;
+   }
+   // An ambiguous pre-order ACK must resolve only as a terminal FAILED
+   // receipt. Recovery runs even with the user trading toggle OFF.
+   if(g_ack_abort_command_id != "")
+   {
+      RetryAckAbortAsTerminalFailure();
+      return;
+   }
+   // A second EA/chart may have left a journal after this EA started.
+   if(FileIsExist(ACK_ABORT_JOURNAL))
+   {
+      Print("SignalGate: unknown ACK-abort journal detected; new orders blocked.");
+      return;
+   }
    if(!EnableTrading)
       return;
 
@@ -142,6 +315,16 @@ void OnTimer()
    {
       Print("SignalGate position(s) found without active in-memory state; "
             "reconciled with backend and polling is blocked until flat.");
+      return;
+   }
+
+   // Broker comments and magic can be changed, lost, or unavailable after
+   // restart. No new command can be trusted on a non-flat demo account.
+   // This conservative gate intentionally includes manual/unrelated positions.
+   if(PositionsTotal() != 0 || OrdersTotal() != 0)
+   {
+      Print("SignalGate: account has open position(s)/order(s); "
+            "new command polling blocked until the DEMO account is flat.");
       return;
    }
 
@@ -250,8 +433,46 @@ void ProcessCommand(const string command_id, const string json)
       return;
    }
 
-   // Acknowledge receipt before execution.
-   AckReceived(command_id);
+   // Re-check after polling (and after server acknowledgement): manual,
+   // orphaned or broker-mutated positions must never overlap a new order.
+   if(!IsDemoAccount() || PositionsTotal() != 0 || OrdersTotal() != 0)
+   {
+      ReportError(command_id, "TRADING_DISABLED",
+                  "Requires confirmed DEMO account with no open positions/orders");
+      return;
+   }
+
+   // Journal the exact claimed command BEFORE the pre-order acknowledgement:
+   // an HTTP timeout or terminal restart must never turn into a blind order.
+   if(!SaveAckAbortJournal(command_id))
+   {
+      Print("SignalGate: unable to durably journal command ACK; execution blocked.");
+      RetryAckAbortAsTerminalFailure();
+      return;
+   }
+   if(!AckReceived(command_id))
+   {
+      Print("Command acknowledgement failed; refusing broker execution for ",
+            command_id, " HTTP=", g_last_http_code);
+      RetryAckAbortAsTerminalFailure();
+      return;
+   }
+   // Remove the pre-order journal BEFORE entering any broker-order path.
+   // If removal fails, fail the command rather than trading with unknown state.
+   if(!ClearAckAbortJournal())
+   {
+      Print("SignalGate: ACK journal removal failed; no broker order permitted.");
+      RetryAckAbortAsTerminalFailure();
+      return;
+   }
+
+   // Re-check just before broker execution to reduce poll/ack race exposure.
+   if(!IsDemoAccount() || PositionsTotal() != 0 || OrdersTotal() != 0)
+   {
+      ReportError(command_id, "TRADING_DISABLED",
+                  "DEMO account changed or became non-flat after acknowledgement");
+      return;
+   }
 
    // --- Execute ------------------------------------------------------
    bool ok = false;
@@ -287,20 +508,27 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
    tps[0]  = tp1;    tps[1]  = tp2;    tps[2]  = tp3;
 
    g_child_count = 0;
-   double exec_price = 0.0;
+   double executed_lot = 0.0;
+   double weighted_exec_price = 0.0;
+
+   // Preflight every active child lot BEFORE placing the first broker order.
+   // A later invalid configured lot must never trigger rollback of a fill.
+   for(int i = 0; i < 3; i++)
+   {
+      if(tps[i] <= 0.0)
+         continue;
+      if(!NormalizeLot(symbol, lots[i]))
+      {
+         ReportError(command_id, "LOT_SIZE_INVALID",
+                     "Lot invalid for child " + IntegerToString(i+1));
+         return(false); // no broker order has been attempted
+      }
+   }
 
    for(int i = 0; i < 3; i++)
    {
       if(tps[i] <= 0.0)
          continue; // skip absent TP levels (e.g. only TP1/TP2 present)
-
-      if(!NormalizeLot(symbol, lots[i]))
-      {
-         ReportError(command_id, "LOT_SIZE_INVALID",
-                     "Lot invalid for child " + IntegerToString(i+1));
-         CloseAllChildren(symbol, command_id);
-         return(false);
-      }
 
       bool sent;
       if(direction == +1)
@@ -316,22 +544,39 @@ bool ExecuteSplitTicket(const string command_id, const string symbol,
          CloseAllChildren(symbol, command_id);
          return(false);
       }
+
+      double filled_volume = trade.ResultVolume();
+      double filled_price = trade.ResultPrice();
+      if(filled_volume <= 0.0 || filled_price <= 0.0)
+      {
+         ReportError(command_id, "ORDER_SEND_FAILED",
+                     "Broker reported non-positive fill volume/price");
+         CloseAllChildren(symbol, command_id);
+         return(false);
+      }
+
       g_child_tickets[g_child_count] = trade.ResultDeal();
+      g_child_order_ids[g_child_count] = trade.ResultOrder();
       g_child_pos_ids[g_child_count] = PositionIdOfDeal(trade.ResultDeal());
-      exec_price = trade.ResultPrice();
+      g_child_tp_levels[g_child_count] = i + 1;
+      g_child_open_volumes[g_child_count] = filled_volume;
+      executed_lot += filled_volume;
+      weighted_exec_price += filled_price * filled_volume;
       g_child_count++;
    }
    g_open_time = TimeCurrent();
 
-   if(g_child_count == 0)
+   if(g_child_count == 0 || executed_lot <= 0.0)
    {
       ReportError(command_id, "INVALID_TAKE_PROFIT", "No valid TP levels to open");
       return(false);
    }
 
+   double exec_price = weighted_exec_price / executed_lot;
    g_active_entry = exec_price;
-   ReportExecutionSuccess(command_id, symbol, direction, exec_price, sl, tp1, tp2, tp3);
-   ReportManagementEvent(command_id, "OPENED", "OPENED", "OPEN", "SUCCESS",
+   ReportExecutionSuccess(command_id, symbol, direction, exec_price,
+                          executed_lot, sl, tp1, tp2, tp3);
+   ReportManagementEvent(command_id, symbol, "OPENED", "OPENED", "OPEN", "SUCCESS",
                          exec_price, 0,0,0,0);
    return(true);
 }
@@ -366,17 +611,50 @@ bool ExecuteSingleTicket(const string command_id, const string symbol,
       return(false);
    }
 
+   double executed_lot = trade.ResultVolume();
+   if(executed_lot <= 0.0 || trade.ResultPrice() <= 0.0)
+   {
+      ReportError(command_id, "ORDER_SEND_FAILED",
+                  "Broker reported non-positive fill volume/price");
+      return(false);
+   }
+
    g_child_tickets[0] = trade.ResultDeal();
+   g_child_order_ids[0] = trade.ResultOrder();
    g_child_pos_ids[0] = PositionIdOfDeal(trade.ResultDeal());
+   g_child_tp_levels[0] = (tp3 > 0.0) ? 3 : ((tp2 > 0.0) ? 2 : 1);
+   g_child_open_volumes[0] = executed_lot;
    g_child_count = 1;
    g_open_time = TimeCurrent();
    g_active_entry = trade.ResultPrice();
 
    ReportExecutionSuccess(command_id, symbol, direction, g_active_entry,
-                          sl, tp1, tp2, tp3);
-   ReportManagementEvent(command_id, "OPENED", "OPENED", "OPEN", "SUCCESS",
+                          executed_lot, sl, tp1, tp2, tp3);
+   ReportManagementEvent(command_id, symbol, "OPENED", "OPENED", "OPEN", "SUCCESS",
                          g_active_entry, 0,0,0,0);
    return(true);
+}
+
+//+------------------------------------------------------------------+
+//| Round protective SL to valid broker ticks without overstating it |
+//| BUY stops round DOWN, SELL stops round UP; entry price is unchanged. |
+//+------------------------------------------------------------------+
+double AlignProtectiveStopToTick(const string symbol,
+                                const double proposed_sl,
+                                const int direction)
+{
+   double tick = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tick <= 0.0 || proposed_sl <= 0.0 ||
+      (direction != +1 && direction != -1))
+      return(0.0); // unknown tick/direction must not trigger modification
+
+   double tick_count = proposed_sl / tick;
+   // Avoid drifting one tick at an exact binary-floating-point boundary.
+   double snapped_ticks = (direction == +1)
+      ? MathFloor(tick_count + 1e-9) : MathCeil(tick_count - 1e-9);
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   double aligned = NormalizeDouble(snapped_ticks * tick, digits);
+   return(aligned > 0.0 ? aligned : 0.0);
 }
 
 //+------------------------------------------------------------------+
@@ -385,67 +663,86 @@ bool ExecuteSingleTicket(const string command_id, const string symbol,
 void ManageActiveCommand()
 {
    string cid = g_active_command_id;
-
    int open_children = CountOpenChildren(g_active_symbol, cid);
+   // A broker-altered comment or a second position from the same partial
+   // order cannot make a non-flat dedicated DEMO account appear fully closed.
+   bool fully_closed = (open_children == 0 &&
+                        PositionsTotal() == 0 && OrdersTotal() == 0 &&
+                        AllTrackedChildrenClosedWithEvidence());
 
-   // Broker deal history is authoritative for why a position closed. Never
-   // infer a take-profit merely because the position disappeared.
-   if(open_children == 0 && CommandClosedByReason(DEAL_REASON_SL))
+   // Only the final, position-bound broker exit may establish a stop-out.
+   // A historical SL on a different child cannot classify a later manual exit.
+   if(fully_closed && CommandClosedByReason(DEAL_REASON_SL))
    {
-      ReportManagementEvent(cid, "STOP_LOSS_HIT", "FULLY_CLOSED", "", "SUCCESS",
+      ReportManagementEvent(cid, g_active_symbol, "STOP_LOSS_HIT", "FULLY_CLOSED", "", "SUCCESS",
                             g_effective_sl, 0,0, g_active_sl, g_effective_sl);
-      ReportManagementEvent(cid, "FULLY_CLOSED", "FULLY_CLOSED", "", "SUCCESS",
+      ReportManagementEvent(cid, g_active_symbol, "FULLY_CLOSED", "FULLY_CLOSED", "", "SUCCESS",
                             0,0,0,0,0);
       ClearActiveCommand();
       return;
    }
 
-   // TP1 stage: when the first child has closed (TP1 hit).
-   if(!g_tp1_done && open_children <= (g_child_count - 1) && g_child_count >= 2)
+   // An absent/closed child count is never proof of TP. Each milestone needs
+   // the exact child's opening deal, position id and complete TP exit history.
+   int tp1_child = ChildIndexForTpLevel(1);
+   if(!g_tp1_done && g_split_mode && g_child_count >= 2 &&
+      tp1_child >= 0 && ChildClosedByReason(tp1_child, DEAL_REASON_TP))
    {
       g_tp1_done = true;
-      ReportManagementEvent(cid, "TP1_REACHED", "OPENED", "", "SUCCESS",
+      ReportManagementEvent(cid, g_active_symbol, "TP1_REACHED", "OPENED", "", "SUCCESS",
                             g_active_tp1, 0,0,0,0);
-      ReportManagementEvent(cid, "TP1_CLOSE_SUCCESS", "TP1_DONE", "CLOSE_TP1",
+      ReportManagementEvent(cid, g_active_symbol, "TP1_CLOSE_SUCCESS", "TP1_DONE", "CLOSE_TP1",
                             "SUCCESS", g_active_tp1, 0,0,0,0);
-      // Move remaining SLs to breakeven (open price).
-      bool moved = MoveRemainingSL(g_active_symbol, cid, g_active_entry);
-      if(moved) g_effective_sl = g_active_entry;
-      ReportManagementEvent(cid,
+      double old_sl = g_effective_sl;
+      double breakeven_sl = AlignProtectiveStopToTick(
+         g_active_symbol, g_active_entry, g_active_direction);
+      bool moved = (breakeven_sl > 0.0 &&
+                    MoveRemainingSL(g_active_symbol, cid, breakeven_sl));
+      if(moved) g_effective_sl = breakeven_sl;
+      ReportManagementEvent(cid, g_active_symbol,
          moved ? "SL_MOVE_BREAKEVEN_SUCCESS" : "SL_MOVE_BREAKEVEN_FAILED",
          "TP1_DONE", "MOVE_SL_BREAKEVEN", moved ? "SUCCESS" : "FAILED",
-         g_active_entry, 0,0, g_active_sl, g_active_entry);
+         g_active_entry, 0,0, old_sl, breakeven_sl);
    }
 
-   // TP2 stage.
-   if(g_tp1_done && !g_tp2_done && g_active_tp2 > 0 &&
-      open_children <= (g_child_count - 2) && g_child_count >= 3)
+   int tp2_child = ChildIndexForTpLevel(2);
+   if(g_tp1_done && !g_tp2_done && g_split_mode && g_child_count >= 3 &&
+      tp2_child >= 0 && ChildClosedByReason(tp2_child, DEAL_REASON_TP))
    {
       g_tp2_done = true;
-      ReportManagementEvent(cid, "TP2_REACHED", "TP1_DONE", "", "SUCCESS",
+      ReportManagementEvent(cid, g_active_symbol, "TP2_REACHED", "TP1_DONE", "", "SUCCESS",
                             g_active_tp2, 0,0,0,0);
-      ReportManagementEvent(cid, "TP2_CLOSE_SUCCESS", "TP2_DONE", "CLOSE_TP2",
+      ReportManagementEvent(cid, g_active_symbol, "TP2_CLOSE_SUCCESS", "TP2_DONE", "CLOSE_TP2",
                             "SUCCESS", g_active_tp2, 0,0,0,0);
-      bool moved = MoveRemainingSL(g_active_symbol, cid, g_active_tp1);
-      if(moved) g_effective_sl = g_active_tp1;
-      ReportManagementEvent(cid,
+      double old_sl = g_effective_sl;
+      double tp1_stop_sl = AlignProtectiveStopToTick(
+         g_active_symbol, g_active_tp1, g_active_direction);
+      bool moved = (tp1_stop_sl > 0.0 &&
+                    MoveRemainingSL(g_active_symbol, cid, tp1_stop_sl));
+      if(moved) g_effective_sl = tp1_stop_sl;
+      ReportManagementEvent(cid, g_active_symbol,
          moved ? "SL_MOVE_TP1_SUCCESS" : "SL_MOVE_TP1_FAILED",
          "TP2_DONE", "MOVE_SL_TP1", moved ? "SUCCESS" : "FAILED",
-         g_active_tp1, 0,0, g_active_entry, g_active_tp1);
+         g_active_tp1, 0,0, old_sl, tp1_stop_sl);
    }
 
-   // Full close. Only attribute TP3 when broker history says the final close
-   // was a take-profit. A manual/unknown close remains unattributed in the
-   // backend ledger rather than being fabricated as a win.
-   if(open_children == 0)
+   // Full close: TP3 is credited only to its own child and only with all
+   // prior configured TP stages proven (single-ticket fallback is distinct).
+   // Manual or unknown exits remain unattributed, including after earlier TPs.
+   if(fully_closed)
    {
-      if(!g_tp3_done && g_active_tp3 > 0 && CommandClosedByReason(DEAL_REASON_TP))
+      int tp3_child = ChildIndexForTpLevel(3);
+      bool preceding_tps = (g_child_count == 1 ||
+                            (g_tp1_done &&
+                             (ChildIndexForTpLevel(2) < 0 || g_tp2_done)));
+      if(!g_tp3_done && g_active_tp3 > 0.0 && tp3_child >= 0 &&
+         preceding_tps && ChildClosedByReason(tp3_child, DEAL_REASON_TP))
       {
          g_tp3_done = true;
-         ReportManagementEvent(cid, "TP3_CLOSE_SUCCESS", "TP3_DONE",
+         ReportManagementEvent(cid, g_active_symbol, "TP3_CLOSE_SUCCESS", "TP3_DONE",
                                "CLOSE_TP3", "SUCCESS", g_active_tp3, 0,0,0,0);
       }
-      ReportManagementEvent(cid, "FULLY_CLOSED", "FULLY_CLOSED", "", "SUCCESS",
+      ReportManagementEvent(cid, g_active_symbol, "FULLY_CLOSED", "FULLY_CLOSED", "", "SUCCESS",
                             0,0,0,0,0);
       ClearActiveCommand();
    }
@@ -458,13 +755,28 @@ string ResolveBrokerSymbol(const string requested)
 {
    if(requested == "") return("");
    if(SymbolSelect(requested, true)) return(requested);
+
+   string matched = "";
+   int matches = 0;
    int total = SymbolsTotal(false);
    for(int i = 0; i < total; i++)
    {
       string name = SymbolName(i, false);
-      if(StringFind(name, requested) == 0 && SymbolSelect(name, true))
-         return(name);
+      if(StringFind(name, requested) != 0)
+         continue;
+      matched = name;
+      matches++;
    }
+
+   if(matches != 1)
+   {
+      if(matches > 1)
+         Print("Ambiguous broker symbol suffix match for ", requested,
+               ": ", matches, " matches; refusing to guess.");
+      return("");
+   }
+   if(SymbolSelect(matched, true))
+      return(matched);
    return("");
 }
 
@@ -501,24 +813,158 @@ bool IsChildPosition(const ulong position_id)
    return(false);
 }
 
-bool CommandClosedByReason(const long reason)
+int ChildIndexForTpLevel(const int level)
 {
-   datetime from = (g_open_time > 0) ? g_open_time - 5 : 0;
-   if(!HistorySelect(from, TimeCurrent() + 60))
-      return(false);
-   int total = HistoryDealsTotal();
-   for(int i = total - 1; i >= 0; i--)
+   for(int i = 0; i < g_child_count; i++)
+      if(g_child_tp_levels[i] == level)
+         return(i);
+   return(-1);
+}
+
+// Return TRUE on unknown position enumeration as well as an open child.
+// That intentionally prevents optimistic closure attribution on API failure.
+bool ChildPositionStillOpen(const ulong position_id)
+{
+   if(position_id == 0) return(true);
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      ulong deal = HistoryDealGetTicket(i);
-      if(deal == 0) continue;
-      if(HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber) continue;
-      if(HistoryDealGetInteger(deal, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
-      ulong posid = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
-      if(!IsChildPosition(posid)) continue;
-      if(HistoryDealGetInteger(deal, DEAL_REASON) == reason)
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         return(true);
+      if((ulong)PositionGetInteger(POSITION_IDENTIFIER) == position_id)
          return(true);
    }
    return(false);
+}
+
+// required_reason = -1 permits any broker-confirmed exit for FULLY_CLOSED,
+// but TP milestones require every exit on this exact child to be broker TP.
+// The opening deal, original volume, broker position id and symbol must match.
+bool ChildClosedByReason(const int child_index, const long required_reason)
+{
+   if(child_index < 0 || child_index >= g_child_count)
+      return(false);
+   ulong position_id = g_child_pos_ids[child_index];
+   ulong opening_order = g_child_order_ids[child_index];
+   if(position_id == 0 || opening_order == 0 ||
+      g_child_tickets[child_index] == 0 ||
+      g_child_open_volumes[child_index] <= 0.0 ||
+      ChildPositionStillOpen(position_id) || OrdersTotal() != 0)
+      return(false); // unknown identity, open exposure or outstanding order
+
+   // One broker order may produce multiple DEAL_ENTRY_IN records on the same
+   // position. Only the original ResultOrder can authorise those fills.
+   if(g_active_direction != +1 && g_active_direction != -1)
+      return(false);
+   long opening_type = (g_active_direction == +1) ? DEAL_TYPE_BUY : DEAL_TYPE_SELL;
+   datetime from = (g_open_time > 0) ? g_open_time - 60 : 0;
+   if(!HistorySelect(from, TimeCurrent() + 60))
+      return(false);
+
+   bool opening_verified = false;
+   bool exit_seen = false;
+   double opened_volume = 0.0;
+   double exited_volume = 0.0;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+   {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0) continue;
+      ulong deal_position_id = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+      if(deal_position_id != position_id)
+      {
+         // Some hedging brokers may create another position for a fill on
+         // the same order. Do not ignore that untracked opening exposure.
+         if((ulong)HistoryDealGetInteger(deal, DEAL_ORDER) == opening_order &&
+            HistoryDealGetInteger(deal, DEAL_ENTRY) == DEAL_ENTRY_IN)
+            return(false);
+         continue;
+      }
+      if(HistoryDealGetString(deal, DEAL_SYMBOL) != g_active_symbol)
+         return(false);
+
+      long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
+      if(entry == DEAL_ENTRY_IN)
+      {
+         // Deal, order, position, symbol, direction and magic must agree;
+         // a distinct broker order adding exposure is never accepted.
+         if((ulong)HistoryDealGetInteger(deal, DEAL_ORDER) != opening_order ||
+            HistoryDealGetInteger(deal, DEAL_MAGIC) != MagicNumber ||
+            HistoryDealGetInteger(deal, DEAL_TYPE) != opening_type)
+            return(false);
+         double volume = HistoryDealGetDouble(deal, DEAL_VOLUME);
+         if(volume <= 0.0) return(false);
+         opened_volume += volume;
+         if(deal == g_child_tickets[child_index])
+            opening_verified = true;
+      }
+      else if(deal == g_child_tickets[child_index] ||
+              (entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY))
+         return(false); // missing seed, reversal or unknown entry kind
+
+      if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_OUT_BY)
+      {
+         if(required_reason >= 0 &&
+            (entry != DEAL_ENTRY_OUT ||
+             HistoryDealGetInteger(deal, DEAL_REASON) != required_reason))
+            return(false);
+         double volume = HistoryDealGetDouble(deal, DEAL_VOLUME);
+         if(volume <= 0.0) return(false);
+         exited_volume += volume;
+         exit_seen = true;
+      }
+   }
+   // Cumulative broker-confirmed volume is stronger than ResultVolume,
+   // which may describe only one deal from a multi-deal market order.
+   return(opening_verified && exit_seen &&
+          opened_volume >= g_child_open_volumes[child_index] - 1e-8 &&
+          MathAbs(exited_volume - opened_volume) <= 1e-8);
+}
+
+bool AllTrackedChildrenClosedWithEvidence()
+{
+   if(g_child_count <= 0) return(false);
+   for(int i = 0; i < g_child_count; i++)
+      if(!ChildClosedByReason(i, -1))
+         return(false);
+   return(true);
+}
+
+// The most recent bound exit, not ANY earlier TP/SL on ANY child, determines
+// the final close reason. Broker deal tickets are NOT chronological proof when
+// different exits share DEAL_TIME_MSC: conflicting latest reasons fail closed.
+bool CommandClosedByReason(const long reason)
+{
+   datetime from = (g_open_time > 0) ? g_open_time - 60 : 0;
+   if(!HistorySelect(from, TimeCurrent() + 60))
+      return(false);
+   long latest_msc = -1;
+   ulong latest_ticket = 0;
+   long latest_reason = -1;
+   bool latest_ambiguous = false;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+   {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0) continue;
+      ulong position_id = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+      if(!IsChildPosition(position_id)) continue;
+      long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY)
+         continue;
+      long at_msc = HistoryDealGetInteger(deal, DEAL_TIME_MSC);
+      long deal_reason = HistoryDealGetInteger(deal, DEAL_REASON);
+      if(at_msc > latest_msc)
+      {
+         latest_msc = at_msc;
+         latest_ticket = deal;
+         latest_reason = deal_reason;
+         latest_ambiguous = false;
+      }
+      else if(at_msc == latest_msc && deal_reason != latest_reason)
+      {
+         latest_ambiguous = true;
+      }
+   }
+   return(latest_ticket != 0 && !latest_ambiguous && latest_reason == reason);
 }
 
 void ClearActiveCommand()
@@ -528,6 +974,10 @@ void ClearActiveCommand()
    g_open_time = 0;
    g_effective_sl = 0.0;
    ArrayInitialize(g_child_pos_ids, 0);
+   ArrayInitialize(g_child_tickets, 0);
+   ArrayInitialize(g_child_order_ids, 0);
+   ArrayInitialize(g_child_tp_levels, 0);
+   ArrayInitialize(g_child_open_volumes, 0.0);
 }
 
 //+------------------------------------------------------------------+
@@ -544,7 +994,7 @@ int CountOpenChildren(const string symbol, const string command_id)
       if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
       string comment = PositionGetString(POSITION_COMMENT);
-      if(StringFind(comment, command_id) >= 0)
+      if(comment == "SG:" + command_id)
          count++;
    }
    return(count);
@@ -556,21 +1006,58 @@ int CountOpenChildren(const string symbol, const string command_id)
 bool MoveRemainingSL(const string symbol, const string command_id,
                      const double new_sl)
 {
+   double tick_size = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tick_size <= 0.0 || new_sl <= 0.0) return(false);
+   double tolerance = tick_size * 0.25;
    bool all_ok = true;
+   int seen = 0;
+
+   // Inspect bound position identifiers first: broker-mutated comments must
+   // not make an unchanged SL count as successful or broaden ownership.
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(!PositionSelectByTicket(ticket)) continue;
-      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
-      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
-      if(StringFind(PositionGetString(POSITION_COMMENT), command_id) < 0) continue;
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+      {
+         all_ok = false;
+         continue;
+      }
+      ulong position_id = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      if(!IsChildPosition(position_id)) continue;
+      seen++;
 
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber ||
+         PositionGetString(POSITION_SYMBOL) != symbol ||
+         PositionGetString(POSITION_COMMENT) != "SG:" + command_id)
+      {
+         all_ok = false;
+         continue;
+      }
+
+      double current_sl = PositionGetDouble(POSITION_SL);
       double tp = PositionGetDouble(POSITION_TP);
-      if(!trade.PositionModify(ticket, new_sl, tp))
+      if(MathAbs(current_sl - new_sl) > tolerance)
+      {
+         bool request_ok = trade.PositionModify(ticket, new_sl, tp);
+         uint retcode = trade.ResultRetcode();
+         // CTrade returning true is only structural validation, not broker OK.
+         if(!request_ok || retcode != TRADE_RETCODE_DONE)
+         {
+            Print("SignalGate SL modify rejected/unknown for ticket ", ticket,
+                  " retcode ", retcode);
+            all_ok = false;
+            continue;
+         }
+      }
+
+      // Reselect after the server response: cached pre-call SL is not proof.
+      if(!PositionSelectByTicket(ticket) ||
+         (ulong)PositionGetInteger(POSITION_IDENTIFIER) != position_id ||
+         PositionGetString(POSITION_COMMENT) != "SG:" + command_id ||
+         MathAbs(PositionGetDouble(POSITION_SL) - new_sl) > tolerance)
          all_ok = false;
    }
-   return(all_ok);
+   return(all_ok && seen > 0);
 }
 
 //+------------------------------------------------------------------+
@@ -587,7 +1074,7 @@ void CloseAllChildren(const string symbol, const string command_id)
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
       // CRITICAL: rollback belongs only to the command that partially opened.
       // Never close another SignalGate command on the same symbol/magic.
-      if(StringFind(PositionGetString(POSITION_COMMENT), command_id) < 0) continue;
+      if(PositionGetString(POSITION_COMMENT) != "SG:" + command_id) continue;
       trade.PositionClose(ticket);
    }
 }
@@ -600,25 +1087,32 @@ bool NormalizeLot(const string symbol, double &lot)
    double minlot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
    double maxlot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
    double step   = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-   if(step <= 0.0) step = 0.01;
+   if(minlot <= 0.0 || maxlot <= 0.0 || step <= 0.0)
+      return(false);
 
-   if(lot < minlot) lot = minlot;
-   if(lot > maxlot) lot = maxlot;
-   // Round to nearest step.
-   lot = MathRound(lot / step) * step;
-   return(lot >= minlot && lot <= maxlot);
+   // Safety: never silently increase requested exposure to broker minimum/max.
+   if(lot < minlot || lot > maxlot)
+      return(false);
+
+   double requested = lot;
+   double steps = MathFloor((lot / step) + 1e-9);
+   lot = NormalizeDouble(steps * step, 8);
+   if(lot < minlot || lot > maxlot || lot <= 0.0)
+      return(false);
+
+   if(lot < requested)
+      Print("Lot normalized down from ", DoubleToString(requested, 8),
+            " to ", DoubleToString(lot, 8), " for broker volume step.");
+   return(true);
 }
 
 //+------------------------------------------------------------------+
 //| Account demo/live detection                                     |
 //+------------------------------------------------------------------+
-bool IsLiveAccount()
+bool IsDemoAccount()
 {
-   long mode = AccountInfoInteger(ACCOUNT_TRADE_MODE);
-   // ACCOUNT_TRADE_MODE_DEMO=0, _CONTEST=1, _REAL=2
-   if(mode == ACCOUNT_TRADE_MODE_REAL)
-      return(true);
-   return(false);
+   // Refuse REAL, CONTEST and unknown modes; do not accept "not REAL".
+   return(AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO);
 }
 
 //+------------------------------------------------------------------+
@@ -635,10 +1129,16 @@ string HttpGet(const string url)
 
    ResetLastError();
    int code = WebRequest("GET", url, headers, timeout, post, result, result_headers);
+   g_last_http_code = code;
    if(code == -1)
    {
       Print("WEBREQUEST_FAILED GET ", url, " err=", GetLastError(),
             " (allow URL in Tools>Options>Expert Advisors>WebRequest)");
+      return("");
+   }
+   if(code < 200 || code >= 300)
+   {
+      Print("HTTP GET rejected ", url, " status=", code);
       return("");
    }
    return(CharArrayToString(result));
@@ -660,9 +1160,15 @@ string HttpPost(const string url, const string body)
 
    ResetLastError();
    int code = WebRequest("POST", url, headers, timeout, post, result, result_headers);
+   g_last_http_code = code;
    if(code == -1)
    {
       Print("WEBREQUEST_FAILED POST ", url, " err=", GetLastError());
+      return("");
+   }
+   if(code < 200 || code >= 300)
+   {
+      Print("HTTP POST rejected ", url, " status=", code);
       return("");
    }
    return(CharArrayToString(result));
@@ -677,10 +1183,11 @@ string PollPendingCommand()
    return(HttpGet(url));
 }
 
-void AckReceived(const string command_id)
+bool AckReceived(const string command_id)
 {
    string url = BackendURL + "/commands/" + command_id + "/received";
    HttpPost(url, "{\"note\":\"EA received\"}");
+   return(g_last_http_code >= 200 && g_last_http_code < 300);
 }
 
 void SendHeartbeat()
@@ -774,8 +1281,9 @@ int ReconcileOpenPositions()
 
 void ReportExecutionSuccess(const string command_id, const string symbol,
                             const int direction, const double exec_price,
-                            const double sl, const double tp1,
-                            const double tp2, const double tp3)
+                            const double executed_lot, const double sl,
+                            const double tp1, const double tp2,
+                            const double tp3)
 {
    string child_json = "[";
    for(int i = 0; i < g_child_count; i++)
@@ -785,10 +1293,7 @@ void ReportExecutionSuccess(const string command_id, const string symbol,
    }
    child_json += "]";
 
-   double total_lot = 0.0;
-   if(SplitTicketDemoPartialMode) total_lot = TP1Lot + TP2Lot + TP3Lot;
-   else total_lot = SingleTicketFixedLot;
-
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
    double spread = (double)SymbolInfoInteger(symbol, SYMBOL_SPREAD);
 
    string body = "{";
@@ -797,12 +1302,12 @@ void ReportExecutionSuccess(const string command_id, const string symbol,
    body += "\"child_tickets_json\":" + JsonEscapeString(child_json) + ",";
    body += "\"executed_symbol\":\"" + symbol + "\",";
    body += "\"executed_direction\":\"" + (direction==+1?"BUY":"SELL") + "\",";
-   body += "\"executed_price\":" + DoubleToString(exec_price, _Digits) + ",";
-   body += "\"lot_size\":" + DoubleToString(total_lot, 2) + ",";
-   body += "\"initial_stop_loss\":" + DoubleToString(sl, _Digits) + ",";
-   body += "\"tp1\":" + DoubleToString(tp1, _Digits) + ",";
-   body += "\"tp2\":" + (tp2>0?DoubleToString(tp2,_Digits):"null") + ",";
-   body += "\"tp3\":" + (tp3>0?DoubleToString(tp3,_Digits):"null") + ",";
+   body += "\"executed_price\":" + DoubleToString(exec_price, digits) + ",";
+   body += "\"lot_size\":" + DoubleToString(executed_lot, 8) + ",";
+   body += "\"initial_stop_loss\":" + DoubleToString(sl, digits) + ",";
+   body += "\"tp1\":" + DoubleToString(tp1, digits) + ",";
+   body += "\"tp2\":" + (tp2>0?DoubleToString(tp2,digits):"null") + ",";
+   body += "\"tp3\":" + (tp3>0?DoubleToString(tp3,digits):"null") + ",";
    body += "\"spread_at_execution\":" + DoubleToString(spread, 0) + ",";
    body += "\"slippage\":0";
    body += "}";
@@ -810,22 +1315,25 @@ void ReportExecutionSuccess(const string command_id, const string symbol,
    HttpPost(BackendURL + "/commands/" + command_id + "/execution", body);
 }
 
-void ReportManagementEvent(const string command_id, const string event_type,
+void ReportManagementEvent(const string command_id, const string executed_symbol,
+                           const string event_type,
                            const string stage, const string requested_action,
                            const string result, const double price,
                            const double lot_before, const double lot_after,
                            const double sl_before, const double sl_after)
 {
+   // The chart may have different precision from the broker-executed symbol.
+   int digits = (int)SymbolInfoInteger(executed_symbol, SYMBOL_DIGITS);
    string body = "{";
    body += "\"event_type\":\"" + event_type + "\",";
    body += "\"stage\":\"" + stage + "\",";
    body += "\"requested_action\":\"" + requested_action + "\",";
    body += "\"result\":\"" + result + "\",";
-   body += "\"price\":" + DoubleToString(price, _Digits) + ",";
-   body += "\"lot_size_before\":" + DoubleToString(lot_before, 2) + ",";
-   body += "\"lot_size_after\":" + DoubleToString(lot_after, 2) + ",";
-   body += "\"stop_loss_before\":" + DoubleToString(sl_before, _Digits) + ",";
-   body += "\"stop_loss_after\":" + DoubleToString(sl_after, _Digits);
+   body += "\"price\":" + DoubleToString(price, digits) + ",";
+   body += "\"lot_size_before\":" + DoubleToString(lot_before, 8) + ",";
+   body += "\"lot_size_after\":" + DoubleToString(lot_after, 8) + ",";
+   body += "\"stop_loss_before\":" + DoubleToString(sl_before, digits) + ",";
+   body += "\"stop_loss_after\":" + DoubleToString(sl_after, digits);
    body += "}";
    HttpPost(BackendURL + "/commands/" + command_id + "/management_event", body);
 }
