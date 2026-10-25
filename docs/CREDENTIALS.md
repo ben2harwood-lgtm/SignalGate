@@ -36,3 +36,11 @@ A database downgrade across the customer-licence hashing migration cannot recons
 ## Historical backups
 
 Database backups created before migration `20260919_0007` may contain legacy plaintext customer licences. Treat those artifacts as credential-bearing until they expire or are securely destroyed under the reviewed retention policy. Backups created after the migration contain the hash/last-four representation, subject to the normal encrypted-backup controls.
+
+## Secret-bearing HTTP responses and evidence exports
+
+The registration licence response, explicit customer licence rotation, administrator-issued provider credentials, administrator demo-tenant bootstrap, provider credential rotation and one-time subscription invites are delivered with `Cache-Control: no-store`. The authenticated provider evidence export also uses `no-store` because it can contain subscriber identifiers. These headers reduce accidental intermediary/browser caching but do **not** replace TLS, authenticated access, safe operator handling or the existing rule against secrets in URLs and logs. Other response surfaces (including separate source-connection tokens) require their own assessment; this does not certify the whole API as cache-safe.
+
+## Provider portal browser caching
+
+`GET /provider-portal` serves the operator page with `Cache-Control: no-store` because provider API keys and one-time invitation/connection tokens can remain in that page\u2019s memory after connection. This header reduces HTTP caching risk but **does not guarantee** every browser discards an open tab, back/forward page state, copied tokens or screenshots. Operators should disconnect/close the page and handle credentials privately. This is browser-privacy defence in depth, not broker, pilot or external security acceptance.

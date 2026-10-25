@@ -4,7 +4,7 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.orm import Session
 
@@ -48,7 +48,12 @@ def _bad_request(exc: ValueError) -> HTTPException:
 @router.get("/provider-portal", response_class=HTMLResponse, include_in_schema=False)
 def provider_portal() -> HTMLResponse:
     path = Path(__file__).resolve().parents[1] / "provider_portal.html"
-    return HTMLResponse(path.read_text(encoding="utf-8"))
+    # Portal sessions retain operator credentials and one-time tokens in memory.
+    # No-store reduces caching risk; it does not guarantee browser memory eviction.
+    return HTMLResponse(
+        path.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/admin/organizations")
@@ -83,6 +88,7 @@ def admin_create_provider(
 def admin_issue_provider_credential(
     provider_id: str,
     payload: ProviderCredentialCreate,
+    response: Response,
     db: Session = Depends(get_db),
     _admin: str = Depends(require_admin),
 ) -> ProviderCredentialOut:
@@ -94,6 +100,7 @@ def admin_issue_provider_credential(
     except ValueError as exc:
         raise _bad_request(exc) from exc
     db.commit()
+    response.headers["Cache-Control"] = "no-store"
     return ProviderCredentialOut(
         provider_id=provider.id,
         credential_id=credential.id,
@@ -128,11 +135,13 @@ def admin_create_feed(
 
 @router.post("/admin/demo-tenant", response_model=DemoTenantOut)
 def admin_demo_tenant(
+    response: Response,
     db: Session = Depends(get_db),
     _admin: str = Depends(require_admin),
 ) -> DemoTenantOut:
     bundle = crud.bootstrap_demo_tenant(db)
     db.commit()
+    response.headers["Cache-Control"] = "no-store"
     return DemoTenantOut(
         provider_id=bundle["provider"].id,
         provider_api_key=bundle["provider_api_key"],
@@ -332,6 +341,7 @@ def provider_evidence_export(
     return JSONResponse(
         content=__import__("fastapi").encoders.jsonable_encoder(payload),
         headers={
+            "Cache-Control": "no-store",
             "Content-Disposition": (
                 f'attachment; filename="signalgate-{provider.slug}-evidence.json"'
             )
@@ -400,6 +410,7 @@ def provider_update_feed(
 
 @router.post("/providers/me/credentials/rotate", response_model=ProviderCredentialOut)
 def provider_rotate_credential(
+    response: Response,
     principal: ProviderPrincipal = Depends(require_provider_principal),
     db: Session = Depends(get_db),
 ) -> ProviderCredentialOut:
@@ -410,6 +421,7 @@ def provider_rotate_credential(
         raise HTTPException(status_code=404, detail="Provider not found")
     credential, raw_key = crud.rotate_provider_credential(db, provider)
     db.commit()
+    response.headers["Cache-Control"] = "no-store"
     return ProviderCredentialOut(
         provider_id=provider.id,
         credential_id=credential.id,
@@ -433,6 +445,7 @@ def provider_direct_subscription_disabled(
 @router.post("/providers/me/subscription-invites", response_model=SubscriptionInviteOut)
 def provider_create_subscription_invite(
     payload: SubscriptionInviteCreate,
+    response: Response,
     principal: ProviderPrincipal = Depends(require_provider_principal),
     db: Session = Depends(get_db),
 ) -> SubscriptionInviteOut:
@@ -452,6 +465,7 @@ def provider_create_subscription_invite(
     except ValueError as exc:
         raise _bad_request(exc) from exc
     db.commit()
+    response.headers["Cache-Control"] = "no-store"
     return SubscriptionInviteOut(
         invite_id=invite.id,
         feed_id=invite.feed_id,
