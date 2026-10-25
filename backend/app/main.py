@@ -79,6 +79,7 @@ def create_app() -> FastAPI:
         # dispatching any route that trusts local identity headers. This cannot
         # identify a reverse proxy that rewrites Host to loopback; local mode
         # must still never be exposed through an external proxy.
+        started = time.perf_counter()
         host_values = request.headers.getlist("host")
         if not settings.require_license and (
             len(host_values) != 1
@@ -98,7 +99,7 @@ def create_app() -> FastAPI:
                         "method": request.method,
                         "path": "[local-ingress-refused]",
                         "status": 403,
-                        "latency_ms": 0.0,
+                        "latency_ms": round((time.perf_counter() - started) * 1000, 3),
                         "security_event": "LOCAL_DEMO_INGRESS_REFUSED",
                     },
                     separators=(",", ":"),
@@ -112,7 +113,6 @@ def create_app() -> FastAPI:
             return denied
 
         request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
-        started = time.perf_counter()
         status_code = 500
         try:
             response = await call_next(request)
