@@ -2168,23 +2168,32 @@ def reconcile_open_position(
         ):
             conflicts.append("existing_executed_symbol")
         existing_tickets: set[str] = set()
-        if existing.broker_ticket:
-            existing_tickets.add(str(existing.broker_ticket))
-        if existing.child_tickets_json:
+        # Stored successful-execution identities are evidence, not a permissive
+        # lookup cache: one corrupt primary or child must poison the entire
+        # comparison, even when another ticket would otherwise match.
+        if existing.broker_ticket is not None:
+            primary = str(existing.broker_ticket)
+            if not _canonical_mt5_position_ticket(primary):
+                conflicts.append("stored_ticket_payload")
+            else:
+                existing_tickets.add(primary)
+        if existing.child_tickets_json is not None:
             try:
                 stored_children = json.loads(existing.child_tickets_json)
-                # A successful execution's child identities are a JSON array
-                # of ticket IDs, never arbitrary JSON object keys or string
-                # characters. Bad stored evidence must not authorise a match
-                # even if the separately stored primary ticket still agrees.
+                # MT5 deal and position identifiers have different meanings,
+                # but both are canonical positive decimal uint64 values. This
+                # shape check does NOT establish deal-to-position ownership.
                 if not isinstance(stored_children, list) or any(
                     isinstance(ticket, bool)
                     or not isinstance(ticket, (str, int))
-                    or not str(ticket).strip()
+                    or not _canonical_mt5_position_ticket(str(ticket))
                     for ticket in stored_children
                 ):
                     raise ValueError("invalid stored child broker identities")
-                existing_tickets.update(str(ticket) for ticket in stored_children)
+                children = [str(ticket) for ticket in stored_children]
+                if len(set(children)) != len(children):
+                    raise ValueError("repeated stored child broker identities")
+                existing_tickets.update(children)
             except (TypeError, ValueError, json.JSONDecodeError):
                 conflicts.append("stored_ticket_payload")
         # A successful execution with no persisted broker-ticket identity
