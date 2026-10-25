@@ -391,3 +391,51 @@ def test_provisioning_admin_client_ignores_ambient_proxy_ca_and_redirects(
         provision.main()
     assert observed == [True]
     assert not target.exists()
+
+
+
+@pytest.mark.parametrize(
+    "malformed_authority",
+    [
+        "example.invalid：443",   # NFKC fullwidth colon
+        "example.invalid／admin",  # NFKC fullwidth slash
+        "examp＠le.invalid",       # NFKC fullwidth at-sign
+    ],
+)
+def test_admin_urlparse_errors_never_echo_embedded_userinfo(
+    malformed_authority, monkeypatch, tmp_path, capsys
+):
+    """Malformed Unicode authority must not expose embedded secrets in CLI logs."""
+    import sys
+
+    synthetic_secret = "SYNTHETIC-URL-CREDENTIAL-DO-NOT-PRINT"
+    raw = f"https://operator:{synthetic_secret}@{malformed_authority}"
+    with pytest.raises(ValueError) as exc:
+        provision.validate_admin_backend_url(raw)
+    assert str(exc.value) == "invalid backend URL authority"
+    assert synthetic_secret not in str(exc.value)
+
+    clients = []
+    monkeypatch.setattr(
+        provision.httpx, "Client",
+        lambda **kwargs: clients.append(kwargs),
+    )
+    monkeypatch.delenv("SIGNALGATE_PROVIDER_CREDENTIAL_OUTPUT", raising=False)
+    output = tmp_path / "must-not-be-created.json"
+    monkeypatch.setattr(sys, "argv", [
+        str(SCRIPT),
+        "--backend", raw,
+        "--admin-id", "SYNTHETIC-ADMIN",
+        "--organization-name", "Fictional Organisation",
+        "--provider-name", "Fictional Provider",
+        "--credential-output", str(output),
+    ])
+    with pytest.raises(SystemExit) as fail:
+        provision.main()
+    assert fail.value.code == 2
+    assert clients == []
+    assert not output.exists()
+    captured = capsys.readouterr()
+    assert synthetic_secret not in captured.out + captured.err
+    assert raw not in captured.out + captured.err
+    assert "invalid backend URL authority" in captured.err

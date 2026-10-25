@@ -34,20 +34,29 @@ def validate_admin_backend_url(raw: str) -> str:
         or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw)
     ):
         raise ValueError("backend must be a clean absolute URL")
-    parsed = urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    # urlparse() can include credential-bearing userinfo in ValueError for
+    # malformed Unicode authorities (NFKC) before we can reject userinfo.
+    # Never forward parser error text into operator/CI logs.
+    try:
+        parsed = urlparse(raw)
+        hostname = parsed.hostname
+        username = parsed.username
+        password = parsed.password
+    except ValueError:
+        raise ValueError("invalid backend URL authority") from None
+    if parsed.scheme not in {"http", "https"} or not hostname:
         raise ValueError("backend must be an absolute http(s) URL")
-    if parsed.username is not None or parsed.password is not None:
+    if username is not None or password is not None:
         raise ValueError("credentials must not be embedded in the backend URL")
     if parsed.path not in {"", "/"} or "?" in raw or "#" in raw:
         raise ValueError("backend URL must be an origin without path, query or fragment")
     try:
         port = parsed.port
-    except ValueError as exc:
-        raise ValueError("invalid backend port") from exc
+    except ValueError:
+        raise ValueError("invalid backend port") from None
     if parsed.netloc.endswith(":") or port == 0:
         raise ValueError("invalid backend port")
-    if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+    if parsed.scheme != "https" and hostname not in {"localhost", "127.0.0.1", "::1"}:
         raise ValueError("non-local provider provisioning requires HTTPS")
     return raw.rstrip("/")
 
