@@ -40,3 +40,14 @@ def test_malformed_price_fields_never_produce_valid_trade(signal):
 ])
 def test_plain_decimal_and_market_formats_remain_valid(signal):
     assert parse_signal(signal).is_valid
+
+
+@pytest.mark.parametrize("signal", [
+    "EURUSD BUY SL 1.0800 TP1 " + "9" * 400,
+    "EURUSD SELL SL " + "9" * 400 + " TP1 1.0800",
+])
+def test_overflowed_decimal_prices_fail_closed(signal):
+    """Long plain-decimal strings can overflow float() to positive infinity."""
+    result = parse_signal(signal)
+    assert not result.is_valid
+    assert result.expires_at is None
