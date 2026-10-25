@@ -42,3 +42,18 @@ As introduced on 19 September 2026:
 - Trivy GitHub Action v0.36.0.
 
 Dependabot should continue to surface action updates where supported.
+
+## Local dotenv and evidence isolation
+
+Repository ignore rules exclude local `.env` and `.env.*` variants at any depth, while
+retaining the placeholder-only `.env.example` and `.env.hosted.example` templates.
+New operator-generated `artifacts/` subdirectories are also ignored rather than
+only a fixed list of known receipt locations. The Docker build context excludes
+nested dotenv variants and artifacts independently of Git's ignore rules.
+
+These are **accidental-inclusion safeguards**, not secret-management or assurance
+controls. `git add -f` can override `.gitignore`, already-tracked files remain
+tracked, and ignore rules cannot erase secrets from Git history or CI artifacts.
+Review staged diffs and run the repository secret scan before every integration;
+store real provider/customer data and detailed acceptance evidence outside the
+public repository, using stable receipt identifiers in the public index.
