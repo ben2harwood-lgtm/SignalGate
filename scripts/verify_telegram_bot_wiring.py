@@ -11,6 +11,14 @@ import asyncio
 import os
 from pathlib import Path
 import sys
+
+# Python -O / PYTHONOPTIMIZE removes assertions, including the safety checks
+# below. Refuse a misleading green acceptance receipt before importing the bot.
+if sys.flags.optimize:
+    raise SystemExit(
+        "SignalGate offline smoke refuses optimized Python: "
+        "assertions must run to validate safety invariants"
+    )
 from types import SimpleNamespace
 from unittest.mock import patch
 

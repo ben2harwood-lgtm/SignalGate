@@ -106,6 +106,8 @@ URLs containing the bot token. Never enable transport DEBUG/INFO with real bot
 credentials. The offline bot smoke checks this using `httpx.MockTransport` and
 a synthetic marker (including a negative control). This safeguard does **not**
 replace deployed log-review or independent security assurance.
+The same offline smoke refuses Python `-O`, `-OO` or `PYTHONOPTIMIZE`,
+which would otherwise disable its assertion-based checks and print a false PASS.
 
 ## Security properties
 
