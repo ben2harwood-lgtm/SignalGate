@@ -63,6 +63,43 @@ def _local_demo_base_url_is_loopback(value: str) -> bool:
         return False
 
 
+
+def local_demo_http_ingress_is_loopback(server: object, host_header: Optional[str]) -> bool:
+    """Conservatively check the actual ASGI bound endpoint and HTTP Host.
+
+    BACKEND_HOST describes the intended listener, not a manually overridden
+    Uvicorn --host. The ASGI server tuple is independent of a spoofed Host.
+    Reject unknown/non-TCP binds and nonlocal/malformed Host values instead
+    of trusting either signal alone. This is defence in depth, not a proxy
+    security boundary: a proxy rewriting Host to loopback can mask the client.
+    """
+    if (
+        not isinstance(server, (tuple, list))
+        or len(server) != 2
+        or not isinstance(server[0], str)
+        or not _is_loopback_host(server[0])
+        or not isinstance(host_header, str)
+        or not host_header
+        or any(ord(c) <= 32 or ord(c) == 127 for c in host_header)
+    ):
+        return False
+    try:
+        parsed = urlsplit("http://" + host_header)
+        _ = parsed.port  # invalid ports must fail closed
+        return (
+            parsed.netloc == host_header
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.path
+            and not parsed.query
+            and not parsed.fragment
+            and _is_loopback_host(parsed.hostname)
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _get_bool(key: str, default: bool) -> bool:
     raw = os.getenv(key)
     if raw is None:
