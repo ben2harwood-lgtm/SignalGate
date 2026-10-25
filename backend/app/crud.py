@@ -2070,7 +2070,12 @@ def _snapshot_tickets(payload) -> list[str]:
     # Never discard a blank broker ticket and then treat the rest as complete.
     if any(not ticket for ticket in tickets):
         raise BrokerReconciliationConflict("Broker snapshot contains blank ticket entries")
-    return list(dict.fromkeys(tickets))
+    # An EA enumerates one entry per open broker position. Repeating one
+    # ticket is not evidence of two positions, even if aggregate volume fits.
+    # Do not silently de-duplicate an incomplete/contradictory snapshot.
+    if len(set(tickets)) != len(tickets):
+        raise BrokerReconciliationConflict("Broker snapshot contains duplicate ticket entries")
+    return tickets
 
 
 def reconcile_open_position(
@@ -2093,11 +2098,15 @@ def reconcile_open_position(
     except BrokerReconciliationConflict:
         # Distinguish an entirely unusable snapshot from one with an
         # untracked blank entry. Never log the incoming untrusted ticket data.
-        audit_reason = (
-            "blank_broker_tickets"
-            if any(str(ticket).strip() for ticket in payload.broker_tickets)
-            else "missing_usable_broker_tickets"
-        )
+        sanitized_tickets = [str(ticket).strip() for ticket in payload.broker_tickets]
+        if not any(sanitized_tickets):
+            audit_reason = "missing_usable_broker_tickets"
+        elif any(not ticket for ticket in sanitized_tickets):
+            audit_reason = "blank_broker_tickets"
+        elif len(set(sanitized_tickets)) != len(sanitized_tickets):
+            audit_reason = "duplicate_broker_tickets"
+        else:
+            audit_reason = "invalid_broker_tickets"
         add_audit(
             db,
             "BROKER_RECONCILIATION_CONFLICT",
