@@ -90,7 +90,7 @@ def test_read_only_preflight_checks_real_provider_flow_without_leaking_key(monke
     def handle(request):
         seen.append((request.method, request.url.path))
         if request.url.path == "/health":
-            return httpx.Response(200, json={"demo_only_mode": True, "admin_paused": True})
+            return httpx.Response(200, json={"status": "ok", "demo_only_mode": True, "admin_paused": True})
         if request.url.path == "/readyz":
             return httpx.Response(200, json={"status": "ready"})
         if request.url.path == "/providers/me":
@@ -142,7 +142,7 @@ def test_preflight_fails_closed_on_unpaused_feed_or_export_secret(monkeypatch, u
     def handle(request):
         path = request.url.path
         if path == "/health":
-            return httpx.Response(200, json={"demo_only_mode": True})
+            return httpx.Response(200, json={"status": "ok", "demo_only_mode": True})
         if path == "/readyz":
             return httpx.Response(200, json={"status": "ready"})
         if path == "/providers/me":
@@ -255,7 +255,7 @@ def test_malformed_readonly_api_responses_fail_closed_without_crashing(
     key = "dummy-provider-key"
     original_client = httpx.Client
     responses = {
-        "/health": {"demo_only_mode": True, "admin_paused": False},
+        "/health": {"status": "ok", "demo_only_mode": True, "admin_paused": False},
         "/readyz": {"status": "ready"},
         "/providers/me": {"id": "PRV-MOCK", "status": "ACTIVE", "paused": False},
         "/providers/me/feeds": [{"id": "FED-MOCK", "paused": True}],

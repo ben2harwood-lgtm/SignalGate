@@ -70,6 +70,17 @@ receipts in controlled storage and never commit them to the repository.
 
 ## Failed or malformed responses
 
+Before sending **any provider credential**, the tool requires valid HTTP 200
+object responses from both public probes: `/health` must report
+`status=ok`, the strict Boolean `demo_only_mode=true`, and a Boolean
+or absent `admin_paused`; `/readyz` must report `status=ready`.
+If a public check fails, only unauthenticated requests are made. The
+tool records a redacted **FAIL** with
+`credentialled_provider_checks=NOT_RUN`, rather than transmitting keys
+to an explicitly non-demo or unhealthy endpoint. This check is necessary
+but **does not attest the endpoint's identity** or replace TLS/deployment
+provenance and external review.
+
 The preflight treats a successful HTTP status with malformed JSON, an unexpected
 object/list shape, or an incorrectly typed provider identity as a failed check,
 not proof of readiness. It issues a `FAIL` receipt when it can safely complete

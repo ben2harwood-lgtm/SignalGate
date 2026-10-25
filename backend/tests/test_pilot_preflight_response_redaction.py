@@ -30,10 +30,10 @@ def test_untrusted_response_metadata_is_redacted_and_fails_closed(monkeypatch, t
         seen.append(request.url.path)
         if request.url.path == "/health":
             return httpx.Response(200, json={
-                "demo_only_mode": True, "admin_paused": poison,
+                "status": "ok", "demo_only_mode": True, "admin_paused": False,
             })
         if request.url.path == "/readyz":
-            return httpx.Response(200, json={"status": poison})
+            return httpx.Response(200, json={"status": "ready"})
         if request.url.path == "/providers/me":
             if request.headers.get("x-provider-api-key") != key:
                 return httpx.Response(401)
@@ -77,7 +77,7 @@ def test_untrusted_response_metadata_is_redacted_and_fails_closed(monkeypatch, t
         "/providers/me/feeds", "/providers/me/overview", "/providers/me/export",
     ]
     assert receipt["result"] == "FAIL"
-    assert receipt["evidence"]["admin_paused"] is None
+    assert receipt["evidence"]["admin_paused"] is False
     assert receipt["evidence"]["provider_status"] == "INACTIVE_OR_UNKNOWN"
     assert receipt["evidence"]["provider_paused"] is None
     assert receipt["evidence"]["feed_ids"] == []
@@ -87,7 +87,7 @@ def test_untrusted_response_metadata_is_redacted_and_fails_closed(monkeypatch, t
     assert receipt["evidence"]["provider_export_summary"] == {}
     rejected = {check["name"] for check in receipt["checks"] if not check["passed"]}
     assert {
-        "health_metadata_types", "readiness", "provider_auth", "provider_active",
+        "provider_auth", "provider_active",
         "provider_metadata_types", "feed_metadata_types", "overview_count_types",
         "provider_export_secret_fields_absent",
     } <= rejected
@@ -112,7 +112,7 @@ def test_valid_typed_operational_fields_remain_useful(monkeypatch):
     def respond(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
             return httpx.Response(200, json={
-                "demo_only_mode": True, "admin_paused": False,
+                "status": "ok", "demo_only_mode": True, "admin_paused": False,
             })
         if request.url.path == "/readyz":
             return httpx.Response(200, json={"status": "ready"})

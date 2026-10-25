@@ -183,6 +183,25 @@ def run_preflight(
     checks: list[dict] = []
     evidence: dict = {}
 
+    def _receipt() -> dict:
+        passed = all(item["passed"] for item in checks)
+        return {
+            "schema": "signalgate-provider-pilot-preflight-v1",
+            "generated_at_utc": dt.datetime.now(dt.UTC).isoformat(),
+            "backend_origin": backend,
+            "provider_id": provider_id,
+            "declared_candidate_sha": declared_candidate_sha,
+            "candidate_sha_verified_by_backend": False,
+            "require_feeds_paused": require_feeds_paused,
+            "result": "PASS" if passed else "FAIL",
+            "checks": checks,
+            "evidence": evidence,
+            "note": (
+                "No secret values or raw provider export are stored. "
+                "The candidate SHA is operator-declared because RC2 does not expose a deployment build-id endpoint."
+            ),
+        }
+
     # Do not let ambient proxy/CA environment settings redirect credentialled
     # operator traffic. The normal platform trust store is still used.
     with httpx.Client(
@@ -190,7 +209,8 @@ def run_preflight(
     ) as client:
         health = client.get("/health")
         health_json, health_valid = _object_json(health)
-        _check("health", health_valid, f"HTTP {health.status_code}; object_json={health_valid}", checks)
+        health_ok = health_valid and health_json.get("status") == "ok"
+        _check("health", health_ok, f"HTTP {health.status_code}; status_ok={health_ok}", checks)
         _check(
             "demo_only_mode",
             health_json.get("demo_only_mode") is True,
@@ -215,6 +235,23 @@ def run_preflight(
             f"HTTP {ready.status_code}; ready={ready_json.get('status') == 'ready'}",
             checks,
         )
+
+        # Public readiness is necessary but is not server identity attestation.
+        public_demo_ready = (
+            health_ok
+            and health_json.get("demo_only_mode") is True
+            and admin_paused_typed
+            and ready_valid
+            and ready_json.get("status") == "ready"
+        )
+        if not public_demo_ready:
+            _check(
+                "credentialled_provider_checks",
+                False,
+                "NOT_RUN: public demo health/readiness not established",
+                checks,
+            )
+            return _receipt()
 
         me = client.get("/providers/me", headers=headers)
         me_json, me_valid = _object_json(me)
@@ -334,23 +371,7 @@ def run_preflight(
             evidence["provider_export_sha256"] = _sha256_json(export_json)
             evidence["provider_export_summary"] = _safe_summary(export_json)
 
-    passed = all(item["passed"] for item in checks)
-    return {
-        "schema": "signalgate-provider-pilot-preflight-v1",
-        "generated_at_utc": dt.datetime.now(dt.UTC).isoformat(),
-        "backend_origin": backend,
-        "provider_id": provider_id,
-        "declared_candidate_sha": declared_candidate_sha,
-        "candidate_sha_verified_by_backend": False,
-        "require_feeds_paused": require_feeds_paused,
-        "result": "PASS" if passed else "FAIL",
-        "checks": checks,
-        "evidence": evidence,
-        "note": (
-            "No secret values or raw provider export are stored. "
-            "The candidate SHA is operator-declared because RC2 does not expose a deployment build-id endpoint."
-        ),
-    }
+    return _receipt()
 
 
 def _write_receipt_owner_only(path: Path, content: str) -> None:
