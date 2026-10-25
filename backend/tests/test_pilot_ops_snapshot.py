@@ -15,7 +15,10 @@ snapshot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(snapshot)
 
 
-def fake_poll(monkeypatch, *, metrics_status=200, counters=None, malformed=False):
+def fake_poll(
+    monkeypatch, *, metrics_status=200, counters=None, malformed=False,
+    ready_status=200, ready_payload=None, health_status=200, health_payload=None,
+):
     original = httpx.Client
     seen = []
     base_counts = {
@@ -40,11 +43,22 @@ def fake_poll(monkeypatch, *, metrics_status=200, counters=None, malformed=False
     def respond(request):
         seen.append((request.method, request.url.path))
         if request.url.path == "/readyz":
-            return httpx.Response(200, json={"status": "ready"})
+            assert "x-admin-api-key" not in request.headers
+            assert "x-admin-id" not in request.headers
+            return httpx.Response(
+                ready_status,
+                json={"status": "ready"} if ready_payload is None else ready_payload,
+            )
         if request.url.path == "/health":
-            return httpx.Response(200, json={
-                "status": "ok", "demo_only_mode": True, "admin_paused": True,
-            })
+            assert "x-admin-api-key" not in request.headers
+            assert "x-admin-id" not in request.headers
+            return httpx.Response(
+                health_status,
+                json=(
+                    {"status": "ok", "demo_only_mode": True, "admin_paused": True}
+                    if health_payload is None else health_payload
+                ),
+            )
         if request.url.path == "/admin/metrics":
             assert request.headers.get("x-admin-id") == "operator-test-id"
             assert request.headers.get("x-admin-api-key") == "secret-test-key"
@@ -82,6 +96,7 @@ def test_observation_reads_only_exact_routes_and_never_records_admin_secret(
         ("GET", "/admin/metrics"),
     ]
     assert receipt["candidate_sha_verified_by_backend"] is False
+    assert receipt["authenticated_metrics_attempted"] is True
     assert receipt["review_historical_totals"] == []
     assert "secret-test-key" not in json.dumps(receipt)
     assert "operator-test-id" not in json.dumps(receipt)
@@ -140,6 +155,40 @@ def test_admin_credentials_and_candidate_identity_required_before_any_network():
             admin_api_key="secret-test-key",
             candidate_sha="not-a-sha",
         )
+
+
+@pytest.mark.parametrize(
+    ("probe", "status", "payload"),
+    [
+        ("readyz", 503, {"status": "not_ready"}),
+        ("readyz", 200, {"status": "starting"}),
+        ("readyz", 200, []),
+        ("health", 503, {"status": "unavailable", "demo_only_mode": True}),
+        ("health", 200, {"status": "starting", "demo_only_mode": True}),
+        ("health", 200, {"status": "ok", "demo_only_mode": False}),
+        ("health", 200, {"status": "ok", "demo_only_mode": "true"}),
+        ("health", 200, []),
+    ],
+)
+def test_bad_public_preflight_never_sends_admin_headers(
+    monkeypatch, probe, status, payload,
+):
+    options = (
+        {"ready_status": status, "ready_payload": payload}
+        if probe == "readyz"
+        else {"health_status": status, "health_payload": payload}
+    )
+    seen = fake_poll(monkeypatch, **options)
+    receipt = take()
+    assert seen == [("GET", "/readyz"), ("GET", "/health")]
+    assert receipt["result"] == "FAIL"
+    assert receipt["authenticated_metrics_attempted"] is False
+    assert receipt["http_status_codes"]["admin_metrics"] is None
+    assert receipt["checks"]["admin_auth"] is False
+    assert receipt["checks"]["metrics_demo_only"] is False
+    assert receipt["checks"]["pipeline_counters"] is False
+    assert "secret-test-key" not in json.dumps(receipt)
+    assert "operator-test-id" not in json.dumps(receipt)
 
 
 def test_snapshot_against_real_fastapi_metrics_and_readiness(client, monkeypatch):

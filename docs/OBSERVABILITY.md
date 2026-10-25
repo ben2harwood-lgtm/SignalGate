@@ -92,6 +92,16 @@ No secret is accepted as a command-line flag. The local
 aggregate counters, and operator-declared candidate SHA; it excludes raw
 credentials, user IDs, signal text and source exports.
 
+Before attempting authenticated `/admin/metrics`, the snapshot first checks
+unauthenticated `/readyz` and `/health`: both must be valid HTTP 200 JSON
+objects reporting ready/healthy, and health must explicitly report
+`demo_only_mode: true`. Otherwise **no admin credential is transmitted**,
+`authenticated_metrics_attempted` is false, `admin_metrics` is null and the
+receipt is `FAIL`. These public responses are **not proof of server identity
+or the operator-declared candidate SHA**: independently verify the HTTPS
+origin/deployed release; do not treat the preflight as authentication or
+external acceptance.
+
 A `REVIEW_REQUIRED` observation indicates nonzero *historical cumulative*
 stale/conflict/failed-management counters to investigate, **not proof of a new
 incident** or a live trading loss. A `FAIL` observation fails readiness,
