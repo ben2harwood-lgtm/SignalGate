@@ -697,3 +697,100 @@ def test_two_distinct_known_position_ids_still_match(client):
     )
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "matched"
+
+
+@pytest.mark.parametrize(
+    "invalid_ticket",
+    [
+        "0", "-9001", "+9001", "09001", "9e3", "ABCD",
+        "\u0669\u0660\u0660\u0661",
+        "18446744073709551616", "9" * 64,
+    ],
+    ids=[
+        "zero", "negative", "explicit-plus", "leading-zero",
+        "exponent", "alphabetic", "unicode-digits", "uint64-overflow",
+        "overlong",
+    ],
+)
+@pytest.mark.parametrize(
+    "include_valid_ticket", [False, True],
+    ids=["invalid-alone", "valid-plus-invalid"],
+)
+def test_fabricated_mt5_position_tickets_never_recover_execution(
+    client, invalid_ticket, include_valid_ticket
+):
+    """Broker-free: an MT5 position ticket must be canonical decimal uint64.
+
+    Neither an invalid-only nor a mixed snapshot can turn an unresolved
+    command into a recorded SUCCESS or forge a matched broker identity.
+    """
+    user = register_user(client, "863")
+    signal = create_signal(client, _SIGNAL)
+    approval = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "863"},
+    )
+    assert approval.status_code == 200, approval.text
+    pending = client.get(
+        "/commands/pending",
+        params={"user_id": user["id"]}, headers=EA_HEADERS,
+    ).json()["command"]
+    assert pending is not None
+    cid = pending["command_id"]
+
+    snapshot = _snapshot()
+    snapshot["broker_tickets"] = (
+        ["9001", invalid_ticket] if include_valid_ticket else [invalid_ticket]
+    )
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    assert "invalid MT5 ticket" in response.json()["detail"]
+    with SessionLocal() as db:
+        command = db.query(models.Command).filter_by(id=cid).one()
+        assert command.status == "SENT_TO_EA"
+        assert db.query(models.Execution).filter_by(command_id=cid).count() == 0
+        audit = (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
+            .one()
+        )
+        assert "invalid_mt5_broker_tickets" in audit.payload_json
+        assert '"tickets"' not in audit.payload_json
+        assert (
+            db.query(models.AuditLog)
+            .filter_by(event_type="EXECUTION_RECOVERED_FROM_BROKER_SNAPSHOT")
+            .count() == 0
+        )
+
+
+def test_canonical_mt5_uint64_ticket_boundary_remains_accepted(client):
+    """Synthetic positive boundary, NOT live MT5 ownership or fill evidence."""
+    user = register_user(client, "864")
+    signal = create_signal(client, _SIGNAL)
+    approval = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "864"},
+    )
+    assert approval.status_code == 200, approval.text
+    pending = client.get(
+        "/commands/pending",
+        params={"user_id": user["id"]}, headers=EA_HEADERS,
+    ).json()["command"]
+    assert pending is not None
+    cid = pending["command_id"]
+    max_uint64_ticket = "18446744073709551615"
+    snapshot = _snapshot()
+    snapshot["broker_tickets"] = [max_uint64_ticket]
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "recovered"
+    with SessionLocal() as db:
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert execution.broker_ticket == max_uint64_ticket
+        assert db.query(models.Command).filter_by(id=cid).one().status == "EXECUTED_OPEN"
