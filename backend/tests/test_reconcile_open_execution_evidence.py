@@ -510,3 +510,90 @@ def test_non_finite_broker_recovery_cannot_create_execution(client):
             .count()
             == 0
         )
+
+
+@pytest.mark.parametrize("blank_entry", ["", "   ", "\\t"])
+def test_mixed_blank_position_ticket_never_authorizes_snapshot(client, blank_entry):
+    """A familiar position cannot hide a second unusable broker identity."""
+    cid = _reported_execution(client, "857")
+    snapshot = _snapshot()
+    snapshot["broker_tickets"] = ["9001", blank_entry]
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    assert "blank ticket" in response.json()["detail"]
+    with SessionLocal() as db:
+        execution = db.query(models.Execution).filter_by(command_id=cid).one()
+        assert execution.broker_ticket == "9001"
+        assert execution.status == "SUCCESS"
+        assert execution.lot_size == pytest.approx(0.01)
+        command = db.query(models.Command).filter_by(id=cid).one()
+        assert command.status == "EXECUTED_OPEN"
+        audit = (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
+            .one()
+        )
+        assert "blank_broker_tickets" in audit.payload_json
+        assert blank_entry not in audit.payload_json or not blank_entry
+        assert (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_MATCHED", entity_id=cid)
+            .count() == 0
+        )
+
+
+def test_mixed_blank_ticket_cannot_create_recovered_execution(client):
+    """Invalid evidence must fail before SENT_TO_EA is upgraded to executed."""
+    user = register_user(client, "858")
+    signal = create_signal(client, _SIGNAL)
+    approval = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "858"},
+    )
+    assert approval.status_code == 200, approval.text
+    pending = client.get(
+        "/commands/pending",
+        params={"user_id": user["id"]},
+        headers=EA_HEADERS,
+    ).json()["command"]
+    assert pending is not None
+    cid = pending["command_id"]
+
+    snapshot = _snapshot()
+    snapshot["broker_tickets"] = ["9001", "  "]
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 409, response.text
+    with SessionLocal() as db:
+        command = db.query(models.Command).filter_by(id=cid).one()
+        assert command.status == "SENT_TO_EA"
+        assert db.query(models.Execution).filter_by(command_id=cid).count() == 0
+        audit = (
+            db.query(models.AuditLog)
+            .filter_by(event_type="BROKER_RECONCILIATION_CONFLICT", entity_id=cid)
+            .one()
+        )
+        assert "blank_broker_tickets" in audit.payload_json
+        assert (
+            db.query(models.AuditLog)
+            .filter_by(event_type="EXECUTION_RECOVERED_FROM_BROKER_SNAPSHOT", entity_id=cid)
+            .count() == 0
+        )
+
+
+def test_whitespace_around_one_valid_ticket_remains_normalized(client):
+    """Reject invalid entries without changing valid ticket trimming behavior."""
+    cid = _reported_execution(client, "859")
+    snapshot = _snapshot()
+    snapshot["broker_tickets"] = [" 9001 "]
+    response = client.post(
+        f"/commands/{cid}/reconcile_open_position",
+        json=snapshot, headers=EA_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "matched"
