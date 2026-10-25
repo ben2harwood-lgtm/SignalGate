@@ -27,7 +27,7 @@ def test_sales_rehearsal_is_broker_free_and_internal():
 def test_sales_demo_never_conflates_synthetic_and_real_execution():
     text = _script().lower()
     for term in (
-        "not proof of a single real broker fill",
+        "do not describe this as proof of a single real broker fill",
         "multi-deal fill accounting",
         "deal/position identity",
         "reconciliation, restart recovery or split rollback",
