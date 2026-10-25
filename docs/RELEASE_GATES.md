@@ -31,6 +31,11 @@ A gate is binary. "Mostly" does not pass.
 - Global/provider/account kill paths are specified and tested.
 - No unexplained execution in fault-injection tests.
 
+- **Exact-candidate compiler proof:** retain the official MetaEditor receipt bound to the candidate SHA and exact EA-source hash, with **0 errors / 0 warnings** and a newly generated, nonempty EX5. A later passing compile of different source cannot retroactively pass a failed frozen candidate.
+- **Actual MT5 demo-broker proof:** retain source-matched, independently checked demo-account receipts for every `docs/MT5_ACCEPTANCE.md` scenario. Correlate broker deal/order/position identities, retcodes, original-order **multi-fill** volume/weighted execution price and stage-specific partial/manual/TP exits against backend ledger evidence. Synthetic simulations, static checks and mock broker snapshots count as `NOT_RUN` for these external scenarios.
+- **Review-and-reconciliation hold:** independently review the exact execution candidate and demonstrate fail-closed behaviour for ambiguous sends, split fills, restart recovery and conflicting broker evidence. Unresolved material findings or missing/contradictory receipts keep G3 **OPEN/HOLD**; automated CI alone cannot pass this gate.
+
+
 ## G4 — Adversarial ingestion
 - Conflicting symbol/direction/SL/TP/entry values fail closed.
 - Non-positive/impossible prices fail closed.
