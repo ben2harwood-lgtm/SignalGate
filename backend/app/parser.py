@@ -128,7 +128,11 @@ def parse_signal(
     for field, token in re.findall(
         r"\b(ENTRY|SL|TP1?|TP2|TP3)\b\s*[:=]?\s*(\S+)", upper
     ):
-        value = token.rstrip(",;")
+        # Commas/semicolons can separate fields even without whitespace:
+        # "SL:1.08,TP1:1.09;TP2:1.10" is not a malformed SL value.
+        value = re.split(
+            r"[,;](?=(?:ENTRY|SL|TP1?|TP2|TP3)\b)", token, maxsplit=1
+        )[0].rstrip(",;")
         if field == "ENTRY" and value == "MARKET":
             continue
         if re.fullmatch(_NUM, value) is None:
