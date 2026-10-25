@@ -2063,9 +2063,13 @@ def _broker_symbol_matches(command_symbol: str, observed_symbol: str) -> bool:
 
 
 def _snapshot_tickets(payload) -> list[str]:
-    tickets = [str(ticket).strip() for ticket in payload.broker_tickets if str(ticket).strip()]
-    if not tickets:
+    tickets = [str(ticket).strip() for ticket in payload.broker_tickets]
+    if not any(tickets):
         raise BrokerReconciliationConflict("Broker snapshot contains no usable tickets")
+    # An otherwise recognised position must not mask an invalid second entry.
+    # Never discard a blank broker ticket and then treat the rest as complete.
+    if any(not ticket for ticket in tickets):
+        raise BrokerReconciliationConflict("Broker snapshot contains blank ticket entries")
     return list(dict.fromkeys(tickets))
 
 
@@ -2087,12 +2091,19 @@ def reconcile_open_position(
     try:
         tickets = _snapshot_tickets(payload)
     except BrokerReconciliationConflict:
+        # Distinguish an entirely unusable snapshot from one with an
+        # untracked blank entry. Never log the incoming untrusted ticket data.
+        audit_reason = (
+            "blank_broker_tickets"
+            if any(str(ticket).strip() for ticket in payload.broker_tickets)
+            else "missing_usable_broker_tickets"
+        )
         add_audit(
             db,
             "BROKER_RECONCILIATION_CONFLICT",
             "command",
             command.id,
-            {"conflicts": ["missing_usable_broker_tickets"]},
+            {"conflicts": [audit_reason]},
         )
         raise
     conflicts: list[str] = []
