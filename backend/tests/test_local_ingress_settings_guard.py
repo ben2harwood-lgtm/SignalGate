@@ -6,6 +6,9 @@ local auth, and they do not make an external provider/demo pilot acceptable.
 """
 from __future__ import annotations
 
+import json
+import logging
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -195,3 +198,44 @@ def test_local_ingress_refuses_duplicate_host_headers(client, host_values):
     response = client.get("/livez", headers=host_values)
     assert response.status_code == 403
     assert response.text == "Local demo ingress refused"
+
+
+@pytest.mark.parametrize(
+    "untrusted_headers",
+    [
+        {"Host": "public.example.invalid", "X-Request-Id": "attacker-private-token"},
+        [
+            ("Host", "127.0.0.1:8000"),
+            ("Host", "public.example.invalid"),
+            ("X-Request-Id", "attacker-private-token"),
+        ],
+    ],
+)
+def test_refused_local_ingress_is_audited_without_logging_host_or_supplied_id(
+    client, caplog, untrusted_headers
+):
+    caplog.set_level(logging.WARNING, logger="signalgate.request")
+    response = client.get("/livez", headers=untrusted_headers)
+    assert response.status_code == 403
+    request_id = response.headers["X-Request-Id"]
+    assert len(request_id) == 32
+    assert all(ch in "0123456789abcdef" for ch in request_id)
+    assert request_id != "attacker-private-token"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+
+    entries = [
+        json.loads(r.getMessage()) for r in caplog.records
+        if r.name == "signalgate.request" and
+        "LOCAL_DEMO_INGRESS_REFUSED" in r.getMessage()
+    ]
+    assert len(entries) == 1
+    event = entries[0]
+    assert event["event"] == "http_request"
+    assert event["request_id"] == request_id
+    assert event["status"] == 403
+    assert event["path"] == "[local-ingress-refused]"
+    serialized = json.dumps(event)
+    assert "public.example.invalid" not in serialized
+    assert "attacker-private-token" not in serialized
