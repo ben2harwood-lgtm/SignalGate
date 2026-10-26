@@ -178,6 +178,10 @@ class EASimulator:
         verbose: bool = True,
         scenario: str = "win",
     ) -> None:
+        # Invalid timing can fail after ACK/OPENED and leave false partial
+        # synthetic history. Reject it before touching the HTTP client.
+        if type(delay) not in (int, float) or not math.isfinite(delay) or delay < 0:
+            raise ValueError("Simulator delay must be finite and non-negative")
         self.http = http
         self.user_id = user_id
         self.headers = {"X-EA-API-Key": api_key}
@@ -483,6 +487,12 @@ class EASimulator:
         return True
 
     def run_forever(self, poll_interval: float = 2.0) -> None:
+        if (
+            type(poll_interval) not in (int, float)
+            or not math.isfinite(poll_interval)
+            or poll_interval <= 0
+        ):
+            raise ValueError("Simulator poll interval must be finite and positive")
         self.log(f"Polling {self.user_id} every {poll_interval}s. Ctrl+C to stop.")
         try:
             while True:
@@ -546,6 +556,11 @@ def main() -> None:
         backend = validate_local_backend_origin(args.backend)
     except ValueError as exc:
         parser.error(str(exc))
+    # Check timing before opening a client or acknowledging a fake command.
+    if not math.isfinite(args.delay) or args.delay < 0:
+        parser.error("Simulator --delay must be finite and non-negative")
+    if not math.isfinite(args.poll_interval) or args.poll_interval <= 0:
+        parser.error("Simulator --poll-interval must be finite and positive")
 
     print(BANNER)
     # No ambient HTTP(S)_PROXY/redirect may receive the EA key or fake fills.

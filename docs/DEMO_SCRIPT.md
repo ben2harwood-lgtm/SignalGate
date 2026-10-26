@@ -19,7 +19,11 @@ backend `parser_status` or `parser_error` values that could disclose raw signal
 text or inject terminal control sequences. The simulator refuses fake fills after rejected or ambiguous
 command acknowledgements, and stops the synthetic lifecycle if execution or
 management receipts are rejected. The class-level test harness remains usable
-with an in-process FastAPI TestClient. The scripted flow also
+with an in-process FastAPI TestClient. Negative, NaN or infinite synthetic
+lifecycle delays, and non-positive, NaN or infinite poll intervals, are
+refused before any HTTP client is opened. Programmatic simulator entrypoints
+also validate these timers before polling; invalid timing cannot leave a
+partially fabricated lifecycle after acknowledgement. The scripted flow also
 halts before the next write when registration, signal creation or approval
 does not return an HTTP 200 JSON object with a confirmed, route-safe ASCII
 identifier. User, signal and command IDs with URL/path delimiters, escapes,

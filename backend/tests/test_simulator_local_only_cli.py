@@ -62,6 +62,58 @@ def test_cli_rejects_remote_origin_without_opening_client(
     assert exc.value.code == 2
 
 
+
+@pytest.mark.parametrize("flag,value", [
+    ("--delay", "-0.01"),
+    ("--delay", "nan"),
+    ("--delay", "inf"),
+    ("--delay", "-inf"),
+    ("--poll-interval", "0"),
+    ("--poll-interval", "-0.01"),
+    ("--poll-interval", "nan"),
+    ("--poll-interval", "inf"),
+    ("--poll-interval", "-inf"),
+])
+def test_simulator_cli_refuses_invalid_timing_before_http(
+    monkeypatch, flag, value,
+):
+    """Bad timing must not lead to ACK, synthetic writes or an infinite poll."""
+    monkeypatch.setattr(
+        sys, "argv",
+        ["ea_simulator.py", "--user-id", "LOCAL-USER", "--once",
+         "--backend", "http://127.0.0.1:8000", f"{flag}={value}"],
+    )
+    def _no_transport(*_args, **_kwargs):
+        raise AssertionError("bad timing opened a client before refusal")
+    monkeypatch.setattr(ea_simulator.httpx, "Client", _no_transport)
+    with pytest.raises(SystemExit) as exc:
+        ea_simulator.main()
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("delay", [
+    -0.1, float("nan"), float("inf"), -float("inf"), True, "0",
+])
+def test_programmatic_simulator_invalid_delay_is_refused_before_poll(delay):
+    with pytest.raises(ValueError, match="delay must be finite"):
+        ea_simulator.EASimulator(
+            http=object(), user_id="LOCAL-USER", api_key="fake-test-key",
+            delay=delay, verbose=False,
+        )
+
+
+@pytest.mark.parametrize("interval", [
+    0, -1, float("nan"), float("inf"), True,
+])
+def test_programmatic_simulator_invalid_poll_interval_is_refused(interval):
+    simulator = ea_simulator.EASimulator(
+        http=object(), user_id="LOCAL-USER", api_key="fake-test-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(ValueError, match="poll interval must be finite"):
+        simulator.run_forever(poll_interval=interval)
+
+
 class _HealthOnly:
     def __init__(self, data, *, status_code=200):
         self.data = data
