@@ -1358,6 +1358,8 @@ def test_split_children_without_explicit_lots_cannot_fabricate_execution(
 @pytest.mark.parametrize("lots", [
     (1e308, 1e308),
     (1e308, 1e308, 1e308),
+    (10 ** 308, 10 ** 308),  # Each int is finite, but their int sum overflows float.
+    (10 ** 308, 10 ** 308, 10 ** 308),
 ])
 @pytest.mark.parametrize(
     "entrypoint", ["run_once", "simulate_lifecycle", "post_execution"]

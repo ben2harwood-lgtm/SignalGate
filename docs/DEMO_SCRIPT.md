@@ -99,8 +99,9 @@ split child must carry an explicit finite, positive stage lot; absent stage
 quantities now fail before a fake acknowledgement, execution or management
 receipt (including direct simulator calls), instead of fabricating a child
 volume from the overall command size. Individually finite split-child lots
-must also sum to a finite number: an overflowed Infinity total is refused
-before ACK rather than reported as a fake SUCCESS fill.
+must also sum to a finite number: an overflowed Infinity total or
+an out-of-range integer sum is refused before ACK rather than reported as
+a fake SUCCESS fill.
 Oversized JSON integer prices or lot sizes that cannot be converted to
 finite floating-point values are also refused before ACK, including direct
 in-process simulator calls; malformed numeric values must not crash the

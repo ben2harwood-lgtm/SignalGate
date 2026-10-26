@@ -160,7 +160,7 @@ def _has_complete_split_ticket_lots(command: Dict[str, Any]) -> bool:
         )
         # Individually finite fake fills can sum to Infinity. Reject before
         # ACK rather than attempt to serialize a non-finite SUCCESS receipt.
-        and math.isfinite(sum(tp["lot"] for tp in targets))
+        and _positive_finite(sum(tp["lot"] for tp in targets))
     )
 
 
