@@ -386,7 +386,12 @@ class EASimulator:
         if _tp_price(command, 3) is not None:
             # TP3
             self.log("Simulating TP3 reached + final close")
-            self.post_event(cid, event_type="TP3_REACHED", stage="TP2_DONE",
+            # TP1 + TP3 is valid parser input: do not invent a TP2_DONE
+            # management milestone if no TP2 stage was ever recorded.
+            preceding_stage = (
+                "TP2_DONE" if _tp_price(command, 2) is not None else "TP1_DONE"
+            )
+            self.post_event(cid, event_type="TP3_REACHED", stage=preceding_stage,
                             result="SUCCESS", price=_tp_price(command, 3))
             self.post_event(cid, broker_ticket=child_tickets[-1],
                             event_type="TP3_CLOSE_SUCCESS", stage="TP3_DONE",

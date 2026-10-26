@@ -862,6 +862,46 @@ def test_boolean_split_mode_can_poll_without_fake_writes(split_mode):
     assert client.post_paths == []
 
 
+@pytest.mark.parametrize("levels,expected_stage", [
+    ([1, 3], "TP1_DONE"),
+    ([1, 2, 3], "TP2_DONE"),
+])
+def test_tp3_reached_preserves_actual_prior_synthetic_stage(
+    monkeypatch, levels, expected_stage,
+):
+    """No fake TP2_DONE milestone when the valid parser skips TP2."""
+    command = {
+        **_POLL_COMMAND,
+        "lot_size": 0.01 * len(levels),
+        "split_ticket_demo_partial_mode": True,
+        "take_profits": [
+            {"level": level, "price": 2353.0 + 5 * (level - 1), "lot": 0.01}
+            for level in levels
+        ],
+    }
+    sim = ea_simulator.EASimulator(
+        http=None, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    evidence = []
+    monkeypatch.setattr(sim, "post_execution", lambda *_args: None)
+    monkeypatch.setattr(
+        sim, "post_event",
+        lambda _command_id, **fields: evidence.append(fields),
+    )
+    sim.simulate_lifecycle(command)
+    stage = next(
+        ev["stage"] for ev in evidence if ev["event_type"] == "TP3_REACHED"
+    )
+    assert stage == expected_stage
+    assert any(ev["event_type"] == "TP1_CLOSE_SUCCESS" for ev in evidence)
+    assert (
+        any(ev["event_type"] == "TP2_CLOSE_SUCCESS" for ev in evidence)
+        == (2 in levels)
+    )
+    assert evidence[-1]["event_type"] == "FULLY_CLOSED"
+
+
 @pytest.mark.parametrize("levels", [[1], [1, 2], [1, 2, 3]])
 def test_split_mode_creates_only_configured_stage_children(monkeypatch, levels):
     """Synthetic FULLY_CLOSED cannot imply closure of phantom child tickets."""

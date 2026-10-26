@@ -51,6 +51,9 @@ A malformed TP2/TP3 cannot silently become an absent target or
 produce a fake SUCCESS receipt.
 The split-ticket flag is accepted only as a boolean when present: a
 string such as `"false"` must not create three fabricated child tickets.
+In a parser-valid TP1+TP3 command with no TP2, synthetic `TP3_REACHED` is
+recorded as following `TP1_DONE` rather than falsely claiming a `TP2_DONE`
+milestone. This is an evidence-label correction, not broker attribution.
 In split-ticket synthetic mode, the number of fake children now matches
 the configured TP stages; absent TP stages must not imply open children in
 `FULLY_CLOSED` receipts. This is not real MT5 broker-state evidence. The synthetic stop-out path
