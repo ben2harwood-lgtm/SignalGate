@@ -92,8 +92,15 @@ def _safe_demo_symbol(value: Any) -> bool:
 
 
 def _positive_finite(value: Any) -> bool:
-    """Match the demo EA minimum for usable SL/TP prices (no bool/NaN/Inf)."""
-    return type(value) in (int, float) and math.isfinite(value) and value > 0
+    """Accept usable numeric values without crashing on oversized JSON ints."""
+    if type(value) not in (int, float) or value <= 0:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        # An arbitrarily large JSON integer cannot be a finite broker price
+        # or volume. Refuse it before ACK instead of crashing preflight.
+        return False
 
 
 def _has_valid_take_profits(command: Dict[str, Any]) -> bool:

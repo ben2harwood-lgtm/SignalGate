@@ -579,6 +579,39 @@ _POLL_COMMAND = {
 }
 
 
+@pytest.mark.parametrize("field", [
+    "initial_stop_loss", "lot_size", "entry_price", "tp_price", "tp_lot",
+])
+@pytest.mark.parametrize("entrypoint", ["run_once", "simulate_lifecycle", "post_execution"])
+def test_oversized_numeric_command_refuses_before_synthetic_writes(field, entrypoint):
+    """A very large JSON integer must fail closed, not crash math.isfinite."""
+    enormous_integer = 10 ** 400  # Python int cannot convert to finite float.
+    command = {**_POLL_COMMAND, "take_profits": [dict(_POLL_COMMAND["take_profits"][0])]}
+    if field == "tp_price":
+        command["take_profits"][0]["price"] = enormous_integer
+    elif field == "tp_lot":
+        command["take_profits"][0]["lot"] = enormous_integer
+    else:
+        command[field] = enormous_integer
+
+    client = _UnconfirmedPollClient(200, {"command": command})
+    simulator = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="refusing fake execution"):
+        if entrypoint == "run_once":
+            simulator.run_once()
+        elif entrypoint == "simulate_lifecycle":
+            simulator.simulate_lifecycle(command)
+        else:
+            simulator.post_execution(command, ["FAKE-TICKET-1"])
+
+    assert client.get_paths == (["/commands/pending"] if entrypoint == "run_once" else [])
+    assert client.post_paths == []
+    assert simulator.processed == set()
+
+
 
 @pytest.mark.parametrize("symbol", [
     "XAUUSD\\nPRIVATE-CANARY".replace("\\n", "\n"),

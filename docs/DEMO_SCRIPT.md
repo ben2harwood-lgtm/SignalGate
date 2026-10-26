@@ -100,7 +100,11 @@ quantities now fail before a fake acknowledgement, execution or management
 receipt (including direct simulator calls), instead of fabricating a child
 volume from the overall command size. Individually finite split-child lots
 must also sum to a finite number: an overflowed Infinity total is refused
-before ACK rather than reported as a fake SUCCESS fill. These fabricated
+before ACK rather than reported as a fake SUCCESS fill.
+Oversized JSON integer prices or lot sizes that cannot be converted to
+finite floating-point values are also refused before ACK, including direct
+in-process simulator calls; malformed numeric values must not crash the
+simulator's preflight and cannot serve as execution evidence. These fabricated
 quantities are never evidence of broker-reported fill volume.
 Synthetic ticket numbers are deterministic fixtures bound to the demo user
 and command, not real broker tickets: separate approved commands must not reuse
