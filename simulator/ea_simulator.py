@@ -158,18 +158,44 @@ class EASimulator:
             "spread_at_execution": 20,
             "slippage": 0,
         }
-        self.http.post(
+        response = self.http.post(
             f"/commands/{command['command_id']}/execution",
             json=payload,
             headers=self.headers,
         )
+        try:
+            receipt = response.json()
+        except ValueError:
+            receipt = None
+        if (
+            response.status_code != 200
+            or not isinstance(receipt, dict)
+            or receipt.get("status") != "ok"
+        ):
+            raise RuntimeError(
+                "Synthetic execution report was not accepted; "
+                "refusing to emit management events"
+            )
 
     def post_event(self, command_id: str, **fields) -> None:
-        self.http.post(
+        response = self.http.post(
             f"/commands/{command_id}/management_event",
             json=fields,
             headers=self.headers,
         )
+        try:
+            receipt = response.json()
+        except ValueError:
+            receipt = None
+        if (
+            response.status_code != 200
+            or not isinstance(receipt, dict)
+            or receipt.get("status") != "ok"
+        ):
+            raise RuntimeError(
+                "Synthetic management event was not accepted; "
+                "halting synthetic lifecycle"
+            )
 
     # --- lifecycle --------------------------------------------------------
 

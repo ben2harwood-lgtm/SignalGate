@@ -12,9 +12,10 @@ entrypoints now refuse non-loopback URLs, URL credentials, redirects and
 ambient proxy routing; only numeric `http://127.0.0.1:<port>` or
 `http://[::1]:<port>` origins are allowed. They check unpaused,
 demo-only `/health` before polling, registering or reporting synthetic
-fills. The simulator also refuses fake fills when command acknowledgement is
-rejected or ambiguous. The class-level test harness remains usable with an
-in-process FastAPI TestClient.
+fills. The simulator refuses fake fills after rejected or ambiguous
+command acknowledgements, and stops the synthetic lifecycle if execution or
+management receipts are rejected. The class-level test harness remains usable
+with an in-process FastAPI TestClient.
 
 A loopback URL can still be forwarded by a locally configured tunnel
 or reverse proxy: operators must use an isolated test backend/database,

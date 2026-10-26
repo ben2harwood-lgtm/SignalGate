@@ -190,3 +190,54 @@ def test_rejected_or_ambiguous_ack_cannot_emit_simulated_fills(status_code, body
         sim.run_once()
     assert stub.posts == ["/commands/SYNTHETIC-CMD/received"]
     assert "SYNTHETIC-CMD" not in sim.processed
+
+
+class _LifecycleRefusalClient:
+    def __init__(self, failing_stage, status_code, body):
+        self.failing_stage = failing_stage
+        self.failure = _SyntheticAckResponse(status_code, body)
+        self.posts = []
+
+    def post(self, path, **_kwargs):
+        self.posts.append(path)
+        if path.endswith("/execution"):
+            return (self.failure if self.failing_stage == "execution"
+                    else _SyntheticAckResponse(200, {"status": "ok"}))
+        if path.endswith("/management_event"):
+            return (self.failure if self.failing_stage == "management"
+                    else _SyntheticAckResponse(200, {"status": "ok"}))
+        raise AssertionError("unexpected synthetic HTTP write")
+
+
+@pytest.mark.parametrize("stage,status_code,body", [
+    ("execution", 403, {"detail": "wrong account"}),
+    ("execution", 409, {"detail": "execution conflict"}),
+    ("execution", 500, {"status": "ok"}),
+    ("execution", 200, {"status": "duplicate_ignored"}),
+    ("execution", 200, None),
+    ("management", 403, {"detail": "wrong account"}),
+    ("management", 409, {"detail": "event conflict"}),
+    ("management", 500, {"status": "ok"}),
+    ("management", 200, {"status": "duplicate_ignored"}),
+    ("management", 200, None),
+])
+def test_rejected_synthetic_execution_or_event_halts_lifecycle(stage, status_code, body):
+    """Synthetic management must stop after its first rejected backend write."""
+    client = _LifecycleRefusalClient(stage, status_code, body)
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="SYNTHETIC-USER", api_key="test-local-only",
+        delay=0, verbose=False,
+    )
+    command = {
+        "command_id": "SYNTHETIC-CMD", "symbol": "XAUUSD",
+        "direction": "BUY", "entry_price": None,
+        "initial_stop_loss": 2343.0, "lot_size": 0.01,
+        "take_profits": [{"level": 1, "price": 2353.0, "lot": 0.01}],
+    }
+    label = "execution report" if stage == "execution" else "management event"
+    with pytest.raises(RuntimeError, match=label + " was not accepted"):
+        sim.simulate_lifecycle(command)
+    expected = ["/commands/SYNTHETIC-CMD/execution"]
+    if stage == "management":
+        expected.append("/commands/SYNTHETIC-CMD/management_event")
+    assert client.posts == expected
