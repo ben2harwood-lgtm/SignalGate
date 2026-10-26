@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import time
 from typing import Any, Dict, List, Optional, Protocol
@@ -71,6 +72,21 @@ def _route_safe_command_id(value: Any) -> bool:
     return (
         isinstance(value, str)
         and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is not None
+    )
+
+
+def _positive_finite(value: Any) -> bool:
+    """Match the demo EA minimum for usable SL/TP prices (no bool/NaN/Inf)."""
+    return type(value) in (int, float) and math.isfinite(value) and value > 0
+
+
+def _has_positive_tp1(command: Dict[str, Any]) -> bool:
+    levels = command.get("take_profits")
+    return isinstance(levels, list) and any(
+        isinstance(tp, dict)
+        and tp.get("level") == 1
+        and _positive_finite(tp.get("price"))
+        for tp in levels
     )
 
 
@@ -151,6 +167,8 @@ class EASimulator:
             or command.get("demo_only") is not True
             or command.get("entry_type") != "MARKET"
             or command.get("direction") not in {"BUY", "SELL"}
+            or not _positive_finite(command.get("initial_stop_loss"))
+            or not _has_positive_tp1(command)
         ):
             raise RuntimeError(
                 "Synthetic command poll returned an invalid command; refusing fake execution"

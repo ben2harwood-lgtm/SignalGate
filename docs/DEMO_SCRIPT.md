@@ -31,8 +31,10 @@ command must also carry the exact requested demo user ID, an explicit boolean
 route-safe ASCII command ID before the simulator can acknowledge it. Slashes, URL-encoded delimiters,
 control characters and oversized command IDs are refused before any synthetic
 write; wrong-owner, non-demo or non-MARKET commands cannot produce synthetic
-execution. The real demo EA refuses LIMIT entries; this simulator must not
-fabricate a successful LIMIT lifecycle instead.
+execution. The real demo EA refuses LIMIT entries and invalid/non-positive
+stop-loss or TP1 values; this simulator must not fabricate a successful
+lifecycle for those malformed commands instead. Pre-ACK guards also reject
+non-finite SL/TP1 prices (NaN/Infinity) and missing TP1.
 Polling can claim the oldest command even on mismatch;
 restart only with a clean isolated test database, not a fabricated success.
 

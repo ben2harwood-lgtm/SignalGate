@@ -164,6 +164,8 @@ class _AckRefusalClient:
             "command_id": "SYNTHETIC-CMD", "symbol": "XAUUSD", "direction": "BUY",
             "user_id": "SYNTHETIC-USER", "demo_only": True,
             "entry_type": "MARKET",
+             "initial_stop_loss": 2343.0,
+             "take_profits": [{"level": 1, "price": 2353.0, "lot": 0.01}],
         }})
 
     def post(self, path, **_kwargs):
@@ -370,6 +372,8 @@ class _DifferentPendingCommandClient:
             "direction": "BUY",
             "user_id": "LOCAL-USER", "demo_only": True,
             "entry_type": "MARKET",
+             "initial_stop_loss": 2343.0,
+             "take_profits": [{"level": 1, "price": 2353.0, "lot": 0.01}],
         }})
 
     def post(self, path, **_kwargs):
@@ -401,6 +405,8 @@ def test_scripted_flow_rejects_stale_pending_command(monkeypatch):
                     "direction": "BUY",
                     "user_id": "LOCAL-USER", "demo_only": True,
             "entry_type": "MARKET",
+             "initial_stop_loss": 2343.0,
+             "take_profits": [{"level": 1, "price": 2353.0, "lot": 0.01}],
                 }})
             return super().get(path, **kwargs)
 
@@ -437,6 +443,8 @@ _POLL_COMMAND = {
     "user_id": "LOCAL-USER",
     "demo_only": True,
     "entry_type": "MARKET",
+     "initial_stop_loss": 2343.0,
+     "take_profits": [{"level": 1, "price": 2353.0, "lot": 0.01}],
 }
 
 
@@ -489,6 +497,32 @@ def test_confirmed_empty_poll_returns_without_ack_or_fake_execution():
 ])
 def test_invalid_demo_command_is_not_acknowledged(command):
     """Wrong-owner, non-demo and unsupported-entry polls cannot fake fills."""
+    client = _UnconfirmedPollClient(200, {"command": command})
+    simulator = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="refusing fake execution"):
+        simulator.run_once()
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
+    assert simulator.processed == set()
+
+
+@pytest.mark.parametrize("overrides", [
+    {"initial_stop_loss": 0},
+    {"initial_stop_loss": -1},
+    {"initial_stop_loss": True},
+    {"initial_stop_loss": float("nan")},
+    {"take_profits": []},
+    {"take_profits": "not-a-list"},
+    {"take_profits": [{"level": 1, "price": 0}]},
+    {"take_profits": [{"level": 1, "price": float("inf")}]},
+    {"take_profits": [{"level": 2, "price": 2353.0}]},
+])
+def test_simulator_refuses_invalid_stop_or_tp1_before_ack(overrides):
+    """The real EA refuses invalid SL/TP1; fake SUCCESS would be misleading."""
+    command = {**_POLL_COMMAND, **overrides}
     client = _UnconfirmedPollClient(200, {"command": command})
     simulator = ea_simulator.EASimulator(
         http=client, user_id="LOCAL-USER", api_key="synthetic-key",
