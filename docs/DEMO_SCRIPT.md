@@ -36,7 +36,7 @@ stop-loss or TP1 values; this simulator must not fabricate a successful
 lifecycle for those malformed commands instead. Pre-ACK guards also reject
 non-finite SL/TP1 prices (NaN/Infinity) and missing TP1. Before
 any synthetic acknowledgement, the entire returned target list must have
-unique TP1-TP3 levels, finite positive prices and finite positive optional
+unique, ascending TP1-TP3 levels, finite positive prices and finite positive optional
 stage lots; lot size and any stated entry price must also be finite and
 positive. Price relationships also match the parser's BUY/SELL direction
 rules: stop and any stated entry must be on the correct side of TP1, and

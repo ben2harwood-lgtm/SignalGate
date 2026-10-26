@@ -733,3 +733,29 @@ def test_consistent_price_geometry_still_polls_without_ack(command):
     assert sim.poll() == command
     assert client.get_paths == ["/commands/pending"]
     assert client.post_paths == []
+
+@pytest.mark.parametrize("targets", [
+    [
+        {"level": 2, "price": 2358.0, "lot": 0.02},
+        {"level": 1, "price": 2353.0, "lot": 0.01},
+    ],
+    [
+        {"level": 1, "price": 2353.0, "lot": 0.01},
+        {"level": 3, "price": 2363.0, "lot": 0.03},
+        {"level": 2, "price": 2358.0, "lot": 0.02},
+    ],
+])
+def test_reordered_target_lots_cannot_fabricate_tp1_receipt(targets):
+    """TP1_CLOSE must never use a preceding TP2/TP3 stage's lot value."""
+    client = _UnconfirmedPollClient(
+        200, {"command": {**_POLL_COMMAND, "take_profits": targets}}
+    )
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="refusing fake execution"):
+        sim.run_once()
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
+    assert sim.processed == set()

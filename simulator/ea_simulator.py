@@ -90,6 +90,7 @@ def _has_valid_take_profits(command: Dict[str, Any]) -> bool:
     if not isinstance(targets, list):
         return False
     levels = set()
+    previous_level = 0
     for tp in targets:
         if not isinstance(tp, dict):
             return False
@@ -99,11 +100,13 @@ def _has_valid_take_profits(command: Dict[str, Any]) -> bool:
             type(level) is not int
             or level not in (1, 2, 3)
             or level in levels
+            or level <= previous_level
             or not _positive_finite(tp.get("price"))
             or (lot is not None and not _positive_finite(lot))
         ):
             return False
         levels.add(level)
+        previous_level = level
     return 1 in levels
 
 
