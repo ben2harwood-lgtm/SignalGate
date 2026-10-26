@@ -7,6 +7,7 @@ unsupported symbols are rejected before anything can become a trade command.
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Optional
@@ -75,7 +76,9 @@ def _unique_match(pattern: str, text: str) -> tuple[Optional[str], bool]:
 
 
 def _positive(value: Optional[float]) -> bool:
-    return value is not None and value > 0
+    # Python converts very long decimal tokens to infinity; never treat
+    # non-finite prices as a valid stop, target or entry.
+    return value is not None and math.isfinite(value) and value > 0
 
 
 def _detect_symbols(upper: str) -> set[str]:
@@ -121,6 +124,30 @@ def parse_signal(
         )
     if re.search(r"\d[E][-+]?\d", upper):
         return _reject(result, "Scientific notation is not allowed in prices")
+
+    # Numeric regex matching alone could accept the prefix of "1.09.2" or
+    # "1.09USD". In particular, a malformed ENTRY must not become MARKET.
+    # Check complete labelled tokens before any parsed value is trusted.
+    # A present but valueless field must not silently disappear. In particular,
+    # trailing ENTRY must not become an implicit MARKET order, and explicit
+    # trailing TP2/TP3 must not be silently discarded.
+    for field_match in re.finditer(r"\b(ENTRY|SL|TP1?|TP2|TP3)\b", upper):
+        field = field_match.group(1)
+        token_match = re.match(
+            r"\s*[:=]?\s*(\S+)", upper[field_match.end():]
+        )
+        if token_match is None:
+            return _reject(result, f"Malformed {field} value (use a plain decimal)")
+        token = token_match.group(1)
+        # Commas/semicolons can separate fields even without whitespace:
+        # "SL:1.08,TP1:1.09;TP2:1.10" is not a malformed SL value.
+        value = re.split(
+            r"[,;](?=(?:ENTRY|SL|TP1?|TP2|TP3)\b)", token, maxsplit=1
+        )[0].rstrip(",;")
+        if field == "ENTRY" and value == "MARKET":
+            continue
+        if re.fullmatch(_NUM, value) is None:
+            return _reject(result, f"Malformed {field} value (use a plain decimal)")
 
     canonical_symbols = _detect_symbols(upper)
     if not canonical_symbols:
