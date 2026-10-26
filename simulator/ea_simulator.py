@@ -13,6 +13,7 @@ lifecycle can be exercised and recorded in the performance ledger.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -149,6 +150,19 @@ class HttpLike(Protocol):
 def _fake_ticket(base: int, offset: int) -> str:
     # Deterministic pseudo ticket numbers for the simulator.
     return str(base + offset)
+
+
+def _synthetic_ticket_base(user_id: str, command_id: str) -> int:
+    """Reserve distinct fake ticket ranges for distinct synthetic commands.
+
+    The old fixed 100000 ticket was reused for every signal/user, potentially
+    giving unrelated synthetic lifecycles the same apparent broker identity.
+    A stable digest permits repeatable isolated tests; this is NOT a broker ID.
+    """
+    identity = json.dumps([user_id, command_id], separators=(",", ":"))
+    digest = hashlib.sha256(identity.encode("utf-8")).digest()
+    # 56 digest bits * 8 slots fits inside signed 64-bit ticket range.
+    return 1_000_000 + 8 * int.from_bytes(digest[:7], "big")
 
 
 class EASimulator:
@@ -329,7 +343,7 @@ class EASimulator:
         """Simulate open -> TP1 -> BE -> TP2 -> SL@TP1 -> TP3 -> fully closed."""
         self._require_truthful_stop_out(command)
         cid = command["command_id"]
-        base_ticket = 100000
+        base_ticket = _synthetic_ticket_base(self.user_id, cid)
 
         # Open child tickets (split-ticket demo mode) or single ticket.
         if command.get("split_ticket_demo_partial_mode"):

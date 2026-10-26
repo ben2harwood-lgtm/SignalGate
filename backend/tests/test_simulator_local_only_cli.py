@@ -969,6 +969,47 @@ def test_split_multi_child_stop_out_refuses_synthetic_closure_before_writes(
     assert sim.processed == set()
 
 
+
+
+@pytest.mark.parametrize("levels", [[1], [1, 2, 3]])
+def test_synthetic_tickets_never_reuse_fixed_identity_across_commands_or_users(
+    monkeypatch, levels,
+):
+    """Fake identities are stable for a retry, but isolated by user and command."""
+    command = {
+        **_POLL_COMMAND,
+        "take_profits": [
+            {"level": level, "price": 2353.0 + 5 * (level - 1), "lot": 0.01}
+            for level in levels
+        ],
+        "lot_size": 0.01 * len(levels),
+        "split_ticket_demo_partial_mode": True,
+    }
+    captured = []
+
+    def collect(user_id, command_id):
+        sim = ea_simulator.EASimulator(
+            http=None, user_id=user_id, api_key="synthetic-key",
+            delay=0, verbose=False,
+        )
+        monkeypatch.setattr(
+            sim, "post_execution",
+            lambda _command, tickets: captured.append(tuple(tickets)),
+        )
+        monkeypatch.setattr(sim, "post_event", lambda *_a, **_kw: None)
+        sim.simulate_lifecycle({**command, "command_id": command_id})
+
+    collect("LOCAL-USER", "CMD-ONE")
+    collect("LOCAL-USER", "CMD-TWO")
+    collect("OTHER-USER", "CMD-ONE")
+    collect("LOCAL-USER", "CMD-ONE")
+    assert captured[0] == captured[3]
+    assert len({tuple(tickets) for tickets in captured[:3]}) == 3
+    assert all(len(tickets) == len(levels) for tickets in captured)
+    assert all(len(set(tickets)) == len(tickets) for tickets in captured)
+    assert all(ticket.isascii() and ticket.isdigit()
+               for tickets in captured for ticket in tickets)
+
 @pytest.mark.parametrize("split_mode,levels", [
     (True, [1]), (False, [1, 2, 3]),
 ])
@@ -999,7 +1040,11 @@ def test_one_ticket_stop_out_remains_broker_free_and_synthetic(
         lambda _command_id, **fields: evidence["events"].append(fields),
     )
     sim.simulate_lifecycle(command)
-    assert evidence["children"] == ["100000"]
+    assert evidence["children"] == [
+        ea_simulator._fake_ticket(
+            ea_simulator._synthetic_ticket_base("LOCAL-USER", command["command_id"]), 0
+        )
+    ]
     assert [event["event_type"] for event in evidence["events"]] == [
         "OPENED", "STOP_LOSS_HIT", "FULLY_CLOSED",
     ]
