@@ -15,7 +15,10 @@ demo-only `/health` before polling, registering or reporting synthetic
 fills. The simulator refuses fake fills after rejected or ambiguous
 command acknowledgements, and stops the synthetic lifecycle if execution or
 management receipts are rejected. The class-level test harness remains usable
-with an in-process FastAPI TestClient.
+with an in-process FastAPI TestClient. The scripted flow also
+halts before the next write when registration, signal creation or approval
+does not return an HTTP 200 JSON object with a confirmed identifier; malformed
+or rejected receipts are never treated as permission for synthetic fills.
 
 A loopback URL can still be forwarded by a locally configured tunnel
 or reverse proxy: operators must use an isolated test backend/database,

@@ -241,3 +241,113 @@ def test_rejected_synthetic_execution_or_event_halts_lifecycle(stage, status_cod
     if stage == "management":
         expected.append("/commands/SYNTHETIC-CMD/management_event")
     assert client.posts == expected
+
+
+# A rejected/malformed scripted registration, signal, or approval must not
+# cascade into another backend write or a synthetic execution receipt.
+_SCRIPTED_PATHS = [
+    "/register_user",
+    "/signals/create",
+    "/signals/LOCAL-SIGNAL/approve",
+]
+_SCRIPTED_SUCCESS = [
+    {"id": "LOCAL-USER"},
+    {"id": "LOCAL-SIGNAL", "parser_status": "VALID", "parser_error": None},
+    {"result": "APPROVED", "command_id": "LOCAL-COMMAND"},
+]
+
+
+class _ScriptedFlowClient:
+    def __init__(self, fail_step=None, status_code=200, body=None):
+        self.fail_step = fail_step
+        self.status_code = status_code
+        self.body = body
+        self.posts = []
+        self.gets = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def get(self, path, **_kwargs):
+        self.gets.append(path)
+        assert path == "/health", "synthetic simulator polling not expected"
+        return _SyntheticAckResponse(
+            200, {"status": "ok", "demo_only_mode": True, "admin_paused": False}
+        )
+
+    def post(self, path, **_kwargs):
+        self.posts.append(path)
+        index = len(self.posts) - 1
+        assert index < len(_SCRIPTED_PATHS), "unexpected synthetic write"
+        assert path == _SCRIPTED_PATHS[index]
+        if index == self.fail_step:
+            return _SyntheticAckResponse(self.status_code, self.body)
+        return _SyntheticAckResponse(200, _SCRIPTED_SUCCESS[index])
+
+
+def _run_scripted_cli_with_stub(monkeypatch, client):
+    def _stub_http_client(**kwargs):
+        assert kwargs["trust_env"] is False
+        assert kwargs["follow_redirects"] is False
+        return client
+
+    monkeypatch.setattr(run_demo_flow.httpx, "Client", _stub_http_client)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["run_demo_flow.py", "--admin-id", "LOCAL-ADMIN",
+         "--backend", "http://127.0.0.1:8000"],
+    )
+
+
+@pytest.mark.parametrize("step", [0, 1, 2])
+@pytest.mark.parametrize("response_kind", [
+    "http403_success_shape",
+    "http500_success_shape",
+    "non_object_json",
+    "invalid_json",
+    "missing_identifier",
+])
+def test_scripted_flow_stops_at_unconfirmed_step(monkeypatch, step, response_kind):
+    if response_kind == "http403_success_shape":
+        status, body = 403, _SCRIPTED_SUCCESS[step]
+    elif response_kind == "http500_success_shape":
+        status, body = 500, _SCRIPTED_SUCCESS[step]
+    elif response_kind == "non_object_json":
+        status, body = 200, [_SCRIPTED_SUCCESS[step]]
+    elif response_kind == "invalid_json":
+        status, body = 200, None
+    else:
+        status, body = 200, (
+            {"result": "APPROVED"} if step == 2 else {"parser_status": "VALID"}
+        )
+    client = _ScriptedFlowClient(step, status, body)
+    _run_scripted_cli_with_stub(monkeypatch, client)
+    with pytest.raises(RuntimeError, match="stopping synthetic flow"):
+        run_demo_flow.main()
+    assert client.gets == ["/health"]
+    assert client.posts == _SCRIPTED_PATHS[:step + 1]
+
+
+def test_scripted_flow_valid_receipts_reach_only_local_simulator(monkeypatch):
+    client = _ScriptedFlowClient()
+    _run_scripted_cli_with_stub(monkeypatch, client)
+    invoked = []
+
+    class _StubSimulator:
+        def __init__(self, **kwargs):
+            assert kwargs["http"] is client
+            assert kwargs["user_id"] == "LOCAL-USER"
+            invoked.append("created")
+
+        def run_once(self):
+            invoked.append("ran")
+            return True
+
+    monkeypatch.setattr(run_demo_flow, "EASimulator", _StubSimulator)
+    run_demo_flow.main()
+    assert client.gets == ["/health"]
+    assert client.posts == _SCRIPTED_PATHS
+    assert invoked == ["created", "ran"]

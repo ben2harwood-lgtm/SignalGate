@@ -22,6 +22,38 @@ from ea_simulator import BANNER, EASimulator, validate_local_backend_origin
 DEFAULT_SIGNAL = "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363"
 
 
+def _confirmed_object(response, action: str) -> dict:
+    """Require an accepted JSON object before any subsequent synthetic write."""
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Scripted demo {action} was not accepted; stopping synthetic flow"
+        )
+    try:
+        value = response.json()
+    except ValueError:
+        value = None
+    if not isinstance(value, dict):
+        raise RuntimeError(
+            f"Scripted demo {action} returned no valid receipt; stopping synthetic flow"
+        )
+    return value
+
+
+def _confirmed_identifier(receipt: dict, field: str, action: str) -> str:
+    """Reject missing or malformed IDs rather than using them as route authority."""
+    value = receipt.get(field)
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or any(char in value for char in "/?#")
+    ):
+        raise RuntimeError(
+            f"Scripted demo {action} returned no valid identifier; stopping synthetic flow"
+        )
+    return value
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="SignalGate scripted demo flow")
     parser.add_argument("--backend", default="http://127.0.0.1:8000")
@@ -59,38 +91,51 @@ def main() -> None:
         print("Health:", health)
 
         # 2. Register tester.
-        user = http.post(
-            "/register_user",
-            json={
-                "telegram_user_id": args.telegram_user_id,
-                "telegram_username": "demo",
-                "first_name": "Demo",
-            },
-        ).json()
-        print("Registered user:", user["id"])
+        user = _confirmed_object(
+            http.post(
+                "/register_user",
+                json={
+                    "telegram_user_id": args.telegram_user_id,
+                    "telegram_username": "demo",
+                    "first_name": "Demo",
+                },
+            ),
+            "registration",
+        )
+        user_id = _confirmed_identifier(user, "id", "registration")
+        print("Registered user:", user_id)
 
         # 3. Create signal (admin).
-        sig = http.post(
-            "/signals/create",
-            json={"raw_text": args.signal},
-            headers={"X-Admin-Id": args.admin_id},
-        ).json()
-        print("Signal:", sig["id"], sig["parser_status"], sig.get("parser_error") or "")
-        if sig["parser_status"] != "VALID":
+        sig = _confirmed_object(
+            http.post(
+                "/signals/create",
+                json={"raw_text": args.signal},
+                headers={"X-Admin-Id": args.admin_id},
+            ),
+            "signal creation",
+        )
+        signal_id = _confirmed_identifier(sig, "id", "signal creation")
+        print("Signal:", signal_id, sig.get("parser_status"), sig.get("parser_error") or "")
+        if sig.get("parser_status") != "VALID":
             print("Signal rejected by parser; aborting.")
             sys.exit(1)
 
         # 4. Approve (YES).
-        decision = http.post(
-            f"/signals/{sig['id']}/approve",
-            json={"telegram_user_id": args.telegram_user_id},
-        ).json()
-        print("Decision:", decision["result"], "->", decision.get("command_id"))
-        if decision["result"] != "APPROVED":
+        decision = _confirmed_object(
+            http.post(
+                f"/signals/{signal_id}/approve",
+                json={"telegram_user_id": args.telegram_user_id},
+            ),
+            "signal approval",
+        )
+        if decision.get("result") != "APPROVED":
+            print("Decision not approved; aborting scripted demo.")
             sys.exit(1)
+        command_id = _confirmed_identifier(decision, "command_id", "signal approval")
+        print("Decision: APPROVED ->", command_id)
 
         # 5. Simulate the EA lifecycle once.
-        sim = EASimulator(http=http, user_id=user["id"], api_key=args.api_key,
+        sim = EASimulator(http=http, user_id=user_id, api_key=args.api_key,
                           delay=0.3)
         if not sim.run_once():
             print("No pending command found for simulator (unexpected).")
