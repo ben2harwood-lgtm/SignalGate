@@ -1322,6 +1322,48 @@ def test_split_children_without_explicit_lots_cannot_fabricate_execution(
     assert sim.processed == set()
 
 
+@pytest.mark.parametrize("lots", [
+    (1e308, 1e308),
+    (1e308, 1e308, 1e308),
+])
+@pytest.mark.parametrize(
+    "entrypoint", ["run_once", "simulate_lifecycle", "post_execution"]
+)
+def test_split_child_aggregate_overflow_refuses_before_synthetic_writes(
+    lots, entrypoint,
+):
+    """Finite child lots must not produce an Infinity execution volume after ACK."""
+    command = {
+        **_POLL_COMMAND,
+        "split_ticket_demo_partial_mode": True,
+        "take_profits": [
+            {"level": i + 1, "price": 2353.0 + i * 5.0, "lot": lot}
+            for i, lot in enumerate(lots)
+        ],
+    }
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "invalid command" if entrypoint == "run_once"
+            else "lack positive explicit lots"
+        ),
+    ):
+        if entrypoint == "run_once":
+            sim.run_once()
+        elif entrypoint == "simulate_lifecycle":
+            sim.simulate_lifecycle(command)
+        else:
+            sim.post_execution(command, ["FAKE-" + str(i) for i in range(len(lots))])
+    assert client.get_paths == (["/commands/pending"] if entrypoint == "run_once" else [])
+    assert client.post_paths == []
+    assert sim.processed == set()
+
+
 def test_complete_split_child_lots_can_still_poll_without_writes():
     command = {
         **_POLL_COMMAND,

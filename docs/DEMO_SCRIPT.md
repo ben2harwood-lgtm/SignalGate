@@ -98,8 +98,10 @@ the command explicitly enables split-ticket mode. Each configured synthetic
 split child must carry an explicit finite, positive stage lot; absent stage
 quantities now fail before a fake acknowledgement, execution or management
 receipt (including direct simulator calls), instead of fabricating a child
-volume from the overall command size. These fabricated quantities
-are never evidence of broker-reported fill volume.
+volume from the overall command size. Individually finite split-child lots
+must also sum to a finite number: an overflowed Infinity total is refused
+before ACK rather than reported as a fake SUCCESS fill. These fabricated
+quantities are never evidence of broker-reported fill volume.
 Synthetic ticket numbers are deterministic fixtures bound to the demo user
 and command, not real broker tickets: separate approved commands must not reuse
 a fixed fake broker identity in the demonstration ledger. The mapping is not

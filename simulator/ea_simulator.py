@@ -139,6 +139,7 @@ def _has_complete_split_ticket_lots(command: Dict[str, Any]) -> bool:
 
     A reported child fill/closure needs an explicit finite positive stage lot.
     An absent lot cannot be substituted with the unrelated command lot size.
+    Even finite positive child lots must sum to a finite synthetic fill volume.
     """
     if command.get("split_ticket_demo_partial_mode") is not True:
         return True
@@ -150,6 +151,9 @@ def _has_complete_split_ticket_lots(command: Dict[str, Any]) -> bool:
             isinstance(tp, dict) and _positive_finite(tp.get("lot"))
             for tp in targets
         )
+        # Individually finite fake fills can sum to Infinity. Reject before
+        # ACK rather than attempt to serialize a non-finite SUCCESS receipt.
+        and math.isfinite(sum(tp["lot"] for tp in targets))
     )
 
 
