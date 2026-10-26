@@ -71,7 +71,11 @@ isolated broker-free regression tests. This is an evidence-label
 correction, not broker attribution.
 The synthetic execution report uses the approved command's total lot size
 for a single-ticket position; per-target child lot sizes are summed only when
-the command explicitly enables split-ticket mode. These fabricated quantities
+the command explicitly enables split-ticket mode. Each configured synthetic
+split child must carry an explicit finite, positive stage lot; absent stage
+quantities now fail before a fake acknowledgement, execution or management
+receipt (including direct simulator calls), instead of fabricating a child
+volume from the overall command size. These fabricated quantities
 are never evidence of broker-reported fill volume.
 Synthetic ticket numbers are deterministic fixtures bound to the demo user
 and command, not real broker tickets: separate approved commands must not reuse

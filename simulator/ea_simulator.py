@@ -126,6 +126,25 @@ def _has_valid_take_profits(command: Dict[str, Any]) -> bool:
     return 1 in levels
 
 
+def _has_complete_split_ticket_lots(command: Dict[str, Any]) -> bool:
+    """Never invent sizes for synthetic split-ticket children.
+
+    A reported child fill/closure needs an explicit finite positive stage lot.
+    An absent lot cannot be substituted with the unrelated command lot size.
+    """
+    if command.get("split_ticket_demo_partial_mode") is not True:
+        return True
+    targets = command.get("take_profits")
+    return (
+        isinstance(targets, list)
+        and bool(targets)
+        and all(
+            isinstance(tp, dict) and _positive_finite(tp.get("lot"))
+            for tp in targets
+        )
+    )
+
+
 def _has_valid_price_geometry(command: Dict[str, Any]) -> bool:
     """Match parser direction/stop/target ordering before synthetic ACK.
 
@@ -269,6 +288,7 @@ class EASimulator:
             or (command.get("entry_price") is not None
                 and not _positive_finite(command["entry_price"]))
             or not _has_valid_take_profits(command)
+            or not _has_complete_split_ticket_lots(command)
             or not _has_valid_price_geometry(command)
         ):
             raise RuntimeError(
@@ -297,6 +317,11 @@ class EASimulator:
             )
 
     def post_execution(self, command: Dict[str, Any], child_tickets: List[str]) -> None:
+        if not _has_complete_split_ticket_lots(command):
+            raise RuntimeError(
+                "Synthetic split-ticket stages lack positive explicit lots; "
+                "refusing fake execution"
+            )
         # Simulate a small favourable entry near the implied entry.
         entry = command.get("entry_price")
         executed_price = entry if entry is not None else _implied_entry(command)
@@ -367,6 +392,11 @@ class EASimulator:
 
     def simulate_lifecycle(self, command: Dict[str, Any]) -> None:
         """Simulate open -> TP1 -> BE -> TP2 -> SL@TP1 -> TP3 -> fully closed."""
+        if not _has_complete_split_ticket_lots(command):
+            raise RuntimeError(
+                "Synthetic split-ticket stages lack positive explicit lots; "
+                "refusing fake execution before acknowledgement"
+            )
         self._require_truthful_stop_out(command)
         cid = command["command_id"]
         base_ticket = _synthetic_ticket_base(self.user_id, cid)

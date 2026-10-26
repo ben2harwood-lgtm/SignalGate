@@ -1274,3 +1274,59 @@ def test_synthetic_reported_fill_volume_matches_ticket_mode(
     assert path == "/commands/LOCAL-ONLY-TEST-COMMAND/execution"
     assert receipt["status"] == "SUCCESS"
     assert receipt["lot_size"] == pytest.approx(expected_lots)
+
+
+@pytest.mark.parametrize("targets", [
+    [{"level": 1, "price": 2353.0}],  # Child size omitted.
+    [{"level": 1, "price": 2353.0, "lot": None}],
+    [
+        {"level": 1, "price": 2353.0, "lot": 0.01},
+        {"level": 2, "price": 2358.0},  # Only the second child is unquantified.
+    ],
+])
+@pytest.mark.parametrize("entrypoint", ["run_once", "simulate_lifecycle", "post_execution"])
+def test_split_children_without_explicit_lots_cannot_fabricate_execution(
+    targets, entrypoint,
+):
+    """Missing split-child volume must fail before any fake ACK/fill/event."""
+    command = {
+        **_POLL_COMMAND,
+        "split_ticket_demo_partial_mode": True,
+        "take_profits": targets,
+    }
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match=(
+        "invalid command" if entrypoint == "run_once" else
+        "lack positive explicit lots"
+    )):
+        if entrypoint == "run_once":
+            sim.run_once()
+        elif entrypoint == "simulate_lifecycle":
+            sim.simulate_lifecycle(command)
+        else:
+            sim.post_execution(command, ["SYNTHETIC-TICKET"])
+    assert client.get_paths == (["/commands/pending"] if entrypoint == "run_once" else [])
+    assert client.post_paths == []
+    assert sim.processed == set()
+
+
+def test_complete_split_child_lots_can_still_poll_without_writes():
+    command = {
+        **_POLL_COMMAND,
+        "split_ticket_demo_partial_mode": True,
+        "take_profits": [
+            {"level": 1, "price": 2353.0, "lot": 0.02},
+            {"level": 2, "price": 2358.0, "lot": 0.01},
+        ],
+    }
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    assert sim.poll() == command
+    assert client.post_paths == []
