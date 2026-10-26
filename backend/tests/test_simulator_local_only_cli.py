@@ -1468,3 +1468,49 @@ def test_direct_synthetic_callbacks_reject_unsafe_id_before_any_write(
     assert client.post_paths == []
     assert client.get_paths == []
     assert sim.processed == set()
+
+
+@pytest.mark.parametrize("split_mode,levels,zero_is_truthful", [
+    (False, [1, 2], False),
+    (False, [1, 2, 3], False),
+    (None, [1, 3], False),
+    (True, [1, 2], True),
+    (False, [1], True),
+    (None, [1], True),
+])
+def test_tp1_synthetic_volume_does_not_falsely_close_remaining_single_ticket(
+    monkeypatch, split_mode, levels, zero_is_truthful,
+):
+    """A single-ticket partial TP cannot claim zero remaining position size."""
+    total = 0.01 * len(levels)
+    command = {
+        **_POLL_COMMAND,
+        "lot_size": total,
+        "take_profits": [
+            {"level": n, "price": 2353.0 + (n - 1) * 5.0, "lot": 0.01}
+            for n in levels
+        ],
+    }
+    if split_mode is not None:
+        command["split_ticket_demo_partial_mode"] = split_mode
+    simulator = ea_simulator.EASimulator(
+        http=object(), user_id="LOCAL-USER", api_key="synthetic-only",
+        delay=0, verbose=False,
+    )
+    events = []
+    monkeypatch.setattr(simulator, "post_execution", lambda *_: None)
+    monkeypatch.setattr(
+        simulator, "post_event",
+        lambda _command_id, **fields: events.append(fields),
+    )
+    simulator.simulate_lifecycle(command)
+    tp1, = [event for event in events
+            if event["event_type"] == "TP1_CLOSE_SUCCESS"]
+    if zero_is_truthful:
+        expected_before = 0.01 if split_mode is True else total
+        assert tp1["lot_size_before"] == pytest.approx(expected_before)
+        assert tp1["lot_size_after"] == 0
+    else:
+        assert "lot_size_before" not in tp1
+        assert "lot_size_after" not in tp1
+    assert events[-1]["event_type"] == "FULLY_CLOSED"

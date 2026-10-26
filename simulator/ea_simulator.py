@@ -500,11 +500,24 @@ class EASimulator:
         self.log("Simulating TP1 reached + close + SL->breakeven")
         self.post_event(cid, event_type="TP1_REACHED", stage="OPENED",
                         result="SUCCESS", price=_tp_price(command, 1))
+        # A non-split position with further targets is not fully closed at
+        # TP1. We cannot claim measured remaining volume without broker data.
+        # Split children and single-target positions do close at their TP1.
+        tp1_volume = {}
+        if command.get("split_ticket_demo_partial_mode") is True:
+            tp1_volume = {
+                "lot_size_before": command["take_profits"][0]["lot"],
+                "lot_size_after": 0,
+            }
+        elif len(command["take_profits"]) == 1:
+            tp1_volume = {
+                "lot_size_before": command["lot_size"],
+                "lot_size_after": 0,
+            }
         self.post_event(cid, broker_ticket=child_tickets[0],
                         event_type="TP1_CLOSE_SUCCESS", stage="TP1_DONE",
                         result="SUCCESS", price=_tp_price(command, 1),
-                        lot_size_before=command["take_profits"][0].get("lot"),
-                        lot_size_after=0)
+                        **tp1_volume)
         # A lone TP1 closes the only synthetic child: there is no remaining
         # position on which a broker could modify the stop.
         if len(command["take_profits"]) > 1:
