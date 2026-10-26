@@ -50,6 +50,9 @@ A malformed TP2/TP3 cannot silently become an absent target or
 produce a fake SUCCESS receipt.
 The split-ticket flag is accepted only as a boolean when present: a
 string such as `"false"` must not create three fabricated child tickets.
+In split-ticket synthetic mode, the number of fake children now matches
+the configured TP stages; absent TP stages must not imply open children in
+`FULLY_CLOSED` receipts. This is not real MT5 broker-state evidence.
 Polling can claim the oldest command even on mismatch;
 restart only with a clean isolated test database, not a fabricated success.
 

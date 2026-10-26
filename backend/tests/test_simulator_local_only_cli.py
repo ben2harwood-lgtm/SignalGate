@@ -834,3 +834,40 @@ def test_boolean_split_mode_can_poll_without_fake_writes(split_mode):
     assert sim.poll() == command
     assert client.get_paths == ["/commands/pending"]
     assert client.post_paths == []
+
+
+@pytest.mark.parametrize("levels", [[1], [1, 2], [1, 2, 3]])
+def test_split_mode_creates_only_configured_stage_children(monkeypatch, levels):
+    """Synthetic FULLY_CLOSED cannot imply closure of phantom child tickets."""
+    targets = [
+        {"level": level, "price": 2353.0 + 5.0 * (level - 1), "lot": 0.01}
+        for level in levels
+    ]
+    command = {
+        **_POLL_COMMAND,
+        "take_profits": targets,
+        "split_ticket_demo_partial_mode": True,
+    }
+    sim = ea_simulator.EASimulator(
+        http=None, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    evidence = {"events": []}
+
+    def record_execution(_command, tickets):
+        evidence["children"] = tickets
+
+    def record_event(_command_id, **fields):
+        evidence["events"].append(fields)
+
+    monkeypatch.setattr(sim, "post_execution", record_execution)
+    monkeypatch.setattr(sim, "post_event", record_event)
+    sim.simulate_lifecycle(command)
+    children = evidence["children"]
+    closed = [ev["broker_ticket"] for ev in evidence["events"]
+              if ev["event_type"] in {
+                  "TP1_CLOSE_SUCCESS", "TP2_CLOSE_SUCCESS", "TP3_CLOSE_SUCCESS"
+              }]
+    assert len(children) == len(levels)
+    assert closed == children
+    assert evidence["events"][-1]["event_type"] == "FULLY_CLOSED"

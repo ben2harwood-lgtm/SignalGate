@@ -320,7 +320,7 @@ class EASimulator:
 
         # Open child tickets (split-ticket demo mode) or single ticket.
         if command.get("split_ticket_demo_partial_mode"):
-            child_tickets = [_fake_ticket(base_ticket, i) for i in range(3)]
+            child_tickets = [_fake_ticket(base_ticket, i) for i in range(len(command["take_profits"]))]
         else:
             child_tickets = [_fake_ticket(base_ticket, 0)]
 
