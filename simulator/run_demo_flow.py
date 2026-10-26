@@ -13,6 +13,7 @@ The --admin-id must be one of ADMIN_TELEGRAM_IDS in the backend .env.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 
 import httpx
@@ -44,9 +45,7 @@ def _confirmed_identifier(receipt: dict, field: str, action: str) -> str:
     value = receipt.get(field)
     if (
         not isinstance(value, str)
-        or not value
-        or value != value.strip()
-        or any(char in value for char in "/?#")
+        or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is None
     ):
         raise RuntimeError(
             f"Scripted demo {action} returned no valid identifier; stopping synthetic flow"

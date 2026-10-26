@@ -533,3 +533,20 @@ def test_poll_accepts_backend_generated_command_id_as_read_only():
     )
     assert simulator.poll() == command
     assert client.post_paths == []
+
+@pytest.mark.parametrize("step,field", [
+    (0, "id"), (1, "id"), (2, "command_id"),
+])
+@pytest.mark.parametrize("bad_id", [
+    "X/../Y", r"X\\Y", "X%2FY", "X\nY", "X\x00Y",
+    "X Y", "X?Y", "X#Y", "X" * 129, "é", ".X",
+])
+def test_scripted_flow_rejects_unsafe_receipt_identifiers(monkeypatch, step, field, bad_id):
+    """No subsequent synthetic write after a malformed issued identifier."""
+    receipt = {**_SCRIPTED_SUCCESS[step], field: bad_id}
+    client = _ScriptedFlowClient(fail_step=step, status_code=200, body=receipt)
+    _run_scripted_cli_with_stub(monkeypatch, client)
+    with pytest.raises(RuntimeError, match="valid identifier; stopping synthetic flow"):
+        run_demo_flow.main()
+    assert client.gets == ["/health"]
+    assert client.posts == _SCRIPTED_PATHS[:step + 1]

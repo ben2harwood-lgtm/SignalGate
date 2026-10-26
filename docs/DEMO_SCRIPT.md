@@ -17,8 +17,10 @@ command acknowledgements, and stops the synthetic lifecycle if execution or
 management receipts are rejected. The class-level test harness remains usable
 with an in-process FastAPI TestClient. The scripted flow also
 halts before the next write when registration, signal creation or approval
-does not return an HTTP 200 JSON object with a confirmed identifier; malformed
-or rejected receipts are never treated as permission for synthetic fills.
+does not return an HTTP 200 JSON object with a confirmed, route-safe ASCII
+identifier. User, signal and command IDs with URL/path delimiters, escapes,
+control characters or excessive length stop the script before the next write;
+malformed or rejected receipts are never treated as permission for synthetic fills.
 The scripted rehearsal also binds its synthetic poll to the just-approved
 command ID: if the backend supplies an older pending command, it stops before
 ACK or fake fills. All simulator polls require an HTTP 200 JSON object with
