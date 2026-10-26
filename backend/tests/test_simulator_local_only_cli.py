@@ -140,3 +140,53 @@ def test_demo_script_preserves_unmet_real_provider_pilot_entry_gates():
     assert "docs/BETA_ACCEPTANCE.md" in _DEMO_SCRIPT
     assert "NOT STARTED" in _DEMO_SCRIPT
     assert "external feed must stay paused" in _DEMO_SCRIPT
+
+
+class _SyntheticAckResponse:
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self.body = body
+
+    def json(self):
+        if self.body is None:
+            raise ValueError("malformed acknowledgement JSON")
+        return self.body
+
+
+class _AckRefusalClient:
+    def __init__(self, status_code, body):
+        self.reply = _SyntheticAckResponse(status_code, body)
+        self.posts = []
+
+    def get(self, path, **_kwargs):
+        assert path == "/commands/pending"
+        return _SyntheticAckResponse(200, {"command": {
+            "command_id": "SYNTHETIC-CMD", "symbol": "XAUUSD", "direction": "BUY"
+        }})
+
+    def post(self, path, **_kwargs):
+        self.posts.append(path)
+        if path == "/commands/SYNTHETIC-CMD/received":
+            return self.reply
+        raise AssertionError("simulator posted a fake fill after rejected acknowledgement")
+
+
+@pytest.mark.parametrize("status_code,body", [
+    (403, {"detail": "wrong owner"}),
+    (409, {"detail": "command already terminal"}),
+    (500, {"status": "received"}),
+    (200, {"status": "unexpected"}),
+    (200, []),
+    (200, None),
+])
+def test_rejected_or_ambiguous_ack_cannot_emit_simulated_fills(status_code, body):
+    """Broker-free command ACK must precede any fabricated execution/event."""
+    stub = _AckRefusalClient(status_code, body)
+    sim = ea_simulator.EASimulator(
+        http=stub, user_id="SYNTHETIC-USER", api_key="test-local-only",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="acknowledgement was not accepted"):
+        sim.run_once()
+    assert stub.posts == ["/commands/SYNTHETIC-CMD/received"]
+    assert "SYNTHETIC-CMD" not in sim.processed

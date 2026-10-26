@@ -117,9 +117,24 @@ class EASimulator:
         return data.get("command")
 
     def ack_received(self, command_id: str) -> None:
-        self.http.post(
+        response = self.http.post(
             f"/commands/{command_id}/received", json={}, headers=self.headers
         )
+        # An HTTP 200 without a confirmed command claim is not permission
+        # to fabricate any downstream execution or management receipts.
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if (
+            response.status_code != 200
+            or not isinstance(payload, dict)
+            or payload.get("status") != "received"
+        ):
+            raise RuntimeError(
+                "Synthetic command acknowledgement was not accepted; "
+                "refusing to report simulated fills"
+            )
 
     def post_execution(self, command: Dict[str, Any], child_tickets: List[str]) -> None:
         # Simulate a small favourable entry near the implied entry.
@@ -275,9 +290,9 @@ class EASimulator:
         if cid in self.processed:
             self.log(f"DUPLICATE_COMMAND {cid} ignored (local idempotency).")
             return False
-        self.processed.add(cid)
         self.log(f"Received command {cid} ({command['symbol']} {command['direction']})")
         self.ack_received(cid)
+        self.processed.add(cid)
         self.simulate_lifecycle(command)
         self.log(f"Command {cid} lifecycle complete (FULLY_CLOSED).")
         return True
