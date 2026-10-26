@@ -38,7 +38,10 @@ command must also carry the exact requested demo user ID, an explicit boolean
 `demo_only=true`, BUY/SELL direction, explicit `entry_type=MARKET`, and a
 route-safe ASCII command ID before the simulator can acknowledge it. Slashes, URL-encoded delimiters,
 control characters and oversized command IDs are refused before any synthetic
-write; wrong-owner, non-demo or non-MARKET commands cannot produce synthetic
+write. Returned broker symbols must be bounded, visible, printable ASCII
+without whitespace or controls: malformed symbols cannot inject terminal lines
+or be echoed into synthetic fill receipts. Ordinary ASCII broker suffixes
+remain permitted. Wrong-owner, non-demo or non-MARKET commands cannot produce synthetic
 execution. The real demo EA refuses LIMIT entries and invalid/non-positive
 stop-loss or TP1 values; this simulator must not fabricate a successful
 lifecycle for those malformed commands instead. Pre-ACK guards also reject

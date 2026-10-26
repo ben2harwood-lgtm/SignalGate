@@ -577,6 +577,46 @@ _POLL_COMMAND = {
 }
 
 
+
+@pytest.mark.parametrize("symbol", [
+    "XAUUSD\\nPRIVATE-CANARY".replace("\\n", "\n"),
+    "XAUUSD\\rPRIVATE-CANARY".replace("\\r", "\r"),
+    "XAUUSD\\tJPY".replace("\\t", "\t"),
+    "XAUUSD\\x1b[31m".replace("\\x1b", "\x1b"),
+    "XAUUSD\\u200b".replace("\\u200b", "\u200b"),
+    "XAUUSD JPY",
+    " ",
+    "X" * 129,
+])
+def test_simulator_refuses_malformed_symbol_before_ack(symbol):
+    """Untrusted broker labels must not forge logs or fake fill receipts."""
+    client = _UnconfirmedPollClient(
+        200, {"command": {**_POLL_COMMAND, "symbol": symbol}}
+    )
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="invalid command"):
+        sim.run_once()
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
+    assert sim.processed == set()
+
+
+@pytest.mark.parametrize("symbol", ["XAUUSD", "XAUUSD.r", "BTCUSD#"])
+def test_simulator_allows_printable_ascii_symbol_suffixes_on_poll(symbol):
+    client = _UnconfirmedPollClient(
+        200, {"command": {**_POLL_COMMAND, "symbol": symbol}}
+    )
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    assert sim.poll()["symbol"] == symbol
+    assert client.post_paths == []
+
+
 @pytest.mark.parametrize("http_status,body", [
     (403, {"command": _POLL_COMMAND}),
     (500, {"command": _POLL_COMMAND}),

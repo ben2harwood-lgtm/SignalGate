@@ -76,6 +76,21 @@ def _route_safe_command_id(value: Any) -> bool:
     )
 
 
+def _safe_demo_symbol(value: Any) -> bool:
+    """Prevent malformed broker labels from forging synthetic receipt/log lines.
+
+    Do not restrict ordinary ASCII broker suffix punctuation such as '.'/'#';
+    reject unprintable, invisible, whitespace and oversized symbols instead.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and value.isascii()
+        and value.isprintable()
+        and not any(char.isspace() for char in value)
+    )
+
+
 def _positive_finite(value: Any) -> bool:
     """Match the demo EA minimum for usable SL/TP prices (no bool/NaN/Inf)."""
     return type(value) in (int, float) and math.isfinite(value) and value > 0
@@ -242,6 +257,7 @@ class EASimulator:
                 not isinstance(command.get(key), str) or not command[key].strip()
                 for key in ("command_id", "symbol", "direction")
             )
+            or not _safe_demo_symbol(command.get("symbol"))
             or command.get("user_id") != self.user_id
             or command.get("demo_only") is not True
             or command.get("entry_type") != "MARKET"
