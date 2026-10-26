@@ -126,6 +126,14 @@ def _has_valid_take_profits(command: Dict[str, Any]) -> bool:
     return 1 in levels
 
 
+def _has_boolean_split_mode(command: Dict[str, Any]) -> bool:
+    """Direct in-process calls must enforce the same strict flag as polling."""
+    return (
+        "split_ticket_demo_partial_mode" not in command
+        or type(command["split_ticket_demo_partial_mode"]) is bool
+    )
+
+
 def _has_complete_split_ticket_lots(command: Dict[str, Any]) -> bool:
     """Never invent sizes for synthetic split-ticket children.
 
@@ -281,8 +289,7 @@ class EASimulator:
             or command.get("demo_only") is not True
             or command.get("entry_type") != "MARKET"
             or command.get("direction") not in {"BUY", "SELL"}
-            or ("split_ticket_demo_partial_mode" in command
-                and type(command["split_ticket_demo_partial_mode"]) is not bool)
+            or not _has_boolean_split_mode(command)
             or not _positive_finite(command.get("initial_stop_loss"))
             or not _positive_finite(command.get("lot_size"))
             or (command.get("entry_price") is not None
@@ -317,6 +324,10 @@ class EASimulator:
             )
 
     def post_execution(self, command: Dict[str, Any], child_tickets: List[str]) -> None:
+        if not _has_boolean_split_mode(command):
+            raise RuntimeError(
+                "Synthetic split-ticket mode must be boolean; refusing fake execution"
+            )
         if not _has_complete_split_ticket_lots(command):
             raise RuntimeError(
                 "Synthetic split-ticket stages lack positive explicit lots; "
@@ -392,6 +403,10 @@ class EASimulator:
 
     def simulate_lifecycle(self, command: Dict[str, Any]) -> None:
         """Simulate open -> TP1 -> BE -> TP2 -> SL@TP1 -> TP3 -> fully closed."""
+        if not _has_boolean_split_mode(command):
+            raise RuntimeError(
+                "Synthetic split-ticket mode must be boolean; refusing fake execution"
+            )
         if not _has_complete_split_ticket_lots(command):
             raise RuntimeError(
                 "Synthetic split-ticket stages lack positive explicit lots; "

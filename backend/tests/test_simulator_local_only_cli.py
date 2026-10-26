@@ -1330,3 +1330,30 @@ def test_complete_split_child_lots_can_still_poll_without_writes():
     )
     assert sim.poll() == command
     assert client.post_paths == []
+
+
+@pytest.mark.parametrize("bad_flag", [
+    "false", "true", None, 0, 1, [], {},
+])
+@pytest.mark.parametrize("entrypoint", ["simulate_lifecycle", "post_execution"])
+def test_direct_synthetic_calls_refuse_nonboolean_split_flag_before_writes(
+    bad_flag, entrypoint,
+):
+    """A truthy string 'false' must never create phantom fake child tickets."""
+    command = {
+        **_POLL_COMMAND,
+        "split_ticket_demo_partial_mode": bad_flag,
+    }
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="mode must be boolean"):
+        if entrypoint == "simulate_lifecycle":
+            sim.simulate_lifecycle(command)
+        else:
+            sim.post_execution(command, ["SYNTHETIC-TICKET"])
+    assert client.get_paths == []
+    assert client.post_paths == []
+    assert sim.processed == set()

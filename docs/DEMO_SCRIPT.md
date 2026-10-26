@@ -61,6 +61,9 @@ A malformed TP2/TP3 cannot silently become an absent target or
 produce a fake SUCCESS receipt.
 The split-ticket flag is accepted only as a boolean when present: a
 string such as `"false"` must not create three fabricated child tickets.
+The same strict boolean rule now applies to direct in-process lifecycle and
+execution-report calls, not only to pending-command polling; malformed flags
+must never generate fake child tickets or SUCCESS reports.
 In a parser-valid TP1+TP3 command with no TP2, synthetic `TP3_REACHED` is
 recorded as following `TP1_DONE` rather than falsely claiming a `TP2_DONE`
 milestone. No fake stop-loss modification is reported after the last
