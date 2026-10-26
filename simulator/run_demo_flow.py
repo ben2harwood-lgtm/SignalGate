@@ -115,10 +115,12 @@ def main() -> None:
             "signal creation",
         )
         signal_id = _confirmed_identifier(sig, "id", "signal creation")
-        print("Signal:", signal_id, sig.get("parser_status"), sig.get("parser_error") or "")
+        # Treat parser feedback as untrusted: do not echo freeform error text
+        # (or unexpected status values) into operator/CI session logs.
         if sig.get("parser_status") != "VALID":
-            print("Signal rejected by parser; aborting.")
+            print("Signal parser did not accept the synthetic input; aborting.")
             sys.exit(1)
+        print("Signal:", signal_id, "(parser VALID)")
 
         # 4. Approve (YES).
         decision = _confirmed_object(

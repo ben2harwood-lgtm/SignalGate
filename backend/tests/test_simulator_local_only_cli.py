@@ -362,6 +362,53 @@ def test_scripted_flow_never_logs_unknown_health_fields(monkeypatch, capsys):
     assert client.posts == ["/register_user"]
 
 
+
+
+@pytest.mark.parametrize("status,accepted", [
+    ("REJECTED", False),
+    ("LEAK_ME_PARSER_STATUS", False),
+    ("VALID", True),
+])
+def test_scripted_demo_never_logs_untrusted_parser_feedback(
+    monkeypatch, capsys, status, accepted,
+):
+    """The backend parser receipt must not echo text or injected status to logs."""
+    class _ParserReceiptClient(_ScriptedFlowClient):
+        def post(self, path, **kwargs):
+            if path == "/signals/create":
+                self.posts.append(path)
+                return _SyntheticAckResponse(200, {
+                    "id": "LOCAL-SIGNAL",
+                    "parser_status": status,
+                    "parser_error": "PRIVATE_RAW_SIGNAL_CANARY",
+                })
+            return super().post(path, **kwargs)
+
+    client = _ParserReceiptClient()
+    _run_scripted_cli_with_stub(monkeypatch, client)
+
+    class _NoNetworkSimulator:
+        def __init__(self, **kwargs):
+            assert kwargs["http"] is client
+
+        def run_once(self, expected_command_id=None):
+            assert expected_command_id == "LOCAL-COMMAND"
+            return True
+
+    monkeypatch.setattr(run_demo_flow, "EASimulator", _NoNetworkSimulator)
+    if accepted:
+        run_demo_flow.main()
+    else:
+        with pytest.raises(SystemExit) as exc:
+            run_demo_flow.main()
+        assert exc.value.code == 1
+
+    output = capsys.readouterr()
+    assert "PRIVATE_RAW_SIGNAL_CANARY" not in output.out + output.err
+    assert "LEAK_ME_PARSER_STATUS" not in output.out + output.err
+    assert client.posts == _SCRIPTED_PATHS[:3 if accepted else 2]
+    assert ("(parser VALID)" in output.out) is accepted
+
 def test_scripted_flow_valid_receipts_reach_only_local_simulator(monkeypatch):
     client = _ScriptedFlowClient()
     _run_scripted_cli_with_stub(monkeypatch, client)
