@@ -399,9 +399,12 @@ class EASimulator:
                         result="SUCCESS", price=_tp_price(command, 1),
                         lot_size_before=command["take_profits"][0].get("lot"),
                         lot_size_after=0)
-        self.post_event(cid, event_type="SL_MOVE_BREAKEVEN_SUCCESS",
-                        stage="TP1_DONE", requested_action="MOVE_SL_BREAKEVEN",
-                        result="SUCCESS", stop_loss_before=sl, stop_loss_after=entry)
+        # A lone TP1 closes the only synthetic child: there is no remaining
+        # position on which a broker could modify the stop.
+        if len(command["take_profits"]) > 1:
+            self.post_event(cid, event_type="SL_MOVE_BREAKEVEN_SUCCESS",
+                            stage="TP1_DONE", requested_action="MOVE_SL_BREAKEVEN",
+                            result="SUCCESS", stop_loss_before=sl, stop_loss_after=entry)
         self._sleep()
 
         if _tp_price(command, 2) is not None:
@@ -412,9 +415,12 @@ class EASimulator:
             self.post_event(cid, broker_ticket=child_tickets[min(1, len(child_tickets)-1)],
                             event_type="TP2_CLOSE_SUCCESS", stage="TP2_DONE",
                             result="SUCCESS", price=_tp_price(command, 2))
-            self.post_event(cid, event_type="SL_MOVE_TP1_SUCCESS", stage="TP2_DONE",
-                            requested_action="MOVE_SL_TP1", result="SUCCESS",
-                            stop_loss_before=entry, stop_loss_after=_tp_price(command, 1))
+            # A two-target command is fully closed at TP2; modifying a stop
+            # after the final child closes would fabricate broker evidence.
+            if _tp_price(command, 3) is not None:
+                self.post_event(cid, event_type="SL_MOVE_TP1_SUCCESS", stage="TP2_DONE",
+                                requested_action="MOVE_SL_TP1", result="SUCCESS",
+                                stop_loss_before=entry, stop_loss_after=_tp_price(command, 1))
             self._sleep()
 
         if _tp_price(command, 3) is not None:

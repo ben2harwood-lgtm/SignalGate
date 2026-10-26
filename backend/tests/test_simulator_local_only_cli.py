@@ -1188,3 +1188,49 @@ def test_one_ticket_stop_out_remains_broker_free_and_synthetic(
         "OPENED", "STOP_LOSS_HIT", "FULLY_CLOSED",
     ]
     assert evidence["events"][1]["broker_ticket"] == evidence["children"][0]
+
+
+@pytest.mark.parametrize("levels,split_mode,expected_stop_moves", [
+    ((1,), False, ()),
+    ((1,), True, ()),
+    ((1, 2), True, ("SL_MOVE_BREAKEVEN_SUCCESS",)),
+    ((1, 3), True, ("SL_MOVE_BREAKEVEN_SUCCESS",)),
+    ((1, 2, 3), True, ("SL_MOVE_BREAKEVEN_SUCCESS", "SL_MOVE_TP1_SUCCESS")),
+])
+def test_synthetic_win_does_not_report_stop_move_after_last_child_closes(
+    monkeypatch, levels, split_mode, expected_stop_moves,
+):
+    """A closed synthetic position cannot acknowledge a later stop amendment."""
+    command = {
+        **_POLL_COMMAND,
+        "lot_size": len(levels) * 0.01,
+        "split_ticket_demo_partial_mode": split_mode,
+        "take_profits": [
+            {"level": level, "price": 2353.0 + 5 * (level - 1), "lot": 0.01}
+            for level in levels
+        ],
+    }
+    sim = ea_simulator.EASimulator(
+        http=None, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    events = []
+    monkeypatch.setattr(sim, "post_execution", lambda *_args: None)
+    monkeypatch.setattr(
+        sim, "post_event",
+        lambda _command_id, **fields: events.append(fields),
+    )
+    sim.simulate_lifecycle(command)
+    moves = tuple(
+        event["event_type"] for event in events
+        if event["event_type"].startswith("SL_MOVE_")
+    )
+    closures = [
+        event for event in events
+        if event["event_type"] in {
+            "TP1_CLOSE_SUCCESS", "TP2_CLOSE_SUCCESS", "TP3_CLOSE_SUCCESS",
+        }
+    ]
+    assert moves == expected_stop_moves
+    assert len(closures) == len(levels)
+    assert events[-1]["event_type"] == "FULLY_CLOSED"

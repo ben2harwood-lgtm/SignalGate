@@ -63,7 +63,12 @@ The split-ticket flag is accepted only as a boolean when present: a
 string such as `"false"` must not create three fabricated child tickets.
 In a parser-valid TP1+TP3 command with no TP2, synthetic `TP3_REACHED` is
 recorded as following `TP1_DONE` rather than falsely claiming a `TP2_DONE`
-milestone. This is an evidence-label correction, not broker attribution.
+milestone. No fake stop-loss modification is reported after the last
+configured TP child has already closed: a TP1-only command does not
+claim a breakeven move, and a TP1+TP2 command does not claim a final
+move to TP1 after its TP2 close. The 1-, 2- and 3-stage variants have
+isolated broker-free regression tests. This is an evidence-label
+correction, not broker attribution.
 Synthetic ticket numbers are deterministic fixtures bound to the demo user
 and command, not real broker tickets: separate approved commands must not reuse
 a fixed fake broker identity in the demonstration ledger. The mapping is not
