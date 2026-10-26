@@ -184,6 +184,18 @@ class EASimulator:
         if self.delay:
             time.sleep(self.delay)
 
+    def _require_truthful_stop_out(self, command: Dict[str, Any]) -> None:
+        """Do not report one child's stop-out as closure of multiple children."""
+        if (
+            self.scenario == "stop_out"
+            and command.get("split_ticket_demo_partial_mode") is True
+            and len(command["take_profits"]) > 1
+        ):
+            raise RuntimeError(
+                "Synthetic split-ticket stop-out cannot prove every child closed; "
+                "refusing fake execution before acknowledgement"
+            )
+
     # --- backend calls ----------------------------------------------------
 
     def poll(self) -> Optional[Dict[str, Any]]:
@@ -315,6 +327,7 @@ class EASimulator:
 
     def simulate_lifecycle(self, command: Dict[str, Any]) -> None:
         """Simulate open -> TP1 -> BE -> TP2 -> SL@TP1 -> TP3 -> fully closed."""
+        self._require_truthful_stop_out(command)
         cid = command["command_id"]
         base_ticket = 100000
 
@@ -440,6 +453,9 @@ class EASimulator:
         if cid in self.processed:
             self.log(f"DUPLICATE_COMMAND {cid} ignored (local idempotency).")
             return False
+        # Fail before ACK: the stop-out emulator currently reports a hit for
+        # one child only, so it cannot truthfully close a split multi-child set.
+        self._require_truthful_stop_out(command)
         self.log(f"Received command {cid} ({command['symbol']} {command['direction']})")
         self.ack_received(cid)
         self.processed.add(cid)

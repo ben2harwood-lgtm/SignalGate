@@ -871,3 +871,70 @@ def test_split_mode_creates_only_configured_stage_children(monkeypatch, levels):
     assert len(children) == len(levels)
     assert closed == children
     assert evidence["events"][-1]["event_type"] == "FULLY_CLOSED"
+
+@pytest.mark.parametrize("levels", [[1, 2], [1, 2, 3]])
+@pytest.mark.parametrize("direct_call", [False, True])
+def test_split_multi_child_stop_out_refuses_synthetic_closure_before_writes(
+    levels, direct_call,
+):
+    """One synthetic child STOP_LOSS_HIT cannot close several reported children."""
+    targets = [
+        {"level": level, "price": 2353.0 + 5.0 * (level - 1), "lot": 0.01}
+        for level in levels
+    ]
+    command = {
+        **_POLL_COMMAND,
+        "lot_size": 0.01 * len(levels),
+        "take_profits": targets,
+        "split_ticket_demo_partial_mode": True,
+    }
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False, scenario="stop_out",
+    )
+    with pytest.raises(RuntimeError, match="cannot prove every child closed"):
+        if direct_call:
+            sim.simulate_lifecycle(command)
+        else:
+            sim.run_once()
+    assert client.get_paths == ([] if direct_call else ["/commands/pending"])
+    assert client.post_paths == []
+    assert sim.processed == set()
+
+
+@pytest.mark.parametrize("split_mode,levels", [
+    (True, [1]), (False, [1, 2, 3]),
+])
+def test_one_ticket_stop_out_remains_broker_free_and_synthetic(
+    monkeypatch, split_mode, levels,
+):
+    """A single simulated ticket still emits exactly one stop-out closure."""
+    command = {
+        **_POLL_COMMAND,
+        "lot_size": 0.01 * len(levels),
+        "take_profits": [
+            {"level": level, "price": 2353.0 + 5.0 * (level - 1), "lot": 0.01}
+            for level in levels
+        ],
+        "split_ticket_demo_partial_mode": split_mode,
+    }
+    sim = ea_simulator.EASimulator(
+        http=None, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False, scenario="stop_out",
+    )
+    evidence = {"events": []}
+    monkeypatch.setattr(
+        sim, "post_execution",
+        lambda _command, tickets: evidence.update(children=tickets),
+    )
+    monkeypatch.setattr(
+        sim, "post_event",
+        lambda _command_id, **fields: evidence["events"].append(fields),
+    )
+    sim.simulate_lifecycle(command)
+    assert evidence["children"] == ["100000"]
+    assert [event["event_type"] for event in evidence["events"]] == [
+        "OPENED", "STOP_LOSS_HIT", "FULLY_CLOSED",
+    ]
+    assert evidence["events"][1]["broker_ticket"] == evidence["children"][0]

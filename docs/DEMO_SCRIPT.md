@@ -52,7 +52,11 @@ The split-ticket flag is accepted only as a boolean when present: a
 string such as `"false"` must not create three fabricated child tickets.
 In split-ticket synthetic mode, the number of fake children now matches
 the configured TP stages; absent TP stages must not imply open children in
-`FULLY_CLOSED` receipts. This is not real MT5 broker-state evidence.
+`FULLY_CLOSED` receipts. This is not real MT5 broker-state evidence. The synthetic stop-out path
+only reports one child's stop-loss closure; a split-ticket stop-out with
+multiple target children is refused before ACK (including direct simulator
+calls) rather than fabricating `FULLY_CLOSED` while other fake children
+remain. Single-ticket stop-outs are still synthetic-only, never broker proof.
 Polling can claim the oldest command even on mismatch;
 restart only with a clean isolated test database, not a fabricated success.
 
