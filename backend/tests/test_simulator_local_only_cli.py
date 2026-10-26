@@ -336,6 +336,32 @@ def test_scripted_flow_stops_at_unconfirmed_step(monkeypatch, step, response_kin
     assert client.posts == _SCRIPTED_PATHS[:step + 1]
 
 
+
+def test_scripted_flow_never_logs_unknown_health_fields(monkeypatch, capsys):
+    """A permissive /health response must not leak extra fields to console."""
+    canary = "CANARY_NOT_FOR_OPERATOR_LOGS"
+
+    class _ExtendedHealthClient(_ScriptedFlowClient):
+        def get(self, path, **_kwargs):
+            self.gets.append(path)
+            assert path == "/health"
+            return _SyntheticAckResponse(200, {
+                "status": "ok", "demo_only_mode": True, "admin_paused": False,
+                "unrecognised_private_field": canary,
+            })
+
+    # Reject subsequent registration: no simulated command or fill occurs.
+    client = _ExtendedHealthClient(fail_step=0, status_code=403, body={})
+    _run_scripted_cli_with_stub(monkeypatch, client)
+    with pytest.raises(RuntimeError, match="registration was not accepted"):
+        run_demo_flow.main()
+    captured = capsys.readouterr()
+    assert canary not in captured.out + captured.err
+    assert "Health: local demo-only backend confirmed (unpaused)" in captured.out
+    assert client.gets == ["/health"]
+    assert client.posts == ["/register_user"]
+
+
 def test_scripted_flow_valid_receipts_reach_only_local_simulator(monkeypatch):
     client = _ScriptedFlowClient()
     _run_scripted_cli_with_stub(monkeypatch, client)

@@ -12,7 +12,8 @@ entrypoints now refuse non-loopback URLs, URL credentials, redirects and
 ambient proxy routing; only numeric `http://127.0.0.1:<port>` or
 `http://[::1]:<port>` origins are allowed. They check unpaused,
 demo-only `/health` before polling, registering or reporting synthetic
-fills. The simulator refuses fake fills after rejected or ambiguous
+fills. The scripted flow prints only a fixed sanitized health confirmation,
+never arbitrary extra `/health` fields (which could leak into operator logs). The simulator refuses fake fills after rejected or ambiguous
 command acknowledgements, and stops the synthetic lifecycle if execution or
 management receipts are rejected. The class-level test harness remains usable
 with an in-process FastAPI TestClient. The scripted flow also

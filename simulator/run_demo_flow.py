@@ -87,7 +87,8 @@ def main() -> None:
             print("Refusing scripted demo: local backend did not confirm "
                   "active demo-only health.")
             sys.exit(1)
-        print("Health:", health)
+        # Never echo arbitrary /health fields into terminal/session logs.
+        print("Health: local demo-only backend confirmed (unpaused)")
 
         # 2. Register tester.
         user = _confirmed_object(
