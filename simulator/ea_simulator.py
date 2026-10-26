@@ -256,6 +256,38 @@ class EASimulator:
                 "refusing fake execution before acknowledgement"
             )
 
+    def _valid_command(self, command: Any) -> bool:
+        """Apply the same fail-closed poll guard to direct synthetic writers.
+
+        Tests can call simulate_lifecycle/post_execution without polling. Such
+        calls must not bypass owner, demo-only, entry, or price validation and
+        manufacture a valid-looking synthetic execution receipt.
+        """
+        if not isinstance(command, dict):
+            return False
+        return not (
+            not _route_safe_command_id(command.get("command_id"))
+            or any(
+                not isinstance(command.get(key), str) or not command[key].strip()
+                for key in ("command_id", "symbol", "direction")
+            )
+            or not _safe_demo_symbol(command.get("symbol"))
+            or command.get("user_id") != self.user_id
+            or command.get("demo_only") is not True
+            or command.get("entry_type") != "MARKET"
+            or command.get("direction") not in {"BUY", "SELL"}
+            or not _has_boolean_split_mode(command)
+            or not _positive_finite(command.get("initial_stop_loss"))
+            or not _positive_finite(command.get("lot_size"))
+            or (
+                command.get("entry_price") is not None
+                and not _positive_finite(command["entry_price"])
+            )
+            or not _has_valid_take_profits(command)
+            or not _has_complete_split_ticket_lots(command)
+            or not _has_valid_price_geometry(command)
+        )
+
     # --- backend calls ----------------------------------------------------
 
     def poll(self) -> Optional[Dict[str, Any]]:
@@ -277,27 +309,7 @@ class EASimulator:
                 "Synthetic command poll returned an invalid receipt; refusing fake execution"
             )
         command = data["command"]
-        if command is not None and (
-            not isinstance(command, dict)
-            or not _route_safe_command_id(command.get("command_id"))
-            or any(
-                not isinstance(command.get(key), str) or not command[key].strip()
-                for key in ("command_id", "symbol", "direction")
-            )
-            or not _safe_demo_symbol(command.get("symbol"))
-            or command.get("user_id") != self.user_id
-            or command.get("demo_only") is not True
-            or command.get("entry_type") != "MARKET"
-            or command.get("direction") not in {"BUY", "SELL"}
-            or not _has_boolean_split_mode(command)
-            or not _positive_finite(command.get("initial_stop_loss"))
-            or not _positive_finite(command.get("lot_size"))
-            or (command.get("entry_price") is not None
-                and not _positive_finite(command["entry_price"]))
-            or not _has_valid_take_profits(command)
-            or not _has_complete_split_ticket_lots(command)
-            or not _has_valid_price_geometry(command)
-        ):
+        if command is not None and not self._valid_command(command):
             raise RuntimeError(
                 "Synthetic command poll returned an invalid command; refusing fake execution"
             )
@@ -332,6 +344,10 @@ class EASimulator:
             raise RuntimeError(
                 "Synthetic split-ticket stages lack positive explicit lots; "
                 "refusing fake execution"
+            )
+        if not self._valid_command(command):
+            raise RuntimeError(
+                "Synthetic command failed direct-call preflight; refusing fake execution"
             )
         # Simulate a small favourable entry near the implied entry.
         entry = command.get("entry_price")
@@ -411,6 +427,10 @@ class EASimulator:
             raise RuntimeError(
                 "Synthetic split-ticket stages lack positive explicit lots; "
                 "refusing fake execution before acknowledgement"
+            )
+        if not self._valid_command(command):
+            raise RuntimeError(
+                "Synthetic command failed direct-call preflight; refusing fake execution"
             )
         self._require_truthful_stop_out(command)
         cid = command["command_id"]

@@ -64,6 +64,12 @@ string such as `"false"` must not create three fabricated child tickets.
 The same strict boolean rule now applies to direct in-process lifecycle and
 execution-report calls, not only to pending-command polling; malformed flags
 must never generate fake child tickets or SUCCESS reports.
+Those direct in-process synthetic writers also reapply the complete pending-
+command validation before producing any fake execution receipt: matching demo
+user, explicit demo-only MARKET authority, route-safe command and symbol,
+finite ordered prices and target levels. A direct test invocation is not a
+trusted shortcut around these rules. This is broker-free fixture integrity
+only; it cannot supply real MetaEditor or MT5 broker-demo evidence.
 In a parser-valid TP1+TP3 command with no TP2, synthetic `TP3_REACHED` is
 recorded as following `TP1_DONE` rather than falsely claiming a `TP2_DONE`
 milestone. No fake stop-loss modification is reported after the last

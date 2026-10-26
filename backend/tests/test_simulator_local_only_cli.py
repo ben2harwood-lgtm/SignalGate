@@ -288,6 +288,8 @@ def test_rejected_synthetic_execution_or_event_halts_lifecycle(stage, status_cod
     command = {
         "command_id": "SYNTHETIC-CMD", "symbol": "XAUUSD",
         "direction": "BUY", "entry_price": None,
+        "user_id": "SYNTHETIC-USER", "demo_only": True,
+        "entry_type": "MARKET",
         "initial_stop_loss": 2343.0, "lot_size": 0.01,
         "take_profits": [{"level": 1, "price": 2353.0, "lot": 0.01}],
     }
@@ -1136,7 +1138,9 @@ def test_synthetic_tickets_never_reuse_fixed_identity_across_commands_or_users(
             lambda _command, tickets: captured.append(tuple(tickets)),
         )
         monkeypatch.setattr(sim, "post_event", lambda *_a, **_kw: None)
-        sim.simulate_lifecycle({**command, "command_id": command_id})
+        sim.simulate_lifecycle({
+            **command, "command_id": command_id, "user_id": user_id,
+        })
 
     collect("LOCAL-USER", "CMD-ONE")
     collect("LOCAL-USER", "CMD-TWO")
@@ -1350,6 +1354,42 @@ def test_direct_synthetic_calls_refuse_nonboolean_split_flag_before_writes(
         delay=0, verbose=False,
     )
     with pytest.raises(RuntimeError, match="mode must be boolean"):
+        if entrypoint == "simulate_lifecycle":
+            sim.simulate_lifecycle(command)
+        else:
+            sim.post_execution(command, ["SYNTHETIC-TICKET"])
+    assert client.get_paths == []
+    assert client.post_paths == []
+    assert sim.processed == set()
+
+
+@pytest.mark.parametrize("overrides", [
+    {"demo_only": False},
+    {"demo_only": "true"},
+    {"user_id": "OTHER-USER"},
+    {"entry_type": "LIMIT"},
+    {"direction": "CLOSE"},
+    {"symbol": "XAUUSD\\nUNTRUSTED".replace("\\n", "\n")},
+    {"initial_stop_loss": 2400.0},
+    {"take_profits": [
+        {"level": 1, "price": 2353.0, "lot": 0.01},
+        {"level": 2, "price": 2353.0, "lot": 0.01},
+    ]},
+    {"command_id": "BAD/ROUTE"},
+    {"entry_price": float("inf")},
+])
+@pytest.mark.parametrize("entrypoint", ["simulate_lifecycle", "post_execution"])
+def test_direct_synthetic_writers_apply_full_poll_guard_before_any_write(
+    overrides, entrypoint,
+):
+    """In-process callers cannot skip demo/owner/price/route validation."""
+    command = {**_POLL_COMMAND, **overrides}
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="direct-call preflight"):
         if entrypoint == "simulate_lifecycle":
             sim.simulate_lifecycle(command)
         else:
