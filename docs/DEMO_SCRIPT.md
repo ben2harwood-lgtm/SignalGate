@@ -82,7 +82,7 @@ authority to acknowledge an unrelated command or record a fake milestone.
 In a parser-valid TP1+TP3 command with no TP2, synthetic `TP3_REACHED` is
 recorded as following `TP1_DONE` rather than falsely claiming a `TP2_DONE`
 milestone. A multi-target single-ticket synthetic TP1 stage no longer reports
-\`lot_size_after=0\` for the whole position while later TP stages are still
+`lot_size_after=0` for the whole position while later TP stages are still
 pending; it omits unproved intermediate position volumes instead. A split
 child, or a single-target position, may report zero remaining on its TP1
 closure. These are internal consistency rules, not observed broker volumes.
