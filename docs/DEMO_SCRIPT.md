@@ -41,7 +41,10 @@ stage lots; lot size and any stated entry price must also be finite and
 positive. Price relationships also match the parser's BUY/SELL direction
 rules: stop and any stated entry must be on the correct side of TP1, and
 subsequent targets must progress strictly away from the stop. Inverted or
-flat stop/target geometry cannot produce a synthetic ACK/fill. This checks
+flat stop/target geometry cannot produce a synthetic ACK/fill. For a MARKET
+command with no stated entry, the fake entry uses full-precision interpolation
+rather than fixed five-decimal rounding; if no representable value exists
+strictly between stop and TP1, no synthetic ACK/fill is permitted. This checks
 internal command consistency, **not** live market pricing or broker acceptance.
 A malformed TP2/TP3 cannot silently become an absent target or
 produce a fake SUCCESS receipt.

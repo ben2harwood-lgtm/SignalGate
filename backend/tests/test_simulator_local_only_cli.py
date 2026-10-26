@@ -759,3 +759,46 @@ def test_reordered_target_lots_cannot_fabricate_tp1_receipt(targets):
     assert client.get_paths == ["/commands/pending"]
     assert client.post_paths == []
     assert sim.processed == set()
+
+@pytest.mark.parametrize("direction,stop,tp1", [
+    ("BUY", 1.080001, 1.080002),
+    ("SELL", 1.080002, 1.080001),
+])
+def test_narrow_valid_market_bracket_keeps_implied_entry_inside(direction, stop, tp1):
+    """Fake MARKET entries must not round outside otherwise valid SL/TP1."""
+    command = {
+        **_POLL_COMMAND,
+        "direction": direction,
+        "initial_stop_loss": stop,
+        "take_profits": [{"level": 1, "price": tp1, "lot": 0.01}],
+    }
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    assert sim.poll() == command
+    fake_entry = ea_simulator._implied_entry(command)
+    assert min(stop, tp1) < fake_entry < max(stop, tp1)
+    assert client.post_paths == []
+
+
+def test_unrepresentable_market_bracket_refuses_before_fake_ack():
+    """Adjacent floating prices cannot support a truthful synthetic entry."""
+    command = {
+        **_POLL_COMMAND,
+        "initial_stop_loss": 1.0,
+        "take_profits": [
+            {"level": 1, "price": float.fromhex("0x1.0000000000001p+0"), "lot": 0.01}
+        ],
+    }
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="refusing fake execution"):
+        sim.run_once()
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
+    assert sim.processed == set()

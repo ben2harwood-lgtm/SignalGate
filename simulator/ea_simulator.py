@@ -124,16 +124,18 @@ def _has_valid_price_geometry(command: Dict[str, Any]) -> bool:
     targets = [prices_by_level[level] for level in sorted(prices_by_level)]
     stop = command["initial_stop_loss"]
     entry = command.get("entry_price")
+    if entry is None:
+        entry = _implied_entry(command)
     if command["direction"] == "BUY":
         return (
             stop < targets[0]
             and all(a < b for a, b in zip(targets, targets[1:]))
-            and (entry is None or stop < entry < targets[0])
+            and stop < entry < targets[0]
         )
     return (
         stop > targets[0]
         and all(a > b for a, b in zip(targets, targets[1:]))
-        and (entry is None or stop > entry > targets[0])
+        and stop > entry > targets[0]
     )
 
 
@@ -475,8 +477,10 @@ def _implied_entry(command: Dict[str, Any]) -> float:
     tp1 = _tp_price(command, 1)
     if tp1 is None:
         return sl
-    # Entry roughly 20% of the way from SL toward TP1.
-    return round(sl + (tp1 - sl) * 0.2, 5)
+    # Preserve narrow valid price brackets instead of rounding to 5 digits.
+    # The poll guard rejects the case where float precision leaves no point
+    # strictly between the stop and TP1.
+    return sl + (tp1 - sl) * 0.2
 
 
 def main() -> None:
