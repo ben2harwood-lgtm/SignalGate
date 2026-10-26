@@ -70,6 +70,11 @@ user, explicit demo-only MARKET authority, route-safe command and symbol,
 finite ordered prices and target levels. A direct test invocation is not a
 trusted shortcut around these rules. This is broker-free fixture integrity
 only; it cannot supply real MetaEditor or MT5 broker-demo evidence.
+Direct in-process synthetic execution reports also require exactly one safe,
+non-empty fake child-ticket identifier for a single-ticket command, or one
+distinct safe identifier per configured split target. Missing, duplicate,
+extra, malformed and control-character identities fail before any fabricated
+SUCCESS execution write; these checks do not prove genuine broker ownership.
 In a parser-valid TP1+TP3 command with no TP2, synthetic `TP3_REACHED` is
 recorded as following `TP1_DONE` rather than falsely claiming a `TP2_DONE`
 milestone. No fake stop-loss modification is reported after the last

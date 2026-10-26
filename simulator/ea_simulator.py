@@ -207,6 +207,26 @@ def _synthetic_ticket_base(user_id: str, command_id: str) -> int:
     return 1_000_000 + 8 * int.from_bytes(digest[:7], "big")
 
 
+
+def _valid_synthetic_child_tickets(command: Dict[str, Any], child_tickets: Any) -> bool:
+    """Direct fake execution reports need exactly the expected distinct tickets.
+
+    Synthetic identities are fixtures, never broker IDs. Do not let an in-process
+    caller report a SUCCESS for missing, duplicate, extra or unsafe fake children.
+    """
+    expected = (
+        len(command["take_profits"])
+        if command.get("split_ticket_demo_partial_mode") is True
+        else 1
+    )
+    return (
+        isinstance(child_tickets, list)
+        and len(child_tickets) == expected
+        and all(_route_safe_command_id(ticket) for ticket in child_tickets)
+        and len(set(child_tickets)) == expected
+    )
+
+
 class EASimulator:
     """Polls the backend and simulates the EA lifecycle for one user."""
 
@@ -348,6 +368,11 @@ class EASimulator:
         if not self._valid_command(command):
             raise RuntimeError(
                 "Synthetic command failed direct-call preflight; refusing fake execution"
+            )
+        if not _valid_synthetic_child_tickets(command, child_tickets):
+            raise RuntimeError(
+                "Synthetic child-ticket identities inconsistent with command; "
+                "refusing fake execution"
             )
         # Simulate a small favourable entry near the implied entry.
         entry = command.get("entry_price")

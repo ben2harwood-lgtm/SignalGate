@@ -1272,7 +1272,11 @@ def test_synthetic_reported_fill_volume_matches_ticket_mode(
         http=client, user_id="LOCAL-USER", api_key="synthetic-key",
         delay=0, verbose=False,
     )
-    sim.post_execution(command, ["FAKE-TICKET-1", "FAKE-TICKET-2"])
+    child_tickets = (
+        ["FAKE-TICKET-1", "FAKE-TICKET-2"]
+        if split_mode is True else ["FAKE-TICKET-1"]
+    )
+    sim.post_execution(command, child_tickets)
     assert len(client.writes) == 1
     path, receipt = client.writes[0]
     assert path == "/commands/LOCAL-ONLY-TEST-COMMAND/execution"
@@ -1396,4 +1400,44 @@ def test_direct_synthetic_writers_apply_full_poll_guard_before_any_write(
             sim.post_execution(command, ["SYNTHETIC-TICKET"])
     assert client.get_paths == []
     assert client.post_paths == []
+    assert sim.processed == set()
+
+
+@pytest.mark.parametrize("split_mode,child_tickets", [
+    (False, []),                          # SUCCESS without any fake ticket
+    (False, ["FAKE-1", "FAKE-2"]),        # Phantom extra single-position child
+    (True, []),                           # Missing both split children
+    (True, ["FAKE-1"]),                   # Missing second split child
+    (True, ["FAKE-1", "FAKE-2", "FAKE-3"]),  # Phantom extra split child
+    (True, ["FAKE-1", "FAKE-1"]),         # Same child counted twice
+    (False, ["BAD/ROUTE"]),              # Fake ticket cannot be a URL path
+    (False, ["BAD\\nLOG".replace("\\n", "\n")]),  # Receipt/log injection
+    (False, ["X" * 129]),                # Unbounded identifier
+    (False, [1]),                        # Non-string identity
+    (True, ["FAKE-1", None]),            # Malformed second child
+    (False, "FAKE-1"),                   # Not a list of tickets
+    (False, None),                       # Missing identity collection
+])
+def test_direct_synthetic_execution_refuses_false_child_ticket_identities(
+    split_mode, child_tickets,
+):
+    """Bad in-process child lists cannot create synthetic SUCCESS receipts."""
+    command = {
+        **_POLL_COMMAND,
+        "split_ticket_demo_partial_mode": split_mode,
+        "lot_size": 0.02,
+        "take_profits": [
+            {"level": 1, "price": 2353.0, "lot": 0.01},
+            {"level": 2, "price": 2358.0, "lot": 0.01},
+        ],
+    }
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="child-ticket identities inconsistent"):
+        sim.post_execution(command, child_tickets)
+    assert client.post_paths == []
+    assert client.get_paths == []
     assert sim.processed == set()
