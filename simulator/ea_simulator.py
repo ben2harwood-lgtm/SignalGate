@@ -80,14 +80,31 @@ def _positive_finite(value: Any) -> bool:
     return type(value) in (int, float) and math.isfinite(value) and value > 0
 
 
-def _has_positive_tp1(command: Dict[str, Any]) -> bool:
-    levels = command.get("take_profits")
-    return isinstance(levels, list) and any(
-        isinstance(tp, dict)
-        and tp.get("level") == 1
-        and _positive_finite(tp.get("price"))
-        for tp in levels
-    )
+def _has_valid_take_profits(command: Dict[str, Any]) -> bool:
+    """Reject malformed targets before ACK or fake SUCCESS receipts.
+
+    Backend CommandOut emits levels 1-3. A valid TP1 is required; malformed
+    later levels must not be silently omitted or poison synthetic evidence.
+    """
+    targets = command.get("take_profits")
+    if not isinstance(targets, list):
+        return False
+    levels = set()
+    for tp in targets:
+        if not isinstance(tp, dict):
+            return False
+        level = tp.get("level")
+        lot = tp.get("lot")
+        if (
+            type(level) is not int
+            or level not in (1, 2, 3)
+            or level in levels
+            or not _positive_finite(tp.get("price"))
+            or (lot is not None and not _positive_finite(lot))
+        ):
+            return False
+        levels.add(level)
+    return 1 in levels
 
 
 class HttpLike(Protocol):
@@ -168,7 +185,10 @@ class EASimulator:
             or command.get("entry_type") != "MARKET"
             or command.get("direction") not in {"BUY", "SELL"}
             or not _positive_finite(command.get("initial_stop_loss"))
-            or not _has_positive_tp1(command)
+            or not _positive_finite(command.get("lot_size"))
+            or (command.get("entry_price") is not None
+                and not _positive_finite(command["entry_price"]))
+            or not _has_valid_take_profits(command)
         ):
             raise RuntimeError(
                 "Synthetic command poll returned an invalid command; refusing fake execution"

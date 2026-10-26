@@ -165,6 +165,7 @@ class _AckRefusalClient:
             "user_id": "SYNTHETIC-USER", "demo_only": True,
             "entry_type": "MARKET",
              "initial_stop_loss": 2343.0,
+             "lot_size": 0.01,
              "take_profits": [{"level": 1, "price": 2353.0, "lot": 0.01}],
         }})
 
@@ -373,6 +374,7 @@ class _DifferentPendingCommandClient:
             "user_id": "LOCAL-USER", "demo_only": True,
             "entry_type": "MARKET",
              "initial_stop_loss": 2343.0,
+             "lot_size": 0.01,
              "take_profits": [{"level": 1, "price": 2353.0, "lot": 0.01}],
         }})
 
@@ -406,6 +408,7 @@ def test_scripted_flow_rejects_stale_pending_command(monkeypatch):
                     "user_id": "LOCAL-USER", "demo_only": True,
             "entry_type": "MARKET",
              "initial_stop_loss": 2343.0,
+             "lot_size": 0.01,
              "take_profits": [{"level": 1, "price": 2353.0, "lot": 0.01}],
                 }})
             return super().get(path, **kwargs)
@@ -444,6 +447,7 @@ _POLL_COMMAND = {
     "demo_only": True,
     "entry_type": "MARKET",
      "initial_stop_loss": 2343.0,
+             "lot_size": 0.01,
      "take_profits": [{"level": 1, "price": 2353.0, "lot": 0.01}],
 }
 
@@ -533,6 +537,72 @@ def test_simulator_refuses_invalid_stop_or_tp1_before_ack(overrides):
     assert client.get_paths == ["/commands/pending"]
     assert client.post_paths == []
     assert simulator.processed == set()
+
+
+@pytest.mark.parametrize("overrides", [
+    {"lot_size": None},
+    {"lot_size": 0},
+    {"lot_size": float("nan")},
+    {"lot_size": float("inf")},
+    {"entry_price": -1},
+    {"entry_price": float("inf")},
+    {"take_profits": [
+        {"level": 1, "price": 2353.0},
+        {"level": 2, "price": None},
+    ]},
+    {"take_profits": [
+        {"level": 1, "price": 2353.0},
+        {"level": 2, "price": float("inf")},
+    ]},
+    {"take_profits": [
+        {"level": 1, "price": 2353.0},
+        {"level": 2, "price": 2358.0, "lot": float("nan")},
+    ]},
+    {"take_profits": [
+        {"level": 1, "price": 2353.0},
+        {"level": 1, "price": 2358.0},
+    ]},
+    {"take_profits": [
+        {"level": 1, "price": 2353.0},
+        {"level": 4, "price": 2363.0},
+    ]},
+    {"take_profits": [{"level": 1, "price": 2353.0}, None]},
+    {"take_profits": [{"level": True, "price": 2353.0}]},
+])
+def test_malformed_extended_synthetic_command_values_refuse_ack(overrides):
+    """Malformed later TPs and lot/entry prices cannot create fake fills."""
+    command = {**_POLL_COMMAND, **overrides}
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="refusing fake execution"):
+        sim.run_once()
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
+    assert sim.processed == set()
+
+
+def test_complete_multi_target_synthetic_command_still_polls_read_only():
+    command = {
+        **_POLL_COMMAND,
+        "lot_size": 0.03,
+        "entry_price": 2349.0,
+        "take_profits": [
+            {"level": 1, "price": 2353.0, "lot": 0.01},
+            {"level": 2, "price": 2358.0, "lot": None},
+            {"level": 3, "price": 2363.0, "lot": 0.02},
+        ],
+    }
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    assert sim.poll() == command
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
 
 
 def test_owned_demo_pending_command_can_be_read_without_ack():

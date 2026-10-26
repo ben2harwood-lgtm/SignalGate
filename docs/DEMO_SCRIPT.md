@@ -34,7 +34,12 @@ write; wrong-owner, non-demo or non-MARKET commands cannot produce synthetic
 execution. The real demo EA refuses LIMIT entries and invalid/non-positive
 stop-loss or TP1 values; this simulator must not fabricate a successful
 lifecycle for those malformed commands instead. Pre-ACK guards also reject
-non-finite SL/TP1 prices (NaN/Infinity) and missing TP1.
+non-finite SL/TP1 prices (NaN/Infinity) and missing TP1. Before
+any synthetic acknowledgement, the entire returned target list must have
+unique TP1-TP3 levels, finite positive prices and finite positive optional
+stage lots; lot size and any stated entry price must also be finite and
+positive. A malformed TP2/TP3 cannot silently become an absent target or
+produce a fake SUCCESS receipt.
 Polling can claim the oldest command even on mismatch;
 restart only with a clean isolated test database, not a fabricated success.
 
