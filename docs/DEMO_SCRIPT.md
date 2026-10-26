@@ -38,7 +38,12 @@ non-finite SL/TP1 prices (NaN/Infinity) and missing TP1. Before
 any synthetic acknowledgement, the entire returned target list must have
 unique TP1-TP3 levels, finite positive prices and finite positive optional
 stage lots; lot size and any stated entry price must also be finite and
-positive. A malformed TP2/TP3 cannot silently become an absent target or
+positive. Price relationships also match the parser's BUY/SELL direction
+rules: stop and any stated entry must be on the correct side of TP1, and
+subsequent targets must progress strictly away from the stop. Inverted or
+flat stop/target geometry cannot produce a synthetic ACK/fill. This checks
+internal command consistency, **not** live market pricing or broker acceptance.
+A malformed TP2/TP3 cannot silently become an absent target or
 produce a fake SUCCESS receipt.
 Polling can claim the oldest command even on mismatch;
 restart only with a clean isolated test database, not a fabricated success.

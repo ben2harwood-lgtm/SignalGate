@@ -107,6 +107,33 @@ def _has_valid_take_profits(command: Dict[str, Any]) -> bool:
     return 1 in levels
 
 
+def _has_valid_price_geometry(command: Dict[str, Any]) -> bool:
+    """Match parser direction/stop/target ordering before synthetic ACK.
+
+    A positive price is not enough: inverted BUY/SELL stops or targets would
+    fabricate profitable-stage evidence for an impossible signal. An optional
+    explicit entry also has to sit between the stop and TP1. This does not
+    establish a real broker quote or execution acceptance.
+    """
+    prices_by_level = {
+        tp["level"]: tp["price"] for tp in command["take_profits"]
+    }
+    targets = [prices_by_level[level] for level in sorted(prices_by_level)]
+    stop = command["initial_stop_loss"]
+    entry = command.get("entry_price")
+    if command["direction"] == "BUY":
+        return (
+            stop < targets[0]
+            and all(a < b for a, b in zip(targets, targets[1:]))
+            and (entry is None or stop < entry < targets[0])
+        )
+    return (
+        stop > targets[0]
+        and all(a > b for a, b in zip(targets, targets[1:]))
+        and (entry is None or stop > entry > targets[0])
+    )
+
+
 class HttpLike(Protocol):
     """Minimal interface satisfied by both httpx.Client and FastAPI TestClient."""
 
@@ -189,6 +216,7 @@ class EASimulator:
             or (command.get("entry_price") is not None
                 and not _positive_finite(command["entry_price"]))
             or not _has_valid_take_profits(command)
+            or not _has_valid_price_geometry(command)
         ):
             raise RuntimeError(
                 "Synthetic command poll returned an invalid command; refusing fake execution"

@@ -661,3 +661,75 @@ def test_scripted_flow_rejects_unsafe_receipt_identifiers(monkeypatch, step, fie
         run_demo_flow.main()
     assert client.gets == ["/health"]
     assert client.posts == _SCRIPTED_PATHS[:step + 1]
+
+
+@pytest.mark.parametrize("overrides", [
+    {"initial_stop_loss": 2353.0},  # BUY SL == TP1
+    {"initial_stop_loss": 2360.0},  # BUY SL above TP1
+    {"direction": "SELL"},  # SELL stop below TP1
+    {"direction": "SELL", "initial_stop_loss": 2353.0},  # equal
+    {"take_profits": [
+        {"level": 1, "price": 2353.0}, {"level": 2, "price": 2351.0},
+    ]},  # BUY TP2 below TP1
+    {"take_profits": [
+        {"level": 1, "price": 2353.0}, {"level": 2, "price": 2353.0},
+    ]},  # flat targets
+    {"take_profits": [
+        {"level": 1, "price": 2353.0}, {"level": 3, "price": 2350.0},
+    ]},  # omitted TP2 does not permit inverted TP3
+    {"entry_price": 2343.0},  # BUY entry equals SL
+    {"entry_price": 2340.0},  # BUY entry below SL
+    {"entry_price": 2353.0},  # BUY entry equals TP1
+    {"entry_price": 2360.0},  # BUY entry above TP1
+    {"direction": "SELL", "initial_stop_loss": 2363.0,
+     "entry_price": 2363.0},  # SELL entry equals SL
+    {"direction": "SELL", "initial_stop_loss": 2363.0,
+     "entry_price": 2350.0},  # SELL entry below TP1
+    {"direction": "SELL", "initial_stop_loss": 2363.0,
+     "take_profits": [
+         {"level": 1, "price": 2353.0}, {"level": 2, "price": 2355.0},
+     ]},  # SELL TP2 must be lower than TP1
+])
+def test_inverted_price_geometry_never_acknowledges_or_fakes_fills(overrides):
+    """The parser refuses direction-inconsistent SL/entry/targets."""
+    command = {**_POLL_COMMAND, **overrides}
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="refusing fake execution"):
+        sim.run_once()
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
+    assert sim.processed == set()
+
+
+@pytest.mark.parametrize("command", [
+    {**_POLL_COMMAND, "entry_price": 2348.0,
+     "take_profits": [
+         {"level": 1, "price": 2353.0},
+         {"level": 2, "price": 2358.0},
+         {"level": 3, "price": 2363.0},
+     ]},
+    {**_POLL_COMMAND, "direction": "SELL",
+     "initial_stop_loss": 2363.0, "entry_price": 2358.0,
+     "take_profits": [
+         {"level": 1, "price": 2353.0},
+         {"level": 2, "price": 2348.0},
+         {"level": 3, "price": 2343.0},
+     ]},
+    {**_POLL_COMMAND, "take_profits": [
+        {"level": 1, "price": 2353.0},
+        {"level": 3, "price": 2363.0},
+    ]},
+])
+def test_consistent_price_geometry_still_polls_without_ack(command):
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    assert sim.poll() == command
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
