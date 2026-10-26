@@ -802,3 +802,35 @@ def test_unrepresentable_market_bracket_refuses_before_fake_ack():
     assert client.get_paths == ["/commands/pending"]
     assert client.post_paths == []
     assert sim.processed == set()
+
+
+@pytest.mark.parametrize("invalid_split_mode", [
+    "false", "true", 0, 1, None, [], {},
+])
+def test_non_boolean_split_mode_refuses_before_fake_ack(invalid_split_mode):
+    """Malformed split-mode types must not choose synthetic child-ticket count."""
+    command = {**_POLL_COMMAND, "split_ticket_demo_partial_mode": invalid_split_mode}
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="refusing fake execution"):
+        sim.run_once()
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
+    assert sim.processed == set()
+
+
+@pytest.mark.parametrize("split_mode", [False, True])
+def test_boolean_split_mode_can_poll_without_fake_writes(split_mode):
+    """Real CommandOut emits a bool; do not reject valid split-mode values."""
+    command = {**_POLL_COMMAND, "split_ticket_demo_partial_mode": split_mode}
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    assert sim.poll() == command
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []

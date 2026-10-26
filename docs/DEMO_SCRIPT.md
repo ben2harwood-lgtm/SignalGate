@@ -48,6 +48,8 @@ strictly between stop and TP1, no synthetic ACK/fill is permitted. This checks
 internal command consistency, **not** live market pricing or broker acceptance.
 A malformed TP2/TP3 cannot silently become an absent target or
 produce a fake SUCCESS receipt.
+The split-ticket flag is accepted only as a boolean when present: a
+string such as `"false"` must not create three fabricated child tickets.
 Polling can claim the oldest command even on mismatch;
 restart only with a clean isolated test database, not a fabricated success.
 

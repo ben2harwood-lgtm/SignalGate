@@ -216,6 +216,8 @@ class EASimulator:
             or command.get("demo_only") is not True
             or command.get("entry_type") != "MARKET"
             or command.get("direction") not in {"BUY", "SELL"}
+            or ("split_ticket_demo_partial_mode" in command
+                and type(command["split_ticket_demo_partial_mode"]) is not bool)
             or not _positive_finite(command.get("initial_stop_loss"))
             or not _positive_finite(command.get("lot_size"))
             or (command.get("entry_price") is not None
