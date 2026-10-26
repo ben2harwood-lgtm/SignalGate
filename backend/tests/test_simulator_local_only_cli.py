@@ -111,3 +111,32 @@ def test_cli_rejects_bad_health_before_poll_or_write(
         module.main()
     assert client.paths == ["/health"]
     assert client.posts == []
+
+
+# Documentation contracts for the corresponding synthetic-only operator guide.
+_DEMO_SCRIPT = (
+    Path(__file__).resolve().parents[2] / "docs" / "DEMO_SCRIPT.md"
+).read_text(encoding="utf-8")
+
+
+def test_demo_script_does_not_reuse_failed_frozen_rc2_for_broker_acceptance():
+    assert "Use the frozen demo-only RC or a later explicitly named candidate" not in _DEMO_SCRIPT
+    assert "3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2" in _DEMO_SCRIPT
+    assert "18 errors / 4 warnings" in _DEMO_SCRIPT
+    assert "Do not use frozen RC2" in _DEMO_SCRIPT
+
+
+def test_demo_script_keeps_simulator_broker_receipts_not_run():
+    assert "internal, broker-free" in _DEMO_SCRIPT
+    assert "NOT_RUN" in _DEMO_SCRIPT
+    assert "synthetic only" in _DEMO_SCRIPT
+    assert "Demo EA or simulator polls" not in _DEMO_SCRIPT
+
+
+def test_demo_script_preserves_unmet_real_provider_pilot_entry_gates():
+    assert "PR #60" in _DEMO_SCRIPT
+    assert "regenerated EX5" in _DEMO_SCRIPT
+    assert "actual MT5 demo-broker scenario receipts" in _DEMO_SCRIPT
+    assert "docs/BETA_ACCEPTANCE.md" in _DEMO_SCRIPT
+    assert "NOT STARTED" in _DEMO_SCRIPT
+    assert "external feed must stay paused" in _DEMO_SCRIPT

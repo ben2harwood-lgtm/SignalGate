@@ -1,6 +1,6 @@
 # SignalGate Provider Edition Demo Script
 
-This walkthrough demonstrates the current Provider Edition journey without real money. It is for sales/pilot demonstration and operating rehearsal; it is not a substitute for the MT5 acceptance scenarios in `docs/MT5_ACCEPTANCE.md`.
+This walkthrough is an **internal, broker-free Provider Edition rehearsal** on an isolated local demo backend, using synthetic lifecycle events. It is not a real-provider pilot or MT5 demo-broker acceptance test and does not authorise an external release. Genuine MT5 evidence follows a separate approval and receipt process under `docs/MT5_ACCEPTANCE.md`.
 
 ## Legacy synthetic CLI containment
 
@@ -23,11 +23,11 @@ independent acceptance evidence.
 
 ## Preflight
 
-1. Use the frozen demo-only RC or a later explicitly named candidate.
-2. Confirm backend readiness and green candidate CI.
-3. Use an isolated provider tenant and demo subscriber.
-4. Keep the provider/feed paused while configuring.
-5. Use demo MetaTrader or the simulator only.
+1. For **this internal broker-free walkthrough**, use only the local synthetic simulator and an isolated demo backend/database. Treat every actual MT5 broker scenario outcome as `NOT_RUN`; simulator responses are not an alternative acceptance path.
+2. **Do not use frozen RC2** (`3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2`) as an MT5 DEMO acceptance candidate. Its exact-source official [MetaEditor run 35464044898](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464044898) failed with **18 errors / 4 warnings**. A later source's clean compilation cannot retrospectively accept RC2.
+3. Any **separately authorised real MT5 DEMO** acceptance work requires an independently approved successor candidate, exact-source 0-error/0-warning MetaEditor receipt, regenerated EX5, resolution of PR #60's multi-fill, deal/position identity, uncertain acknowledgement, split rollback and TP-stage attribution holds, independent review, and **actual MT5 demo-broker scenario receipts**. This walkthrough cannot supply those receipts.
+4. Confirm exact-candidate CI and backend readiness for the chosen isolated rehearsal; CI alone is not external acceptance. Use an isolated provider tenant and demo subscriber.
+5. Keep provider/feed paused during setup. A real-provider pilot remains **NOT STARTED** and the external feed must stay paused until the broker evidence and **all** `docs/BETA_ACCEPTANCE.md` security, legal, privacy, consent and operator gates are satisfied.
 
 ## Provider setup
 
@@ -64,8 +64,8 @@ The provider must not directly attach a subscriber behind the subscriber's back.
 4. The subscribed tester receives the structured trade card.
 5. Tester presses **YES**.
 6. SignalGate creates one tenant/account-bound command.
-7. Demo EA or simulator polls for the command.
-8. Execution is reported from demo broker/simulator state.
+7. In this **internal broker-free rehearsal**, the isolated loopback simulator polls for the command.
+8. Record any execution/management response as **synthetic only**; actual MT5 demo-broker scenario outcomes remain `NOT_RUN`.
 9. Management events progress through the lifecycle.
 10. Provider opens history/reconciliation in the Provider Portal.
 11. Download the tenant-scoped provider evidence export.
@@ -85,7 +85,7 @@ Demonstrate at least:
 - wrong customer licence — rejected;
 - reconciliation conflict — fails closed.
 
-For MT5 demonstrations also follow `docs/MT5_ACCEPTANCE.md` and retain the formal receipt.
+For any separately authorised MT5 DEMO acceptance session, follow `docs/MT5_ACCEPTANCE.md` and retain actual exact-candidate broker receipts; none are supplied by this simulator walkthrough.
 
 ## Evidence to show
 
