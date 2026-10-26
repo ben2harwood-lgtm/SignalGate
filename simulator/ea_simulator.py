@@ -253,7 +253,10 @@ class EASimulator:
     ) -> None:
         # Invalid timing can fail after ACK/OPENED and leave false partial
         # synthetic history. Reject it before touching the HTTP client.
-        if type(delay) not in (int, float) or not math.isfinite(delay) or delay < 0:
+        if (
+            type(delay) not in (int, float)
+            or (delay != 0 and not _positive_finite(delay))
+        ):
             raise ValueError("Simulator delay must be finite and non-negative")
         self.http = http
         self.user_id = user_id
@@ -639,11 +642,7 @@ class EASimulator:
         return True
 
     def run_forever(self, poll_interval: float = 2.0) -> None:
-        if (
-            type(poll_interval) not in (int, float)
-            or not math.isfinite(poll_interval)
-            or poll_interval <= 0
-        ):
+        if not _positive_finite(poll_interval):
             raise ValueError("Simulator poll interval must be finite and positive")
         self.log(f"Polling {self.user_id} every {poll_interval}s. Ctrl+C to stop.")
         try:

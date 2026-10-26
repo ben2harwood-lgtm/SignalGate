@@ -19,9 +19,10 @@ backend `parser_status` or `parser_error` values that could disclose raw signal
 text or inject terminal control sequences. The simulator refuses fake fills after rejected or ambiguous
 command acknowledgements, and stops the synthetic lifecycle if execution or
 management receipts are rejected. The class-level test harness remains usable
-with an in-process FastAPI TestClient. Negative, NaN or infinite synthetic
-lifecycle delays, and non-positive, NaN or infinite poll intervals, are
-refused before any HTTP client is opened. Programmatic simulator entrypoints
+with an in-process FastAPI TestClient. Negative, NaN, infinite or unrepresentably
+large integer synthetic lifecycle delays, and non-positive, NaN, infinite or
+unrepresentably large integer poll intervals, are refused before any HTTP client
+is opened. Programmatic simulator entrypoints
 also validate these timers before polling; invalid timing cannot leave a
 partially fabricated lifecycle after acknowledgement. The scripted flow also
 halts before the next write when registration, signal creation or approval

@@ -93,6 +93,7 @@ def test_simulator_cli_refuses_invalid_timing_before_http(
 
 @pytest.mark.parametrize("delay", [
     -0.1, float("nan"), float("inf"), -float("inf"), True, "0",
+    10 ** 400,  # Finite Python integer but not representable as a finite float.
 ])
 def test_programmatic_simulator_invalid_delay_is_refused_before_poll(delay):
     with pytest.raises(ValueError, match="delay must be finite"):
@@ -104,6 +105,7 @@ def test_programmatic_simulator_invalid_delay_is_refused_before_poll(delay):
 
 @pytest.mark.parametrize("interval", [
     0, -1, float("nan"), float("inf"), True,
+    10 ** 400,  # Prevent an uncaught math.isfinite integer overflow.
 ])
 def test_programmatic_simulator_invalid_poll_interval_is_refused(interval):
     simulator = ea_simulator.EASimulator(
