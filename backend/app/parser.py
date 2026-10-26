@@ -128,9 +128,17 @@ def parse_signal(
     # Numeric regex matching alone could accept the prefix of "1.09.2" or
     # "1.09USD". In particular, a malformed ENTRY must not become MARKET.
     # Check complete labelled tokens before any parsed value is trusted.
-    for field, token in re.findall(
-        r"\b(ENTRY|SL|TP1?|TP2|TP3)\b\s*[:=]?\s*(\S+)", upper
-    ):
+    # A present but valueless field must not silently disappear. In particular,
+    # trailing ENTRY must not become an implicit MARKET order, and explicit
+    # trailing TP2/TP3 must not be silently discarded.
+    for field_match in re.finditer(r"\b(ENTRY|SL|TP1?|TP2|TP3)\b", upper):
+        field = field_match.group(1)
+        token_match = re.match(
+            r"\s*[:=]?\s*(\S+)", upper[field_match.end():]
+        )
+        if token_match is None:
+            return _reject(result, f"Malformed {field} value (use a plain decimal)")
+        token = token_match.group(1)
         # Commas/semicolons can separate fields even without whitespace:
         # "SL:1.08,TP1:1.09;TP2:1.10" is not a malformed SL value.
         value = re.split(

@@ -51,3 +51,23 @@ def test_overflowed_decimal_prices_fail_closed(signal):
     result = parse_signal(signal)
     assert not result.is_valid
     assert result.expires_at is None
+
+
+@pytest.mark.parametrize(("signal", "field"), [
+    ("EURUSD BUY SL 1.0800 TP1 1.0900 ENTRY", "ENTRY"),
+    ("EURUSD BUY SL 1.0800 TP1 1.0900 TP2", "TP2"),
+    ("EURUSD BUY SL 1.0800 TP1 1.0900 TP3", "TP3"),
+    ("EURUSD BUY SL 1.0800 TP1 1.0900 TP2   ", "TP2"),
+])
+def test_explicit_empty_optional_field_rejected_instead_of_ignored(signal, field):
+    result = parse_signal(signal)
+    assert not result.is_valid
+    assert result.parser_error == f"Malformed {field} value (use a plain decimal)"
+    assert result.expires_at is None
+
+
+def test_absent_optional_entry_and_later_targets_remain_valid():
+    result = parse_signal("EURUSD BUY SL 1.0800 TP1 1.0900")
+    assert result.is_valid
+    assert result.entry_type == "MARKET"
+    assert result.tp2 is None and result.tp3 is None
