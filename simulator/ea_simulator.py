@@ -13,11 +13,46 @@ lifecycle can be exercised and recorded in the performance ledger.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
+import re
 import time
 from typing import Any, Dict, List, Optional, Protocol
+from urllib.parse import urlsplit
 
 import httpx
+
+
+def validate_local_backend_origin(raw: str) -> str:
+    """Limit fake lifecycle writers to an explicit numeric loopback HTTP origin.
+
+    This rejects remote hosts, userinfo, arbitrary paths and inherited proxy
+    routing. It cannot prove that a local reverse proxy is not forwarding.
+    """
+    if not raw or any(ord(char) <= 32 or ord(char) == 127 for char in raw):
+        raise ValueError("Simulator backend must be a local HTTP origin")
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Simulator backend has an invalid host or port") from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.netloc.endswith(":")
+        or port == 0
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "Synthetic execution is local-only: use http://127.0.0.1:<port> "
+            "or http://[::1]:<port>, with no userinfo, path, query or fragment"
+        )
+    return raw.rstrip("/")
 
 
 BANNER = (
@@ -26,6 +61,136 @@ BANNER = (
     " It only posts fake execution/management events to the backend for testing.\n"
     "===========================================================================\n"
 )
+
+
+def _route_safe_command_id(value: Any) -> bool:
+    """Only canonical ASCII IDs may select a synthetic command callback route.
+
+    Backend-generated command IDs are CMD- plus uppercase hexadecimal; this
+    also preserves hyphen/underscore local fixture IDs without admitting URL
+    delimiters, encoding escapes, control characters or oversized paths.
+    """
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is not None
+    )
+
+
+def _safe_demo_symbol(value: Any) -> bool:
+    """Prevent malformed broker labels from forging synthetic receipt/log lines.
+
+    Do not restrict ordinary ASCII broker suffix punctuation such as '.'/'#';
+    reject unprintable, invisible, whitespace and oversized symbols instead.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and value.isascii()
+        and value.isprintable()
+        and not any(char.isspace() for char in value)
+    )
+
+
+def _positive_finite(value: Any) -> bool:
+    """Accept usable numeric values without crashing on oversized JSON ints."""
+    if type(value) not in (int, float) or value <= 0:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        # An arbitrarily large JSON integer cannot be a finite broker price
+        # or volume. Refuse it before ACK instead of crashing preflight.
+        return False
+
+
+def _has_valid_take_profits(command: Dict[str, Any]) -> bool:
+    """Reject malformed targets before ACK or fake SUCCESS receipts.
+
+    Backend CommandOut emits levels 1-3. A valid TP1 is required; malformed
+    later levels must not be silently omitted or poison synthetic evidence.
+    """
+    targets = command.get("take_profits")
+    if not isinstance(targets, list):
+        return False
+    levels = set()
+    previous_level = 0
+    for tp in targets:
+        if not isinstance(tp, dict):
+            return False
+        level = tp.get("level")
+        lot = tp.get("lot")
+        if (
+            type(level) is not int
+            or level not in (1, 2, 3)
+            or level in levels
+            or level <= previous_level
+            or not _positive_finite(tp.get("price"))
+            or (lot is not None and not _positive_finite(lot))
+        ):
+            return False
+        levels.add(level)
+        previous_level = level
+    return 1 in levels
+
+
+def _has_boolean_split_mode(command: Dict[str, Any]) -> bool:
+    """Direct in-process calls must enforce the same strict flag as polling."""
+    return (
+        "split_ticket_demo_partial_mode" not in command
+        or type(command["split_ticket_demo_partial_mode"]) is bool
+    )
+
+
+def _has_complete_split_ticket_lots(command: Dict[str, Any]) -> bool:
+    """Never invent sizes for synthetic split-ticket children.
+
+    A reported child fill/closure needs an explicit finite positive stage lot.
+    An absent lot cannot be substituted with the unrelated command lot size.
+    Even finite positive child lots must sum to a finite synthetic fill volume.
+    """
+    if command.get("split_ticket_demo_partial_mode") is not True:
+        return True
+    targets = command.get("take_profits")
+    return (
+        isinstance(targets, list)
+        and bool(targets)
+        and all(
+            isinstance(tp, dict) and _positive_finite(tp.get("lot"))
+            for tp in targets
+        )
+        # Individually finite fake fills can sum to Infinity. Reject before
+        # ACK rather than attempt to serialize a non-finite SUCCESS receipt.
+        and _positive_finite(sum(tp["lot"] for tp in targets))
+    )
+
+
+def _has_valid_price_geometry(command: Dict[str, Any]) -> bool:
+    """Match parser direction/stop/target ordering before synthetic ACK.
+
+    A positive price is not enough: inverted BUY/SELL stops or targets would
+    fabricate profitable-stage evidence for an impossible signal. An optional
+    explicit entry also has to sit between the stop and TP1. This does not
+    establish a real broker quote or execution acceptance.
+    """
+    prices_by_level = {
+        tp["level"]: tp["price"] for tp in command["take_profits"]
+    }
+    targets = [prices_by_level[level] for level in sorted(prices_by_level)]
+    stop = command["initial_stop_loss"]
+    entry = command.get("entry_price")
+    if entry is None:
+        entry = _implied_entry(command)
+    if command["direction"] == "BUY":
+        return (
+            stop < targets[0]
+            and all(a < b for a, b in zip(targets, targets[1:]))
+            and stop < entry < targets[0]
+        )
+    return (
+        stop > targets[0]
+        and all(a > b for a, b in zip(targets, targets[1:]))
+        and stop > entry > targets[0]
+    )
 
 
 class HttpLike(Protocol):
@@ -38,6 +203,40 @@ class HttpLike(Protocol):
 def _fake_ticket(base: int, offset: int) -> str:
     # Deterministic pseudo ticket numbers for the simulator.
     return str(base + offset)
+
+
+def _synthetic_ticket_base(user_id: str, command_id: str) -> int:
+    """Reserve distinct fake ticket ranges for distinct synthetic commands.
+
+    The old fixed 100000 ticket was reused for every signal/user, potentially
+    giving unrelated synthetic lifecycles the same apparent broker identity.
+    A stable digest permits repeatable isolated tests; this is NOT a broker ID.
+    """
+    identity = json.dumps([user_id, command_id], separators=(",", ":"))
+    digest = hashlib.sha256(identity.encode("utf-8")).digest()
+    # 56 digest bits * 8 slots fits inside signed 64-bit ticket range.
+    return 1_000_000 + 8 * int.from_bytes(digest[:7], "big")
+
+
+
+def _valid_synthetic_child_tickets(command: Dict[str, Any], child_tickets: Any) -> bool:
+    """Require the exact deterministic fake-ticket sequence for this command.
+
+    These identities are fixtures, never broker IDs. Missing, extra, reordered,
+    or foreign-user/command IDs must not create a synthetic SUCCESS receipt.
+    """
+    count = (
+        len(command["take_profits"])
+        if command.get("split_ticket_demo_partial_mode") is True
+        else 1
+    )
+    if not isinstance(child_tickets, list) or len(child_tickets) != count:
+        return False
+    # A valid-looking arbitrary ID could masquerade as a broker ticket in a
+    # fake SUCCESS receipt. Require the exact per-user/per-command fixture
+    # sequence emitted by simulate_lifecycle, including its stage order.
+    base = _synthetic_ticket_base(command["user_id"], command["command_id"])
+    return child_tickets == [_fake_ticket(base, i) for i in range(count)]
 
 
 class EASimulator:
@@ -53,6 +252,13 @@ class EASimulator:
         verbose: bool = True,
         scenario: str = "win",
     ) -> None:
+        # Invalid timing can fail after ACK/OPENED and leave false partial
+        # synthetic history. Reject it before touching the HTTP client.
+        if (
+            type(delay) not in (int, float)
+            or (delay != 0 and not _positive_finite(delay))
+        ):
+            raise ValueError("Simulator delay must be finite and non-negative")
         self.http = http
         self.user_id = user_id
         self.headers = {"X-EA-API-Key": api_key}
@@ -73,6 +279,50 @@ class EASimulator:
         if self.delay:
             time.sleep(self.delay)
 
+    def _require_truthful_stop_out(self, command: Dict[str, Any]) -> None:
+        """Do not report one child's stop-out as closure of multiple children."""
+        if (
+            self.scenario == "stop_out"
+            and command.get("split_ticket_demo_partial_mode") is True
+            and len(command["take_profits"]) > 1
+        ):
+            raise RuntimeError(
+                "Synthetic split-ticket stop-out cannot prove every child closed; "
+                "refusing fake execution before acknowledgement"
+            )
+
+    def _valid_command(self, command: Any) -> bool:
+        """Apply the same fail-closed poll guard to direct synthetic writers.
+
+        Tests can call simulate_lifecycle/post_execution without polling. Such
+        calls must not bypass owner, demo-only, entry, or price validation and
+        manufacture a valid-looking synthetic execution receipt.
+        """
+        if not isinstance(command, dict):
+            return False
+        return not (
+            not _route_safe_command_id(command.get("command_id"))
+            or any(
+                not isinstance(command.get(key), str) or not command[key].strip()
+                for key in ("command_id", "symbol", "direction")
+            )
+            or not _safe_demo_symbol(command.get("symbol"))
+            or command.get("user_id") != self.user_id
+            or command.get("demo_only") is not True
+            or command.get("entry_type") != "MARKET"
+            or command.get("direction") not in {"BUY", "SELL"}
+            or not _has_boolean_split_mode(command)
+            or not _positive_finite(command.get("initial_stop_loss"))
+            or not _positive_finite(command.get("lot_size"))
+            or (
+                command.get("entry_price") is not None
+                and not _positive_finite(command["entry_price"])
+            )
+            or not _has_valid_take_profits(command)
+            or not _has_complete_split_ticket_lots(command)
+            or not _has_valid_price_geometry(command)
+        )
+
     # --- backend calls ----------------------------------------------------
 
     def poll(self) -> Optional[Dict[str, Any]]:
@@ -81,18 +331,81 @@ class EASimulator:
             params={"user_id": self.user_id},
             headers=self.headers,
         )
-        data = resp.json()
-        return data.get("command")
+        if resp.status_code != 200:
+            raise RuntimeError(
+                "Synthetic command poll was not accepted; refusing fake execution"
+            )
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if not isinstance(data, dict) or "command" not in data:
+            raise RuntimeError(
+                "Synthetic command poll returned an invalid receipt; refusing fake execution"
+            )
+        command = data["command"]
+        if command is not None and not self._valid_command(command):
+            raise RuntimeError(
+                "Synthetic command poll returned an invalid command; refusing fake execution"
+            )
+        return command
 
     def ack_received(self, command_id: str) -> None:
-        self.http.post(
+        # Direct in-process callers can bypass the guarded pending poll.
+        # Never let a forged ID select an arbitrary synthetic callback URL.
+        if not _route_safe_command_id(command_id):
+            raise RuntimeError(
+                "Synthetic callback has invalid command ID; refusing fake write"
+            )
+        response = self.http.post(
             f"/commands/{command_id}/received", json={}, headers=self.headers
         )
+        # An HTTP 200 without a confirmed command claim is not permission
+        # to fabricate any downstream execution or management receipts.
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if (
+            response.status_code != 200
+            or not isinstance(payload, dict)
+            or payload.get("status") != "received"
+        ):
+            raise RuntimeError(
+                "Synthetic command acknowledgement was not accepted; "
+                "refusing to report simulated fills"
+            )
 
     def post_execution(self, command: Dict[str, Any], child_tickets: List[str]) -> None:
+        if not _has_boolean_split_mode(command):
+            raise RuntimeError(
+                "Synthetic split-ticket mode must be boolean; refusing fake execution"
+            )
+        if not _has_complete_split_ticket_lots(command):
+            raise RuntimeError(
+                "Synthetic split-ticket stages lack positive explicit lots; "
+                "refusing fake execution"
+            )
+        if not self._valid_command(command):
+            raise RuntimeError(
+                "Synthetic command failed direct-call preflight; refusing fake execution"
+            )
+        if not _valid_synthetic_child_tickets(command, child_tickets):
+            raise RuntimeError(
+                "Synthetic child-ticket identities inconsistent with command; "
+                "refusing fake execution"
+            )
         # Simulate a small favourable entry near the implied entry.
         entry = command.get("entry_price")
         executed_price = entry if entry is not None else _implied_entry(command)
+        # A non-split demo has one position of the approved command size.
+        # TP stage lots represent separate fake child fills only in split mode.
+        reported_lots = command["lot_size"]
+        if command.get("split_ticket_demo_partial_mode") is True:
+            reported_lots = (
+                sum(tp.get("lot") or 0 for tp in command["take_profits"])
+                or reported_lots
+            )
         payload = {
             "status": "SUCCESS",
             "broker_ticket": child_tickets[0] if child_tickets else None,
@@ -101,9 +414,7 @@ class EASimulator:
             "executed_direction": command["direction"],
             "requested_price": entry,
             "executed_price": executed_price,
-            "lot_size": sum(
-                tp.get("lot") or 0 for tp in command["take_profits"]
-            ) or command["lot_size"],
+            "lot_size": reported_lots,
             "initial_stop_loss": command["initial_stop_loss"],
             "tp1": _tp_price(command, 1),
             "tp2": _tp_price(command, 2),
@@ -111,29 +422,73 @@ class EASimulator:
             "spread_at_execution": 20,
             "slippage": 0,
         }
-        self.http.post(
+        response = self.http.post(
             f"/commands/{command['command_id']}/execution",
             json=payload,
             headers=self.headers,
         )
+        try:
+            receipt = response.json()
+        except ValueError:
+            receipt = None
+        if (
+            response.status_code != 200
+            or not isinstance(receipt, dict)
+            or receipt.get("status") != "ok"
+        ):
+            raise RuntimeError(
+                "Synthetic execution report was not accepted; "
+                "refusing to emit management events"
+            )
 
     def post_event(self, command_id: str, **fields) -> None:
-        self.http.post(
+        if not _route_safe_command_id(command_id):
+            raise RuntimeError(
+                "Synthetic callback has invalid command ID; refusing fake write"
+            )
+        response = self.http.post(
             f"/commands/{command_id}/management_event",
             json=fields,
             headers=self.headers,
         )
+        try:
+            receipt = response.json()
+        except ValueError:
+            receipt = None
+        if (
+            response.status_code != 200
+            or not isinstance(receipt, dict)
+            or receipt.get("status") != "ok"
+        ):
+            raise RuntimeError(
+                "Synthetic management event was not accepted; "
+                "halting synthetic lifecycle"
+            )
 
     # --- lifecycle --------------------------------------------------------
 
     def simulate_lifecycle(self, command: Dict[str, Any]) -> None:
         """Simulate open -> TP1 -> BE -> TP2 -> SL@TP1 -> TP3 -> fully closed."""
+        if not _has_boolean_split_mode(command):
+            raise RuntimeError(
+                "Synthetic split-ticket mode must be boolean; refusing fake execution"
+            )
+        if not _has_complete_split_ticket_lots(command):
+            raise RuntimeError(
+                "Synthetic split-ticket stages lack positive explicit lots; "
+                "refusing fake execution before acknowledgement"
+            )
+        if not self._valid_command(command):
+            raise RuntimeError(
+                "Synthetic command failed direct-call preflight; refusing fake execution"
+            )
+        self._require_truthful_stop_out(command)
         cid = command["command_id"]
-        base_ticket = 100000
+        base_ticket = _synthetic_ticket_base(self.user_id, cid)
 
         # Open child tickets (split-ticket demo mode) or single ticket.
         if command.get("split_ticket_demo_partial_mode"):
-            child_tickets = [_fake_ticket(base_ticket, i) for i in range(3)]
+            child_tickets = [_fake_ticket(base_ticket, i) for i in range(len(command["take_profits"]))]
         else:
             child_tickets = [_fake_ticket(base_ticket, 0)]
 
@@ -160,14 +515,30 @@ class EASimulator:
         self.log("Simulating TP1 reached + close + SL->breakeven")
         self.post_event(cid, event_type="TP1_REACHED", stage="OPENED",
                         result="SUCCESS", price=_tp_price(command, 1))
+        # A non-split position with further targets is not fully closed at
+        # TP1. We cannot claim measured remaining volume without broker data.
+        # Split children and single-target positions do close at their TP1.
+        tp1_volume = {}
+        if command.get("split_ticket_demo_partial_mode") is True:
+            tp1_volume = {
+                "lot_size_before": command["take_profits"][0]["lot"],
+                "lot_size_after": 0,
+            }
+        elif len(command["take_profits"]) == 1:
+            tp1_volume = {
+                "lot_size_before": command["lot_size"],
+                "lot_size_after": 0,
+            }
         self.post_event(cid, broker_ticket=child_tickets[0],
                         event_type="TP1_CLOSE_SUCCESS", stage="TP1_DONE",
                         result="SUCCESS", price=_tp_price(command, 1),
-                        lot_size_before=command["take_profits"][0].get("lot"),
-                        lot_size_after=0)
-        self.post_event(cid, event_type="SL_MOVE_BREAKEVEN_SUCCESS",
-                        stage="TP1_DONE", requested_action="MOVE_SL_BREAKEVEN",
-                        result="SUCCESS", stop_loss_before=sl, stop_loss_after=entry)
+                        **tp1_volume)
+        # A lone TP1 closes the only synthetic child: there is no remaining
+        # position on which a broker could modify the stop.
+        if len(command["take_profits"]) > 1:
+            self.post_event(cid, event_type="SL_MOVE_BREAKEVEN_SUCCESS",
+                            stage="TP1_DONE", requested_action="MOVE_SL_BREAKEVEN",
+                            result="SUCCESS", stop_loss_before=sl, stop_loss_after=entry)
         self._sleep()
 
         if _tp_price(command, 2) is not None:
@@ -178,15 +549,23 @@ class EASimulator:
             self.post_event(cid, broker_ticket=child_tickets[min(1, len(child_tickets)-1)],
                             event_type="TP2_CLOSE_SUCCESS", stage="TP2_DONE",
                             result="SUCCESS", price=_tp_price(command, 2))
-            self.post_event(cid, event_type="SL_MOVE_TP1_SUCCESS", stage="TP2_DONE",
-                            requested_action="MOVE_SL_TP1", result="SUCCESS",
-                            stop_loss_before=entry, stop_loss_after=_tp_price(command, 1))
+            # A two-target command is fully closed at TP2; modifying a stop
+            # after the final child closes would fabricate broker evidence.
+            if _tp_price(command, 3) is not None:
+                self.post_event(cid, event_type="SL_MOVE_TP1_SUCCESS", stage="TP2_DONE",
+                                requested_action="MOVE_SL_TP1", result="SUCCESS",
+                                stop_loss_before=entry, stop_loss_after=_tp_price(command, 1))
             self._sleep()
 
         if _tp_price(command, 3) is not None:
             # TP3
             self.log("Simulating TP3 reached + final close")
-            self.post_event(cid, event_type="TP3_REACHED", stage="TP2_DONE",
+            # TP1 + TP3 is valid parser input: do not invent a TP2_DONE
+            # management milestone if no TP2 stage was ever recorded.
+            preceding_stage = (
+                "TP2_DONE" if _tp_price(command, 2) is not None else "TP1_DONE"
+            )
+            self.post_event(cid, event_type="TP3_REACHED", stage=preceding_stage,
                             result="SUCCESS", price=_tp_price(command, 3))
             self.post_event(cid, broker_ticket=child_tickets[-1],
                             event_type="TP3_CLOSE_SUCCESS", stage="TP3_DONE",
@@ -231,8 +610,8 @@ class EASimulator:
             result="SUCCESS",
         )
 
-    def run_once(self) -> bool:
-        """Poll once; if a command is found, run its full lifecycle.
+    def run_once(self, expected_command_id: Optional[str] = None) -> bool:
+        """Poll once and only simulate the caller's expected command if supplied.
 
         Returns True if a command was processed.
         """
@@ -240,17 +619,32 @@ class EASimulator:
         if command is None:
             return False
         cid = command["command_id"]
+        # The scripted demo has just approved one command, but the backend
+        # intentionally polls the oldest pending command for this user. Never
+        # manufacture execution receipts for an unrelated older approval.
+        # Poll itself claims a pending command; do not silently retry or fake
+        # a successful receipt after a mismatch.
+        if expected_command_id is not None and cid != expected_command_id:
+            raise RuntimeError(
+                "Pending demo command differs from newly approved command; "
+                "refusing synthetic execution"
+            )
         if cid in self.processed:
             self.log(f"DUPLICATE_COMMAND {cid} ignored (local idempotency).")
             return False
-        self.processed.add(cid)
+        # Fail before ACK: the stop-out emulator currently reports a hit for
+        # one child only, so it cannot truthfully close a split multi-child set.
+        self._require_truthful_stop_out(command)
         self.log(f"Received command {cid} ({command['symbol']} {command['direction']})")
         self.ack_received(cid)
+        self.processed.add(cid)
         self.simulate_lifecycle(command)
         self.log(f"Command {cid} lifecycle complete (FULLY_CLOSED).")
         return True
 
     def run_forever(self, poll_interval: float = 2.0) -> None:
+        if not _positive_finite(poll_interval):
+            raise ValueError("Simulator poll interval must be finite and positive")
         self.log(f"Polling {self.user_id} every {poll_interval}s. Ctrl+C to stop.")
         try:
             while True:
@@ -282,8 +676,10 @@ def _implied_entry(command: Dict[str, Any]) -> float:
     tp1 = _tp_price(command, 1)
     if tp1 is None:
         return sl
-    # Entry roughly 20% of the way from SL toward TP1.
-    return round(sl + (tp1 - sl) * 0.2, 5)
+    # Preserve narrow valid price brackets instead of rounding to 5 digits.
+    # The poll guard rejects the case where float precision leaves no point
+    # strictly between the stop and TP1.
+    return sl + (tp1 - sl) * 0.2
 
 
 def main() -> None:
@@ -308,9 +704,37 @@ def main() -> None:
         help="Process a single command then exit (immediate mode)",
     )
     args = parser.parse_args()
+    try:
+        backend = validate_local_backend_origin(args.backend)
+    except ValueError as exc:
+        parser.error(str(exc))
+    # Check timing before opening a client or acknowledging a fake command.
+    if not math.isfinite(args.delay) or args.delay < 0:
+        parser.error("Simulator --delay must be finite and non-negative")
+    if not math.isfinite(args.poll_interval) or args.poll_interval <= 0:
+        parser.error("Simulator --poll-interval must be finite and positive")
 
     print(BANNER)
-    with httpx.Client(base_url=args.backend, timeout=10.0) as http:
+    # No ambient HTTP(S)_PROXY/redirect may receive the EA key or fake fills.
+    with httpx.Client(
+        base_url=backend, timeout=10.0, follow_redirects=False, trust_env=False
+    ) as http:
+        health_response = http.get("/health")
+        try:
+            health = health_response.json()
+        except ValueError:
+            health = None
+        if (
+            health_response.status_code != 200
+            or not isinstance(health, dict)
+            or health.get("status") != "ok"
+            or health.get("demo_only_mode") is not True
+            or health.get("admin_paused") is not False
+        ):
+            parser.error(
+                "Simulator refused: /health did not confirm an active "
+                "local demo-only backend"
+            )
         sim = EASimulator(
             http=http,
             user_id=args.user_id,

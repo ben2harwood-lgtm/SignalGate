@@ -94,7 +94,9 @@ def test_simulator_local_idempotency(client):
 
 def test_simulator_stop_out_records_loss(client):
     user = register_user(client, "124")
-    sig = create_signal(client, VALID)
+    # Multi-target split commands create several synthetic child tickets.
+    # Use TP1-only here: this test proves the supported one-child loss path.
+    sig = create_signal(client, "XAUUSD BUY SL 2343 TP1 2353")
     approve = client.post(
         f"/signals/{sig['id']}/approve",
         json={"telegram_user_id": "124"},
