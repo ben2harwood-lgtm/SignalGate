@@ -75,6 +75,10 @@ non-empty fake child-ticket identifier for a single-ticket command, or one
 distinct safe identifier per configured split target. Missing, duplicate,
 extra, malformed and control-character identities fail before any fabricated
 SUCCESS execution write; these checks do not prove genuine broker ownership.
+Direct in-process acknowledgement and management-event callbacks also
+refuse unsafe, malformed or oversized command IDs *before* constructing
+synthetic write URLs; a path, query, control character or missing ID is not
+authority to acknowledge an unrelated command or record a fake milestone.
 In a parser-valid TP1+TP3 command with no TP2, synthetic `TP3_REACHED` is
 recorded as following `TP1_DONE` rather than falsely claiming a `TP2_DONE`
 milestone. No fake stop-loss modification is reported after the last

@@ -336,6 +336,12 @@ class EASimulator:
         return command
 
     def ack_received(self, command_id: str) -> None:
+        # Direct in-process callers can bypass the guarded pending poll.
+        # Never let a forged ID select an arbitrary synthetic callback URL.
+        if not _route_safe_command_id(command_id):
+            raise RuntimeError(
+                "Synthetic callback has invalid command ID; refusing fake write"
+            )
         response = self.http.post(
             f"/commands/{command_id}/received", json={}, headers=self.headers
         )
@@ -421,6 +427,10 @@ class EASimulator:
             )
 
     def post_event(self, command_id: str, **fields) -> None:
+        if not _route_safe_command_id(command_id):
+            raise RuntimeError(
+                "Synthetic callback has invalid command ID; refusing fake write"
+            )
         response = self.http.post(
             f"/commands/{command_id}/management_event",
             json=fields,

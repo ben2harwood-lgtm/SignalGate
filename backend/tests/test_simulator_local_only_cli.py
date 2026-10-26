@@ -1441,3 +1441,30 @@ def test_direct_synthetic_execution_refuses_false_child_ticket_identities(
     assert client.post_paths == []
     assert client.get_paths == []
     assert sim.processed == set()
+
+
+@pytest.mark.parametrize("bad_id", [
+    "", "CMD/../admin", "CMD%2Fother", "CMD?redirect=1",
+    "CMD#fragment", "CMD\\nFORGED".replace("\\n", "\n"),
+    "X" * 129, None, 123,
+])
+@pytest.mark.parametrize("entrypoint", ["ack_received", "post_event"])
+def test_direct_synthetic_callbacks_reject_unsafe_id_before_any_write(
+    bad_id, entrypoint,
+):
+    """No direct ACK or fake management callback may escape its command route."""
+    client = _UnconfirmedPollClient(200, {"command": _POLL_COMMAND})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="invalid command ID"):
+        if entrypoint == "ack_received":
+            sim.ack_received(bad_id)
+        else:
+            sim.post_event(
+                bad_id, event_type="OPENED", stage="OPENED", result="SUCCESS"
+            )
+    assert client.post_paths == []
+    assert client.get_paths == []
+    assert sim.processed == set()
