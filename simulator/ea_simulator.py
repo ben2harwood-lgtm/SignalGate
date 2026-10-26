@@ -113,8 +113,30 @@ class EASimulator:
             params={"user_id": self.user_id},
             headers=self.headers,
         )
-        data = resp.json()
-        return data.get("command")
+        if resp.status_code != 200:
+            raise RuntimeError(
+                "Synthetic command poll was not accepted; refusing fake execution"
+            )
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if not isinstance(data, dict) or "command" not in data:
+            raise RuntimeError(
+                "Synthetic command poll returned an invalid receipt; refusing fake execution"
+            )
+        command = data["command"]
+        if command is not None and (
+            not isinstance(command, dict)
+            or any(
+                not isinstance(command.get(key), str) or not command[key].strip()
+                for key in ("command_id", "symbol", "direction")
+            )
+        ):
+            raise RuntimeError(
+                "Synthetic command poll returned an invalid command; refusing fake execution"
+            )
+        return command
 
     def ack_received(self, command_id: str) -> None:
         response = self.http.post(

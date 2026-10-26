@@ -406,3 +406,62 @@ def test_scripted_flow_rejects_stale_pending_command(monkeypatch):
     # Registration, creation and approval are the only three actions. No
     # acknowledgement or synthetic execution/management was sent.
     assert client.posts == _SCRIPTED_PATHS
+
+
+class _UnconfirmedPollClient:
+    def __init__(self, status_code, body):
+        self.response = _SyntheticAckResponse(status_code, body)
+        self.get_paths = []
+        self.post_paths = []
+
+    def get(self, path, **_kwargs):
+        self.get_paths.append(path)
+        assert path == "/commands/pending"
+        return self.response
+
+    def post(self, path, **_kwargs):
+        self.post_paths.append(path)
+        raise AssertionError("unconfirmed pending poll led to synthetic backend write")
+
+
+_POLL_COMMAND = {
+    "command_id": "LOCAL-ONLY-TEST-COMMAND",
+    "symbol": "XAUUSD",
+    "direction": "BUY",
+}
+
+
+@pytest.mark.parametrize("http_status,body", [
+    (403, {"command": _POLL_COMMAND}),
+    (500, {"command": _POLL_COMMAND}),
+    (302, {"command": _POLL_COMMAND}),
+    (200, None),
+    (200, []),
+    (200, {}),
+    (200, {"command": "unexpected"}),
+    (200, {"command": {
+        "command_id": "", "symbol": "XAUUSD", "direction": "BUY",
+    }}),
+])
+def test_rejected_or_malformed_poll_cannot_ack_or_fake_execution(http_status, body):
+    client = _UnconfirmedPollClient(http_status, body)
+    simulator = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="refusing fake execution"):
+        simulator.run_once()
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
+    assert simulator.processed == set()
+
+
+def test_confirmed_empty_poll_returns_without_ack_or_fake_execution():
+    client = _UnconfirmedPollClient(200, {"command": None})
+    simulator = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    assert simulator.run_once() is False
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
