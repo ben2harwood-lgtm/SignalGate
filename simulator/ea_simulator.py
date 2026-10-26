@@ -132,6 +132,9 @@ class EASimulator:
                 not isinstance(command.get(key), str) or not command[key].strip()
                 for key in ("command_id", "symbol", "direction")
             )
+            or command.get("user_id") != self.user_id
+            or command.get("demo_only") is not True
+            or command.get("direction") not in {"BUY", "SELL"}
         ):
             raise RuntimeError(
                 "Synthetic command poll returned an invalid command; refusing fake execution"

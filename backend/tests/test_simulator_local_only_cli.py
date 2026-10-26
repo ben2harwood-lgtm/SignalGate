@@ -161,7 +161,8 @@ class _AckRefusalClient:
     def get(self, path, **_kwargs):
         assert path == "/commands/pending"
         return _SyntheticAckResponse(200, {"command": {
-            "command_id": "SYNTHETIC-CMD", "symbol": "XAUUSD", "direction": "BUY"
+            "command_id": "SYNTHETIC-CMD", "symbol": "XAUUSD", "direction": "BUY",
+            "user_id": "SYNTHETIC-USER", "demo_only": True,
         }})
 
     def post(self, path, **_kwargs):
@@ -366,6 +367,7 @@ class _DifferentPendingCommandClient:
             "command_id": "OLDER-COMMAND",
             "symbol": "XAUUSD",
             "direction": "BUY",
+            "user_id": "LOCAL-USER", "demo_only": True,
         }})
 
     def post(self, path, **_kwargs):
@@ -395,6 +397,7 @@ def test_scripted_flow_rejects_stale_pending_command(monkeypatch):
                     "command_id": "OLDER-COMMAND",
                     "symbol": "XAUUSD",
                     "direction": "BUY",
+                    "user_id": "LOCAL-USER", "demo_only": True,
                 }})
             return super().get(path, **kwargs)
 
@@ -428,6 +431,8 @@ _POLL_COMMAND = {
     "command_id": "LOCAL-ONLY-TEST-COMMAND",
     "symbol": "XAUUSD",
     "direction": "BUY",
+    "user_id": "LOCAL-USER",
+    "demo_only": True,
 }
 
 
@@ -464,4 +469,36 @@ def test_confirmed_empty_poll_returns_without_ack_or_fake_execution():
     )
     assert simulator.run_once() is False
     assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
+
+
+@pytest.mark.parametrize("command", [
+    {**_POLL_COMMAND, "demo_only": False},
+    {**_POLL_COMMAND, "demo_only": "true"},
+    {key: value for key, value in _POLL_COMMAND.items() if key != "demo_only"},
+    {**_POLL_COMMAND, "user_id": "OTHER-USER"},
+    {key: value for key, value in _POLL_COMMAND.items() if key != "user_id"},
+    {**_POLL_COMMAND, "direction": "CLOSE"},
+])
+def test_unowned_or_non_demo_command_is_not_acknowledged(command):
+    """Malformed or wrong-owner synthetic polls must not write ACK/fake fills."""
+    client = _UnconfirmedPollClient(200, {"command": command})
+    simulator = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="refusing fake execution"):
+        simulator.run_once()
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
+    assert simulator.processed == set()
+
+
+def test_owned_demo_pending_command_can_be_read_without_ack():
+    client = _UnconfirmedPollClient(200, {"command": _POLL_COMMAND})
+    simulator = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    assert simulator.poll() == _POLL_COMMAND
     assert client.post_paths == []
