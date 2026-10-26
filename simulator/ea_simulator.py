@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 from typing import Any, Dict, List, Optional, Protocol
 from urllib.parse import urlsplit
@@ -58,6 +59,19 @@ BANNER = (
     " It only posts fake execution/management events to the backend for testing.\n"
     "===========================================================================\n"
 )
+
+
+def _route_safe_command_id(value: Any) -> bool:
+    """Only canonical ASCII IDs may select a synthetic command callback route.
+
+    Backend-generated command IDs are CMD- plus uppercase hexadecimal; this
+    also preserves hyphen/underscore local fixture IDs without admitting URL
+    delimiters, encoding escapes, control characters or oversized paths.
+    """
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is not None
+    )
 
 
 class HttpLike(Protocol):
@@ -128,6 +142,7 @@ class EASimulator:
         command = data["command"]
         if command is not None and (
             not isinstance(command, dict)
+            or not _route_safe_command_id(command.get("command_id"))
             or any(
                 not isinstance(command.get(key), str) or not command[key].strip()
                 for key in ("command_id", "symbol", "direction")

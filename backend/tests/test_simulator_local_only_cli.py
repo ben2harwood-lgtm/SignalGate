@@ -502,3 +502,34 @@ def test_owned_demo_pending_command_can_be_read_without_ack():
     )
     assert simulator.poll() == _POLL_COMMAND
     assert client.post_paths == []
+
+@pytest.mark.parametrize("command_id", [
+    "CMD/../received", "../CMD", "CMD?mode=1", "CMD#fragment",
+    "CMD%2Fother", r"CMD\\other", "CMD with space", "CMD\nother",
+    "CMD\x00other", "CMD-é", "C" * 129, ".hidden",
+])
+def test_poll_refuses_route_unsafe_command_ids_without_synthetic_writes(command_id):
+    """Untrusted poll JSON must not select arbitrary ACK/report URL paths."""
+    client = _UnconfirmedPollClient(
+        200, {"command": {**_POLL_COMMAND, "command_id": command_id}}
+    )
+    simulator = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="refusing fake execution"):
+        simulator.run_once()
+    assert client.get_paths == ["/commands/pending"]
+    assert client.post_paths == []
+    assert simulator.processed == set()
+
+
+def test_poll_accepts_backend_generated_command_id_as_read_only():
+    command = {**_POLL_COMMAND, "command_id": "CMD-0123456789ABCDEF"}
+    client = _UnconfirmedPollClient(200, {"command": command})
+    simulator = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    assert simulator.poll() == command
+    assert client.post_paths == []
