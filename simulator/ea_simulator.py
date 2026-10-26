@@ -300,6 +300,14 @@ class EASimulator:
         # Simulate a small favourable entry near the implied entry.
         entry = command.get("entry_price")
         executed_price = entry if entry is not None else _implied_entry(command)
+        # A non-split demo has one position of the approved command size.
+        # TP stage lots represent separate fake child fills only in split mode.
+        reported_lots = command["lot_size"]
+        if command.get("split_ticket_demo_partial_mode") is True:
+            reported_lots = (
+                sum(tp.get("lot") or 0 for tp in command["take_profits"])
+                or reported_lots
+            )
         payload = {
             "status": "SUCCESS",
             "broker_ticket": child_tickets[0] if child_tickets else None,
@@ -308,9 +316,7 @@ class EASimulator:
             "executed_direction": command["direction"],
             "requested_price": entry,
             "executed_price": executed_price,
-            "lot_size": sum(
-                tp.get("lot") or 0 for tp in command["take_profits"]
-            ) or command["lot_size"],
+            "lot_size": reported_lots,
             "initial_stop_loss": command["initial_stop_loss"],
             "tp1": _tp_price(command, 1),
             "tp2": _tp_price(command, 2),

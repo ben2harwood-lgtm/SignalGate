@@ -1234,3 +1234,43 @@ def test_synthetic_win_does_not_report_stop_move_after_last_child_closes(
     assert moves == expected_stop_moves
     assert len(closures) == len(levels)
     assert events[-1]["event_type"] == "FULLY_CLOSED"
+
+
+@pytest.mark.parametrize("split_mode,expected_lots", [
+    (False, 0.05),
+    (True, 0.06),
+    (None, 0.05),  # Legacy synthetic command with absent split flag.
+])
+def test_synthetic_reported_fill_volume_matches_ticket_mode(
+    split_mode, expected_lots,
+):
+    """One fake position must not inherit the sum of split child quantities."""
+    class _CaptureExecution:
+        def __init__(self):
+            self.writes = []
+
+        def post(self, path, **kwargs):
+            self.writes.append((path, kwargs["json"]))
+            return _SyntheticAckResponse(200, {"status": "ok"})
+
+    command = {
+        **_POLL_COMMAND,
+        "lot_size": 0.05,
+        "take_profits": [
+            {"level": 1, "price": 2353.0, "lot": 0.02},
+            {"level": 2, "price": 2358.0, "lot": 0.04},
+        ],
+    }
+    if split_mode is not None:
+        command["split_ticket_demo_partial_mode"] = split_mode
+    client = _CaptureExecution()
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    sim.post_execution(command, ["FAKE-TICKET-1", "FAKE-TICKET-2"])
+    assert len(client.writes) == 1
+    path, receipt = client.writes[0]
+    assert path == "/commands/LOCAL-ONLY-TEST-COMMAND/execution"
+    assert receipt["status"] == "SUCCESS"
+    assert receipt["lot_size"] == pytest.approx(expected_lots)

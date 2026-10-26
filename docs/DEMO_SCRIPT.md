@@ -69,6 +69,10 @@ claim a breakeven move, and a TP1+TP2 command does not claim a final
 move to TP1 after its TP2 close. The 1-, 2- and 3-stage variants have
 isolated broker-free regression tests. This is an evidence-label
 correction, not broker attribution.
+The synthetic execution report uses the approved command's total lot size
+for a single-ticket position; per-target child lot sizes are summed only when
+the command explicitly enables split-ticket mode. These fabricated quantities
+are never evidence of broker-reported fill volume.
 Synthetic ticket numbers are deterministic fixtures bound to the demo user
 and command, not real broker tickets: separate approved commands must not reuse
 a fixed fake broker identity in the demonstration ledger. The mapping is not
