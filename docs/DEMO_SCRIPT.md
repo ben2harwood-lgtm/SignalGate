@@ -110,8 +110,11 @@ simulator's preflight and cannot serve as execution evidence. These fabricated
 quantities are never evidence of broker-reported fill volume.
 Synthetic ticket numbers are deterministic fixtures bound to the demo user
 and command, not real broker tickets: separate approved commands must not reuse
-a fixed fake broker identity in the demonstration ledger. The mapping is not
-broker attribution, and all actual MT5 identity receipts remain `NOT_RUN`.
+a fixed fake broker identity in the demonstration ledger. Direct simulator
+execution calls must also use the exact expected fake ticket sequence for that
+user/command/stage order, not merely well-formed IDs or a matching count.
+The mapping is not broker attribution, and all actual MT5 identity receipts
+remain `NOT_RUN`.
 In split-ticket synthetic mode, the number of fake children now matches
 the configured TP stages; absent TP stages must not imply open children in
 `FULLY_CLOSED` receipts. This is not real MT5 broker-state evidence. The synthetic stop-out path

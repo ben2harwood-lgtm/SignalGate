@@ -220,22 +220,23 @@ def _synthetic_ticket_base(user_id: str, command_id: str) -> int:
 
 
 def _valid_synthetic_child_tickets(command: Dict[str, Any], child_tickets: Any) -> bool:
-    """Direct fake execution reports need exactly the expected distinct tickets.
+    """Require the exact deterministic fake-ticket sequence for this command.
 
-    Synthetic identities are fixtures, never broker IDs. Do not let an in-process
-    caller report a SUCCESS for missing, duplicate, extra or unsafe fake children.
+    These identities are fixtures, never broker IDs. Missing, extra, reordered,
+    or foreign-user/command IDs must not create a synthetic SUCCESS receipt.
     """
-    expected = (
+    count = (
         len(command["take_profits"])
         if command.get("split_ticket_demo_partial_mode") is True
         else 1
     )
-    return (
-        isinstance(child_tickets, list)
-        and len(child_tickets) == expected
-        and all(_route_safe_command_id(ticket) for ticket in child_tickets)
-        and len(set(child_tickets)) == expected
-    )
+    if not isinstance(child_tickets, list) or len(child_tickets) != count:
+        return False
+    # A valid-looking arbitrary ID could masquerade as a broker ticket in a
+    # fake SUCCESS receipt. Require the exact per-user/per-command fixture
+    # sequence emitted by simulate_lifecycle, including its stage order.
+    base = _synthetic_ticket_base(command["user_id"], command["command_id"])
+    return child_tickets == [_fake_ticket(base, i) for i in range(count)]
 
 
 class EASimulator:

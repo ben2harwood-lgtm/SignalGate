@@ -1307,10 +1307,13 @@ def test_synthetic_reported_fill_volume_matches_ticket_mode(
         http=client, user_id="LOCAL-USER", api_key="synthetic-key",
         delay=0, verbose=False,
     )
-    child_tickets = (
-        ["FAKE-TICKET-1", "FAKE-TICKET-2"]
-        if split_mode is True else ["FAKE-TICKET-1"]
+    count = 2 if split_mode is True else 1
+    base = ea_simulator._synthetic_ticket_base(
+        "LOCAL-USER", command["command_id"],
     )
+    child_tickets = [
+        ea_simulator._fake_ticket(base, index) for index in range(count)
+    ]
     sim.post_execution(command, child_tickets)
     assert len(client.writes) == 1
     path, receipt = client.writes[0]
@@ -1517,6 +1520,57 @@ def test_direct_synthetic_execution_refuses_false_child_ticket_identities(
     )
     with pytest.raises(RuntimeError, match="child-ticket identities inconsistent"):
         sim.post_execution(command, child_tickets)
+    assert client.post_paths == []
+    assert client.get_paths == []
+    assert sim.processed == set()
+
+
+@pytest.mark.parametrize("split_mode,variant", [
+    (False, "foreign_command"),
+    (False, "foreign_user"),
+    (False, "shifted"),
+    (False, "arbitrary"),
+    (True, "foreign_command"),
+    (True, "foreign_user"),
+    (True, "shifted"),
+    (True, "arbitrary"),
+    (True, "reversed"),
+])
+def test_direct_synthetic_execution_refuses_foreign_or_reordered_fake_tickets(
+    split_mode, variant,
+):
+    """A plausible fake broker ID is not a fixture for this user/command."""
+    command = {
+        **_POLL_COMMAND,
+        "split_ticket_demo_partial_mode": split_mode,
+        "take_profits": [
+            {"level": 1, "price": 2353.0, "lot": 0.01},
+            {"level": 2, "price": 2358.0, "lot": 0.01},
+        ],
+    }
+    count = 2 if split_mode else 1
+    user_id = "LOCAL-USER"
+    command_id = command["command_id"]
+    if variant == "foreign_user":
+        user_id = "ANOTHER-USER"
+    elif variant == "foreign_command":
+        command_id = "ANOTHER-COMMAND"
+    base = ea_simulator._synthetic_ticket_base(user_id, command_id)
+    tickets = [ea_simulator._fake_ticket(base, i) for i in range(count)]
+    if variant == "shifted":
+        tickets = [str(int(ticket) + 8) for ticket in tickets]
+    elif variant == "arbitrary":
+        tickets = [str(123456789 + i) for i in range(count)]
+    elif variant == "reversed":
+        tickets.reverse()
+
+    client = _UnconfirmedPollClient(200, {"command": command})
+    sim = ea_simulator.EASimulator(
+        http=client, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="child-ticket identities inconsistent"):
+        sim.post_execution(command, tickets)
     assert client.post_paths == []
     assert client.get_paths == []
     assert sim.processed == set()
