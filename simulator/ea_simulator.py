@@ -304,8 +304,8 @@ class EASimulator:
             result="SUCCESS",
         )
 
-    def run_once(self) -> bool:
-        """Poll once; if a command is found, run its full lifecycle.
+    def run_once(self, expected_command_id: Optional[str] = None) -> bool:
+        """Poll once and only simulate the caller's expected command if supplied.
 
         Returns True if a command was processed.
         """
@@ -313,6 +313,16 @@ class EASimulator:
         if command is None:
             return False
         cid = command["command_id"]
+        # The scripted demo has just approved one command, but the backend
+        # intentionally polls the oldest pending command for this user. Never
+        # manufacture execution receipts for an unrelated older approval.
+        # Poll itself claims a pending command; do not silently retry or fake
+        # a successful receipt after a mismatch.
+        if expected_command_id is not None and cid != expected_command_id:
+            raise RuntimeError(
+                "Pending demo command differs from newly approved command; "
+                "refusing synthetic execution"
+            )
         if cid in self.processed:
             self.log(f"DUPLICATE_COMMAND {cid} ignored (local idempotency).")
             return False

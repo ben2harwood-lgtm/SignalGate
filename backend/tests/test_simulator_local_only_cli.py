@@ -342,7 +342,8 @@ def test_scripted_flow_valid_receipts_reach_only_local_simulator(monkeypatch):
             assert kwargs["user_id"] == "LOCAL-USER"
             invoked.append("created")
 
-        def run_once(self):
+        def run_once(self, expected_command_id=None):
+            assert expected_command_id == "LOCAL-COMMAND"
             invoked.append("ran")
             return True
 
@@ -351,3 +352,57 @@ def test_scripted_flow_valid_receipts_reach_only_local_simulator(monkeypatch):
     assert client.gets == ["/health"]
     assert client.posts == _SCRIPTED_PATHS
     assert invoked == ["created", "ran"]
+
+
+class _DifferentPendingCommandClient:
+    def __init__(self):
+        self.paths = []
+        self.posts = []
+
+    def get(self, path, **_kwargs):
+        self.paths.append(path)
+        assert path == "/commands/pending"
+        return _SyntheticAckResponse(200, {"command": {
+            "command_id": "OLDER-COMMAND",
+            "symbol": "XAUUSD",
+            "direction": "BUY",
+        }})
+
+    def post(self, path, **_kwargs):
+        self.posts.append(path)
+        raise AssertionError("stale pending command was acknowledged or faked")
+
+
+def test_expected_demo_command_mismatch_refuses_ack_or_fake_execution():
+    stub = _DifferentPendingCommandClient()
+    sim = ea_simulator.EASimulator(
+        http=stub, user_id="LOCAL-USER", api_key="synthetic-key",
+        delay=0, verbose=False,
+    )
+    with pytest.raises(RuntimeError, match="refusing synthetic execution"):
+        sim.run_once(expected_command_id="NEWLY-APPROVED-COMMAND")
+    assert stub.paths == ["/commands/pending"]
+    assert stub.posts == []
+    assert sim.processed == set()
+
+
+def test_scripted_flow_rejects_stale_pending_command(monkeypatch):
+    class _StaleQueue(_ScriptedFlowClient):
+        def get(self, path, **kwargs):
+            if path == "/commands/pending":
+                self.gets.append(path)
+                return _SyntheticAckResponse(200, {"command": {
+                    "command_id": "OLDER-COMMAND",
+                    "symbol": "XAUUSD",
+                    "direction": "BUY",
+                }})
+            return super().get(path, **kwargs)
+
+    client = _StaleQueue()
+    _run_scripted_cli_with_stub(monkeypatch, client)
+    with pytest.raises(RuntimeError, match="refusing synthetic execution"):
+        run_demo_flow.main()
+    assert client.gets == ["/health", "/commands/pending"]
+    # Registration, creation and approval are the only three actions. No
+    # acknowledgement or synthetic execution/management was sent.
+    assert client.posts == _SCRIPTED_PATHS

@@ -137,8 +137,8 @@ def main() -> None:
         # 5. Simulate the EA lifecycle once.
         sim = EASimulator(http=http, user_id=user_id, api_key=args.api_key,
                           delay=0.3)
-        if not sim.run_once():
-            print("No pending command found for simulator (unexpected).")
+        if not sim.run_once(expected_command_id=command_id):
+            print("No matching pending command found for simulator (unexpected).")
             sys.exit(1)
 
         print("\nDemo flow complete. Check /admin/status and logs for the ledger.")
