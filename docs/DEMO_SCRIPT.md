@@ -27,10 +27,12 @@ ACK or fake fills. All simulator polls require an HTTP 200 JSON object with
 an explicit null or structurally valid command: rejected and malformed poll
 responses cannot authorise synthetic acknowledgements or fills. A returned
 command must also carry the exact requested demo user ID, an explicit boolean
-`demo_only=true`, BUY/SELL direction, and a route-safe ASCII command ID
-before the simulator can acknowledge it. Slashes, URL-encoded delimiters,
+`demo_only=true`, BUY/SELL direction, explicit `entry_type=MARKET`, and a
+route-safe ASCII command ID before the simulator can acknowledge it. Slashes, URL-encoded delimiters,
 control characters and oversized command IDs are refused before any synthetic
-write; wrong-owner or non-demo commands cannot produce synthetic execution.
+write; wrong-owner, non-demo or non-MARKET commands cannot produce synthetic
+execution. The real demo EA refuses LIMIT entries; this simulator must not
+fabricate a successful LIMIT lifecycle instead.
 Polling can claim the oldest command even on mismatch;
 restart only with a clean isolated test database, not a fabricated success.
 

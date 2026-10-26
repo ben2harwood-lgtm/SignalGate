@@ -163,6 +163,7 @@ class _AckRefusalClient:
         return _SyntheticAckResponse(200, {"command": {
             "command_id": "SYNTHETIC-CMD", "symbol": "XAUUSD", "direction": "BUY",
             "user_id": "SYNTHETIC-USER", "demo_only": True,
+            "entry_type": "MARKET",
         }})
 
     def post(self, path, **_kwargs):
@@ -368,6 +369,7 @@ class _DifferentPendingCommandClient:
             "symbol": "XAUUSD",
             "direction": "BUY",
             "user_id": "LOCAL-USER", "demo_only": True,
+            "entry_type": "MARKET",
         }})
 
     def post(self, path, **_kwargs):
@@ -398,6 +400,7 @@ def test_scripted_flow_rejects_stale_pending_command(monkeypatch):
                     "symbol": "XAUUSD",
                     "direction": "BUY",
                     "user_id": "LOCAL-USER", "demo_only": True,
+            "entry_type": "MARKET",
                 }})
             return super().get(path, **kwargs)
 
@@ -433,6 +436,7 @@ _POLL_COMMAND = {
     "direction": "BUY",
     "user_id": "LOCAL-USER",
     "demo_only": True,
+    "entry_type": "MARKET",
 }
 
 
@@ -479,9 +483,12 @@ def test_confirmed_empty_poll_returns_without_ack_or_fake_execution():
     {**_POLL_COMMAND, "user_id": "OTHER-USER"},
     {key: value for key, value in _POLL_COMMAND.items() if key != "user_id"},
     {**_POLL_COMMAND, "direction": "CLOSE"},
+    {**_POLL_COMMAND, "entry_type": "LIMIT"},
+    {**_POLL_COMMAND, "entry_type": "market"},
+    {key: value for key, value in _POLL_COMMAND.items() if key != "entry_type"},
 ])
-def test_unowned_or_non_demo_command_is_not_acknowledged(command):
-    """Malformed or wrong-owner synthetic polls must not write ACK/fake fills."""
+def test_invalid_demo_command_is_not_acknowledged(command):
+    """Wrong-owner, non-demo and unsupported-entry polls cannot fake fills."""
     client = _UnconfirmedPollClient(200, {"command": command})
     simulator = ea_simulator.EASimulator(
         http=client, user_id="LOCAL-USER", api_key="synthetic-key",

@@ -149,6 +149,7 @@ class EASimulator:
             )
             or command.get("user_id") != self.user_id
             or command.get("demo_only") is not True
+            or command.get("entry_type") != "MARKET"
             or command.get("direction") not in {"BUY", "SELL"}
         ):
             raise RuntimeError(
