@@ -372,6 +372,29 @@ jobs:
           echo "BACKUP_FILE=$file" >> "$GITHUB_ENV"
       - name: Create isolated restore database
         run: psql -h 127.0.0.1 -U signalgate -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE signalgate_restore;"
+      - name: Reject occupied pgxtoast lookalike schema in isolated PostgreSQL
+        env:
+          RESTORE_DATABASE_URL: postgresql://signalgate:signalgate_ci_password@127.0.0.1:5432/signalgate_restore_collision
+        run: |
+          psql -h 127.0.0.1 -U signalgate -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE signalgate_restore_collision;"
+          psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA pgxtoast_app; CREATE TABLE pgxtoast_app.sentinel (value text NOT NULL); INSERT INTO pgxtoast_app.sentinel VALUES ('preserve');"
+          mkdir -p "$RUNNER_TEMP/restore-probe-bin"
+          cat > "$RUNNER_TEMP/restore-probe-bin/pg_restore" <<'SH'
+          #!/bin/sh
+          touch "$SG_RESTORE_CALLED"
+          exit 90
+          SH
+          chmod 700 "$RUNNER_TEMP/restore-probe-bin/pg_restore"
+          export SG_RESTORE_CALLED="$RUNNER_TEMP/restore-unexpectedly-called"
+          set +e
+          output="$(PATH="$RUNNER_TEMP/restore-probe-bin:$PATH" bash scripts/restore_postgres.sh 2>&1)"
+          rc=$?
+          set -e
+          test "$rc" -eq 2
+          grep -Fq "Restore target is occupied or cannot be verified empty; refusing restore" <<< "$output"
+          test ! -e "$SG_RESTORE_CALLED"
+          observed="$(psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 -tA -c "SELECT value FROM pgxtoast_app.sentinel;")"
+          test "$observed" = "preserve"
       - name: Restore checked backup
         env:
           RESTORE_DATABASE_URL: postgresql://signalgate:signalgate_ci_password@127.0.0.1:5432/signalgate_restore

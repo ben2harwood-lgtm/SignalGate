@@ -30,7 +30,7 @@ The script:
 3. removes the plaintext temporary dump;
 4. writes a SHA-256 checksum of the encrypted artifact.
 
-Expected artifact: `backups/signalgate-<timestamp>.dump.age` plus `.sha256`.
+Expected artifact: `backups/signalgate-<timestamp>.<unique-random-suffix>.dump.age` plus a matching `.sha256` manifest. Names are reserved uniquely, even for simultaneous backups in the same second; keep the complete filename returned by `backup=` when choosing `BACKUP_FILE` for a restore.
 
 Plaintext backup is refused unless `BACKUP_ALLOW_PLAINTEXT=true` is explicitly set. That escape hatch is for local/test use only.
 
@@ -47,7 +47,9 @@ export BACKUP_AGE_IDENTITY_FILE='/secure/path/signalgate-backup-age-key.txt'
 bash scripts/restore_postgres.sh
 ```
 
-The restore script verifies the encrypted artifact checksum before decrypting to a restrictive temporary file, restores with `pg_restore --exit-on-error`, then removes the temporary plaintext.
+The restore script stages a regular, non-symlinked backup into an owner-only temporary snapshot and verifies **that snapshot** against the exact requested backup filename and digest. Both decrypt and `pg_restore` consume only the verified snapshot; a modified source file, stream, symlink or extra manifest record fails closed. Ordinary backup filenames (including spaces) are supported; paths requiring GNU checksum backslash/newline escaping are refused. Temporary storage must fit an additional copy of the encrypted artifact and, where applicable, the decrypted dump; clean exit removes both. A SHA-256 checksum detects accidental mismatch; it is not a signature or proof of authenticity.
+
+**Isolated destination safeguard:** after checking the backup, the script uses a read-only `psql` system-catalogue query to refuse any target containing user relations (including ordinary tables, sequences or views). Connection errors and unexpected query output fail closed; an exact match between `DATABASE_URL` and `RESTORE_DATABASE_URL` also refuses restoration. It never passes `--clean` or `--if-exists` to `pg_restore`, so the drill command does not deliberately drop existing objects. `psql` must be installed alongside `pg_restore`. This is defence in depth, **not** proof that an operator-selected DSN is isolated or a substitute for verifying the target before running it. Nonempty database recovery needs a separately reviewed procedure; do not run this drill script against production.
 
 Plaintext restore is refused unless `BACKUP_ALLOW_PLAINTEXT_RESTORE=true` is explicitly set.
 
