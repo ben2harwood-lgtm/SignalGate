@@ -136,14 +136,14 @@ def test_http_error_body_does_not_appear_in_preview(monkeypatch):
 @pytest.mark.parametrize(
     "unsafe",
     [
-        "\\u2028",  # Unicode line separator (renders as another line).
-        "\\u2029",  # Unicode paragraph separator.
-        "\\u200b",  # Zero-width space.
-        "\\u202e",  # Right-to-left override.
-        "\\u2066",  # Left-to-right isolate.
-        "\\x7f",    # ASCII delete/control (not caught by ord < 32).
-        "\\n",      # Actual newline, even after trim.
-        "\\t",      # Tab, even after trim.
+        "\u2028",  # Unicode line separator (renders as another line).
+        "\u2029",  # Unicode paragraph separator.
+        "\u200b",  # Zero-width space.
+        "\u202e",  # Right-to-left override.
+        "\u2066",  # Left-to-right isolate.
+        "\x7f",    # ASCII delete/control (not caught by ord < 32).
+        "\n",      # Actual newline, even after trim.
+        "\t",      # Tab, even after trim.
     ],
 )
 def test_vision_signal_text_refuses_invisible_or_multiline_controls(unsafe):
