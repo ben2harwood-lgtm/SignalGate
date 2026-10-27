@@ -70,7 +70,24 @@ def test_valid_model_text_and_embedded_json_remain_readable():
 def _mock_http_client(monkeypatch, responder):
     # httpx.MockTransport prevents all outbound traffic, even on exceptions.
     actual_client = httpx.Client
-    transport = httpx.MockTransport(responder)
+
+    def streamed_responder(request):
+        response = responder(request)
+        # Response(..., json=...) eagerly buffers synthetic bodies, unlike a
+        # network response inside Client.stream(). Re-expose test fixtures as
+        # truly streamed bytes so production iter_raw() exercises the JSON
+        # parser rather than failing with httpx.StreamConsumed. Preserve
+        # explicitly streamed hostile-gzip responses untouched.
+        if response.is_stream_consumed:
+            response = httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                stream=httpx.ByteStream(response.content),
+                request=request,
+            )
+        return response
+
+    transport = httpx.MockTransport(streamed_responder)
 
     def replacement(*args, **kwargs):
         return actual_client(*args, transport=transport, **kwargs)
