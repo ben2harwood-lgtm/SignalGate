@@ -66,6 +66,24 @@ def test_valid_model_text_and_embedded_json_remain_readable():
         assert result.raw_text == TRADE
         assert result.confidence == "HIGH"
 
+@pytest.mark.parametrize("field", ["readable", "signal_text", "confidence", "notes"])
+@pytest.mark.parametrize("embedded", [False, True])
+def test_duplicate_model_json_keys_fail_closed_even_if_last_value_is_valid(field, embedded):
+    # The first value contradicts the valid second value. json.loads without
+    # duplicate detection silently takes the last value and accepts a preview.
+    text = ("{" + json.dumps(field) + ':"spoofed",'
+            + json.dumps(GOOD_MODEL)[1:])
+    if embedded:
+        text = "model response: " + text + " end"
+    _must_refuse(_parse_model_json(text, engine="claude"))
+
+
+def test_unicode_escaped_duplicate_model_json_key_is_refused():
+    # JSON escape sequences decode to the same field name and must not bypass
+    # duplicate detection during the embedded-object recovery path.
+    text = r'{"\u0072eadable":false,' + json.dumps(GOOD_MODEL)[1:]
+    _must_refuse(_parse_model_json("prefix " + text + " suffix", engine="claude"))
+
 
 def _mock_http_client(monkeypatch, responder):
     # httpx.MockTransport prevents all outbound traffic, even on exceptions.
@@ -127,6 +145,38 @@ def test_valid_vision_service_envelope_is_parsed_offline(monkeypatch):
     assert result.readable is True
     assert result.raw_text == TRADE
     assert result.confidence == "HIGH"
+
+def test_http_duplicate_model_keys_never_produce_preview(monkeypatch):
+    model = '{"readable":false,' + json.dumps(GOOD_MODEL)[1:]
+    envelope = {"content": [{"type": "text", "text": model}]}
+    _mock_http_client(
+        monkeypatch, lambda request: httpx.Response(200, json=envelope),
+    )
+    _must_refuse(ClaudeExtractor().extract(b"offline-placeholder"))
+
+
+@pytest.mark.parametrize("duplicate_location", ["envelope", "block"])
+def test_http_service_json_duplicate_fields_fail_closed(
+    monkeypatch, duplicate_location,
+):
+    block = json.dumps({"type": "text", "text": json.dumps(GOOD_MODEL)})
+    if duplicate_location == "envelope":
+        # Previously the last content field would be silently accepted.
+        response_json = '{"content":[],"content":[' + block + "]}"
+    else:
+        # Previously a duplicate text field inside the content block won.
+        response_json = (
+            '{"content":[{"type":"text","text":"bad","text":'
+            + json.dumps(json.dumps(GOOD_MODEL)) + "}]}"
+        )
+    _mock_http_client(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200, content=response_json.encode("utf-8"),
+            headers={"content-type": "application/json"},
+        ),
+    )
+    _must_refuse(ClaudeExtractor().extract(b"offline-placeholder"))
 
 
 def test_transport_exception_cannot_echo_sensitive_details(monkeypatch):
