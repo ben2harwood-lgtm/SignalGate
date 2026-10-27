@@ -14,6 +14,14 @@ Every HTTP response carries `X-Request-Id`. The backend writes one structured JS
 
 Headers, query values, request/response bodies, licences and API keys are deliberately excluded.
 
+An inbound `X-Request-Id` is a **correlation hint, not an identity or
+authorisation credential**. Only 1–128 ASCII letters, digits, `_`, `-`,
+`.` and `:` are echoed and logged. Missing, oversized, control-bearing,
+whitespace, Unicode or otherwise invalid values are replaced with a generated
+32-character hexadecimal ID before the response/log is written. This bounds
+untrusted values entering the log pipeline; it does not authenticate callers
+or prove the identity of a reverse proxy.
+
 ## Protected metrics
 
 `GET /admin/metrics` uses normal platform-admin authentication. It reports aggregate operational counts only:
