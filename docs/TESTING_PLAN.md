@@ -146,8 +146,10 @@ text. Because `notes` is shown verbatim in the provider preview, notes with
 line breaks, invisible/bidirectional formatting or other nonprintable controls
 must also fail closed; printable international text remains allowed. Overlong integer literals in otherwise size-bounded model JSON must
 return an unreadable result, including after embedded-JSON salvage, rather than
-raising an uncaught parse error. These are offline input-boundary checks, not
-live OCR or MT5 evidence.
+raising an uncaught parse error. Duplicate JSON object field names in the
+upstream HTTP envelope or model answer (including embedded JSON recovery)
+must fail closed rather than allowing last-value-wins ambiguity. These are
+offline input-boundary checks, not live OCR or MT5 evidence.
 
 `backend/tests/test_vision_extractor_failclosed.py` uses only synthetic JSON
 and `httpx.MockTransport` (no external API, customer data, Telegram, EA or
