@@ -93,3 +93,28 @@ def test_oversized_request_id_is_not_echoed_or_logged(client, caplog):
     assert len(records) == 1
     assert records[0]["request_id"] == safe_id
     assert incoming not in str(records[0])
+
+
+@pytest.mark.parametrize("untrusted_id", ["client-correlation-123", "oversized-" * 256])
+def test_refused_local_ingress_mints_private_request_id(client, caplog, untrusted_id):
+    """The local-ingress denial must not reflect a plausible or oversized client ID."""
+    caplog.set_level(logging.WARNING, logger="signalgate.request")
+    response = client.get(
+        "/health",
+        headers={"Host": "external.example", "X-Request-Id": untrusted_id},
+    )
+    assert response.status_code == 403
+    safe_id = response.headers["X-Request-Id"]
+    assert re.fullmatch(r"[0-9a-f]{32}", safe_id)
+    assert safe_id != untrusted_id
+
+    denial_records = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "signalgate.request"
+        and '"security_event":"LOCAL_DEMO_INGRESS_REFUSED"' in record.getMessage()
+    ]
+    assert len(denial_records) == 1
+    assert denial_records[0]["status"] == 403
+    assert denial_records[0]["request_id"] == safe_id
+    assert untrusted_id not in str(denial_records)
