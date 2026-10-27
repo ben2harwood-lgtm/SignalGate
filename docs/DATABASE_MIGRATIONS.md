@@ -63,6 +63,16 @@ alembic -c alembic.ini check
 5. Repeat against production only under an approved migration window after the
 restore rehearsal succeeds.
 
+The verifier requires the historical tables, columns, primary keys, selected
+unique constraints **and all baseline approval/command/execution/performance
+foreign keys**. Matching column names alone do not establish a safe baseline:
+missing or cross-schema relationships now fail the check before any `alembic
+stamp` instruction is printed. The PostgreSQL reflection explicitly ignores
+`search_path` elision when identifying referenced schemas: a foreign target
+must not look local merely because its schema is on the connection search path. This is still a read-only *structural preflight*,
+not a data-integrity audit, type/nullability certification, or permission to
+skip the isolated restore rehearsal and operator approval.
+
 A failed baseline check is a hard stop, not permission to stamp anyway.
 
 ## New schema changes

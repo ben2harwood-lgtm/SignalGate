@@ -31,6 +31,53 @@ EXPECTED_UNIQUE = {
 }
 
 
+
+# These constraints are material to approval, command and execution identity.
+# An existing database with the right column names but no relations must NOT
+# be stamped as the historical Alembic baseline.
+EXPECTED_FOREIGN_KEYS = {
+    "approvals": {
+        (("signal_id",), "signals", ("id",)),
+        (("user_id",), "users", ("id",)),
+    },
+    "commands": {
+        (("signal_id",), "signals", ("id",)),
+        (("approval_id",), "approvals", ("id",)),
+        (("user_id",), "users", ("id",)),
+    },
+    "executions": {
+        (("command_id",), "commands", ("id",)),
+        (("user_id",), "users", ("id",)),
+    },
+    "trade_management_events": {
+        (("command_id",), "commands", ("id",)),
+    },
+    "performance_ledger": {
+        (("signal_id",), "signals", ("id",)),
+        (("command_id",), "commands", ("id",)),
+    },
+}
+
+
+def _foreign_key_sets(inspector, table):
+    """Read reflected relations only; do not use ORM/metadata to fabricate them."""
+    found = set()
+    # PostgreSQL normally omits a referenced schema that happens to be in
+    # search_path. Preserve the real target schema before validating FKs.
+    for row in inspector.get_foreign_keys(
+        table, postgresql_ignore_search_path=True
+    ):
+        local = tuple(row.get("constrained_columns") or ())
+        referenced = tuple(row.get("referred_columns") or ())
+        destination = row.get("referred_table")
+        # A similarly named table in a foreign schema is not baseline proof.
+        if row.get("referred_schema") not in (None, inspector.default_schema_name):
+            continue
+        if local and referenced and destination:
+            found.add((local, destination, referenced))
+    return found
+
+
 def _unique_sets(inspector, table):
     found = set()
     for row in inspector.get_unique_constraints(table):
@@ -75,6 +122,17 @@ def main() -> int:
         for cols in required:
             if cols not in found:
                 errors.append(f"{table}: missing unique constraint/index on {cols}")
+
+
+    for table, required in EXPECTED_FOREIGN_KEYS.items():
+        if table not in actual_tables:
+            continue
+        found = _foreign_key_sets(inspector, table)
+        for local, destination, remote in sorted(required):
+            if (local, destination, remote) not in found:
+                errors.append(
+                    f"{table}: missing foreign key {local} -> {destination}{remote}"
+                )
 
     if errors:
         print("BASELINE VERIFICATION FAILED", file=sys.stderr)
