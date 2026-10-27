@@ -48,6 +48,17 @@ Check it: open http://127.0.0.1:8000/health → should show
 `{"status":"ok","demo_only_mode":true,"admin_paused":false}`.
 Interactive API docs: http://127.0.0.1:8000/docs
 
+**Database bootstrap safety:** `scripts/init_db.py` and
+`scripts/seed_settings.py` preflight the current configuration **before
+importing the database engine**. With `REQUIRE_LICENSE=false`, they refuse
+PostgreSQL (`postgres://` or `postgresql://`), non-file SQLite, and
+`DEMO_ONLY_MODE=false`; they accept only file-backed local SQLite.
+A correctly configured `REQUIRE_LICENSE=true` hosted invocation still checks
+the current Alembic migration state before seeding. Neither script is a hosted
+schema migration tool; use the reviewed Alembic process for hosted upgrades.
+
+This is a **partial** mitigation of [issue #108](https://github.com/ben2harwood-lgtm/SignalGate/issues/108), alongside the separately proposed direct `init_db()` guard (#125) and local HTTP ingress refusal (#126). These checks do **not** prove reverse-proxy/public-network isolation or external acceptance. Retain `REQUIRE_LICENSE=false` only on an actually private loopback demo.
+
 ## 2. Telegram bot (Terminal 2)
 
 ```bash
