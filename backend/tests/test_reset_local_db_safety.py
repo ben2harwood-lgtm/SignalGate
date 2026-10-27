@@ -148,6 +148,27 @@ def test_reset_rejects_driver_normalized_directory_symlink_dotdot(tmp_path):
     assert outside.read_bytes() == b"external sentinel unchanged"
 
 
+def test_reset_refuses_directory_symlink_alias_even_when_target_is_canonical(tmp_path):
+    """A replaceable outside path is unsafe even if it resolves to root DB."""
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "backend").mkdir()
+    database = root / "signalgate.db"
+    sentinel = b"canonical database remains untouched"
+    database.write_bytes(sentinel)
+    shared = tmp_path / "replaceable"
+    shared.mkdir()
+    (shared / "alias").symlink_to(root, target_is_directory=True)
+
+    gate = _gate()
+    gate.__globals__["_ROOT"] = root
+    gate.__globals__["_BACKEND"] = root / "backend"
+    with pytest.raises(RuntimeError, match="canonical local demo file"):
+        gate("sqlite:///" + str(shared / "alias" / "signalgate.db"),
+             demo_only_mode=True, require_license=False, cwd=shared)
+    assert database.read_bytes() == sentinel
+
+
 def test_reset_refuses_hardlinked_database_without_touching_other_file(tmp_path):
     """The canonical name must not be another DB inode's second hardlink."""
     root = tmp_path / "source"
