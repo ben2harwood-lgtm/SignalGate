@@ -175,6 +175,53 @@ def test_vision_signal_text_refuses_invisible_or_multiline_controls(unsafe):
     ))
 
 
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "\n",      # A forged new preview field could appear on the next line.
+        "\r",      # A control character can overwrite terminal-style content.
+        "\t",
+        "\u200b",  # Zero-width, visually misleading annotations.
+        "\u202e",  # Bidirectional override.
+        "\u2066",  # Bidirectional isolate.
+        "\u2028",  # Unicode line separator.
+        "\u2029",  # Unicode paragraph separator.
+        "\x00",
+        "\x7f",
+    ],
+)
+def test_vision_notes_refuse_invisible_multiline_or_bidi_spoofing(unsafe):
+    for notes in (
+        "mapped SL 2343" + unsafe,
+        unsafe + "mapped TP1 2353",
+        "mapped SL 2343" + unsafe + "Symbol: BTCUSD",
+    ):
+        result = _parse_model_json(
+            json.dumps({**GOOD_MODEL, "notes": notes}), engine="claude",
+        )
+        _must_refuse(result)
+
+
+def test_vision_notes_controls_fail_closed_through_http_envelope(monkeypatch):
+    # The operator preview renders notes directly; hostile model content
+    # must not reach it even when the service envelope itself is well formed.
+    model = {**GOOD_MODEL, "notes": "mapped entry" + "\nDirection: SELL"}
+    envelope = {"content": [{"type": "text", "text": json.dumps(model)}]}
+    _mock_http_client(monkeypatch, lambda request: httpx.Response(200, json=envelope))
+    _must_refuse(ClaudeExtractor().extract(b"offline-placeholder"))
+
+
+def test_vision_notes_allow_printable_international_text():
+    # Reject rendering controls without needlessly excluding readable notes.
+    notes = "Printed entry 2348; café / 東京"
+    result = _parse_model_json(
+        json.dumps({**GOOD_MODEL, "notes": notes}), engine="claude",
+    )
+    assert result.readable is True
+    assert result.raw_text == TRADE
+    assert result.notes == notes
+
+
 def test_vision_model_json_is_bounded_before_parsing():
     # An untrusted service may violate the upstream 400-token output setting.
     # Neither an oversized plain response nor deeply nested JSON is a signal.

@@ -142,7 +142,9 @@ characters while collecting content blocks, before joining or trimming.
 A nonempty preview must be printable ASCII only; invisible/bidirectional
 Unicode controls, non-ASCII line separators, DEL and trailing control characters
 fail closed. Natural-language annotations belong in `notes`, not in the signal
-text. Overlong integer literals in otherwise size-bounded model JSON must
+text. Because `notes` is shown verbatim in the provider preview, notes with
+line breaks, invisible/bidirectional formatting or other nonprintable controls
+must also fail closed; printable international text remains allowed. Overlong integer literals in otherwise size-bounded model JSON must
 return an unreadable result, including after embedded-JSON salvage, rather than
 raising an uncaught parse error. These are offline input-boundary checks, not
 live OCR or MT5 evidence.
