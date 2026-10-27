@@ -62,11 +62,17 @@ def _require_local_demo_target(
         _ROOT / "signalgate.db",
         _BACKEND / "signalgate.db",
     }
+    # Resolving an alias *into* an approved file is not sufficient: a symlink
+    # in an untrusted directory can be swapped after this gate yet before
+    # SQLite opens the filename. Accept the exact driver-normalized pathname,
+    # never a directory-symlink alias that merely resolves to that pathname.
+    if driver_path not in approved:
+        raise RuntimeError("Refusing reset: database is not the canonical local demo file.")
     if driver_path.is_symlink():
         raise RuntimeError("Refusing reset: local demo database must not be a symlink.")
     target = driver_path.resolve()
-    if target not in approved:
-        raise RuntimeError("Refusing reset: database is not the canonical local demo file.")
+    if target != driver_path:
+        raise RuntimeError("Refusing reset: canonical local demo path must not use a symlink.")
 
     # The SQLite engine opens this pathname after preflight, not an already
     # validated file descriptor. Refuse directories another local principal can
