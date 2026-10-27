@@ -538,7 +538,7 @@ def check_screenshot_upload_size_guard() -> None:
     async def permitted(_update):
         return True
 
-    async def exercise(kind, size, contents):
+    async def exercise(kind, size, contents, resolved_file_size=None):
         requests, previews, replies = [], [], []
         state = {
             "pending_signal_text": "OLD-PREVIEW",
@@ -556,7 +556,10 @@ def check_screenshot_upload_size_guard() -> None:
         class OfflineBot:
             async def get_file(self, _file_id):
                 requests.append("get_file")
-                return SimpleNamespace(download_as_bytearray=download_as_bytearray)
+                return SimpleNamespace(
+                    file_size=resolved_file_size,
+                    download_as_bytearray=download_as_bytearray,
+                )
 
         async def preview(**kwargs):
             previews.append((kwargs["image_bytes"], kwargs["mime"]))
@@ -589,6 +592,26 @@ def check_screenshot_upload_size_guard() -> None:
             assert "no preview" in replies[-1].lower()
             assert state == {}, "Old confirmable screenshot survived rejection"
 
+        # A second oversized/invalid File metadata claim must stop the
+        # download even if the original message reports an allowed size.
+        for reported_size in (None, 3):
+            for resolved_size in (5, -1, "5", True):
+                requests, previews, replies, state = asyncio.run(
+                    exercise(kind, reported_size, b"abc", resolved_size)
+                )
+                assert requests == ["get_file"], (kind, reported_size, resolved_size)
+                assert not previews
+                assert "no preview" in replies[-1].lower()
+                assert state == {}
+
+        # Actual oversized bytes remain authoritative despite two small claims.
+        requests, previews, replies, state = asyncio.run(
+            exercise(kind, 3, b"abcde", 3)
+        )
+        assert requests == ["get_file", "download"]
+        assert not previews and state == {}
+        assert "no preview" in replies[-1].lower()
+
         # A missing/small claimed size cannot authorize an oversized download.
         for reported_size in (None, 3):
             requests, previews, replies, state = asyncio.run(
@@ -601,11 +624,19 @@ def check_screenshot_upload_size_guard() -> None:
 
         # Exact-limit images still reach preview, but no external call occurs.
         requests, previews, replies, state = asyncio.run(
-            exercise(kind, 4, b"abcd")
+            exercise(kind, 4, b"abcd", 4)
         )
         assert requests == ["get_file", "download"]
         assert previews == [(b"abcd", "image/jpeg" if kind == "photo" else "image/png")]
         assert not state, "New screenshot must invalidate prior pending tokens"
+
+        # Even with both size metadata sources absent, the byte boundary holds.
+        requests, previews, replies, state = asyncio.run(
+            exercise(kind, None, b"abcd", None)
+        )
+        assert requests == ["get_file", "download"]
+        assert previews == [(b"abcd", "image/jpeg" if kind == "photo" else "image/png")]
+        assert not state
 
 
 def main() -> int:

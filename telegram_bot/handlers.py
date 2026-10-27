@@ -602,9 +602,15 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text("📷 Reading your screenshot…")
     tg_file = await context.bot.get_file(photo.file_id)
-    image_bytes = bytes(await tg_file.download_as_bytearray())
-    if await _reject_screenshot_size(update, context, len(image_bytes)):
+    # Telegram's resolved File may report a separate size even if message
+    # metadata was absent or understated. Check before downloading.
+    if await _reject_screenshot_size(update, context, tg_file.file_size):
         return
+    downloaded_image = await tg_file.download_as_bytearray()
+    if await _reject_screenshot_size(update, context, len(downloaded_image)):
+        return
+    # Avoid duplicating memory for an oversized response.
+    image_bytes = bytes(downloaded_image)
 
     await _preview_screenshot(
         update=update,
@@ -633,9 +639,15 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     await update.message.reply_text("📷 Reading your screenshot…")
     tg_file = await context.bot.get_file(document.file_id)
-    image_bytes = bytes(await tg_file.download_as_bytearray())
-    if await _reject_screenshot_size(update, context, len(image_bytes)):
+    # Telegram's resolved File may report a separate size even if message
+    # metadata was absent or understated. Check before downloading.
+    if await _reject_screenshot_size(update, context, tg_file.file_size):
         return
+    downloaded_image = await tg_file.download_as_bytearray()
+    if await _reject_screenshot_size(update, context, len(downloaded_image)):
+        return
+    # Avoid duplicating memory for an oversized response.
+    image_bytes = bytes(downloaded_image)
     await _preview_screenshot(
         update=update,
         context=context,
