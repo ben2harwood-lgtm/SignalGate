@@ -51,7 +51,9 @@ def client(monkeypatch):
     # production setting, route, identity check, or hosted schema verifier.
     if engine.url.get_backend_name() == "postgresql":
         monkeypatch.setattr(main_module, "init_db", lambda: None)
-    with TestClient(app) as c:
+    # Combine #125 PostgreSQL test-only lifespan override with #126 loopback ingress.
+    # Neither safeguard changes production code or grants local auth on PostgreSQL.
+    with TestClient(app, base_url="http://127.0.0.1:8000") as c:
         yield c
 
 
