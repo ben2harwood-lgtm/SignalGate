@@ -10,4 +10,4 @@ alembic==1.20.0
 # Trivy identified vulnerable versions in the built hosted image; these are the
 # first fixed versions reported for the corresponding findings.
 setuptools==84.2.0
-msgpack==1.2.1
+msgpack==1.2.3
