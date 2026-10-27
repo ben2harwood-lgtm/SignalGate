@@ -108,6 +108,20 @@ time-series SLOs, persistent alert routing, broker truth, receipt provenance or
 production monitoring. Use an independently configured central monitor and
 the release acceptance index before marking G6 complete.
 
+## Backend Telegram delivery diagnostics
+
+Backend Telegram messages are best-effort only. When the bot is disabled, logs
+contain a generic skipped-send event, **not** chat ids or signal/notification
+text. Transport/client exceptions are logged as a generic delivery failure,
+because exception messages and request URLs can include the Telegram bot
+credential in their URL path. The server does not log the raw exception,
+destination, message content or response body. HTTPX's INFO-level request
+logging is suppressed in the backend because those request URLs would contain
+the Telegram bot credential in the API path. This suppresses generic HTTPX
+request INFO logs globally; SignalGate's redacted request telemetry remains
+separate. This logging restriction does
+not establish Telegram delivery reliability or external acceptance.
+
 ## Remaining production work
 
 The current repository provides structured log events, correlation IDs and a protected metrics surface. A deployed environment still needs a central log/metrics backend, alert routing, retention rules, on-call ownership and measured SLO history before G6 is fully accepted.
