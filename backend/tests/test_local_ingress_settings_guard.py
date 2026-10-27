@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings, local_demo_http_ingress_is_loopback
+from app.database import engine as test_engine
 import app.main as main_module
 
 
@@ -163,6 +164,12 @@ def test_local_identity_routes_refuse_nonlocal_asgi_ingress(
     monkeypatch.setattr(
         main_module.settings, "backend_base_url", "http://127.0.0.1:8000"
     )
+    # #125 refuses unlicensed PostgreSQL app startup. This test checks only
+    # ingress middleware against synthetic ASGI address/Host combinations;
+    # the PostgreSQL matrix schema is already isolated by fresh_db. Stub just
+    # this test client lifespan, never the separate real-startup negative test.
+    if test_engine.url.get_backend_name() == "postgresql":
+        monkeypatch.setattr(main_module, "init_db", lambda: None)
     with TestClient(
         main_module.app, base_url=f"http://{synthetic_bound_address}:8000"
     ) as test_client:
