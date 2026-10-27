@@ -260,7 +260,9 @@ def _parse_model_json(text: str, engine: str) -> ExtractionResult:
         or not isinstance(confidence, str)
         or confidence.strip().upper() not in {"HIGH", "MEDIUM", "LOW"}
         or (notes is not None and not isinstance(notes, str))
-        or (isinstance(notes, str) and len(notes) > 2048)
+        # Notes appear verbatim in the operator preview. Refuse controls,
+        # bidirectional formatting and line breaks that could spoof fields.
+        or (isinstance(notes, str) and (len(notes) > 2048 or not notes.isprintable()))
     ):
         return _unreadable(engine, "Model response has invalid field types.")
     if not readable:
