@@ -29,4 +29,5 @@ fi
 echo ""
 echo "SignalGate backend is running. Keep this window OPEN. Close it to stop."
 echo "Health check: http://127.0.0.1:8000/health"
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Local demo uses identity-header shortcuts: never expose this listener to the LAN.
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
