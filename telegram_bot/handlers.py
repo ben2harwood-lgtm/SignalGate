@@ -932,7 +932,30 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Free-text handler. Only acts when the admin is editing an extracted signal."""
     if not context.user_data.get("awaiting_edit"):
         return  # ignore ordinary chatter
-    if not await _can_submit_provider_signal(update):
+    # Bind corrected text to its exact preview across the async permission check.
+    # A newer screenshot/cancel or another edit can consume it while I/O awaits.
+    edit_token = context.user_data.get("pending_preview_token")
+    if (
+        not isinstance(edit_token, str)
+        or len(edit_token) != 16
+        or any(ch not in "0123456789abcdef" for ch in edit_token)
+    ):
+        context.user_data.pop("awaiting_edit", None)
+        return
+    authorised = await _can_submit_provider_signal(update)
+    refreshed = context.user_data.get("pending_preview_token")
+    if (
+        not context.user_data.get("awaiting_edit")
+        or not isinstance(refreshed, str)
+        or len(refreshed) != 16
+        or any(ch not in "0123456789abcdef" for ch in refreshed)
+        or not secrets.compare_digest(edit_token, refreshed)
+    ):
+        return  # An obsolete edit must never act on a newer preview.
+    if not authorised:
+        context.user_data.pop("awaiting_edit", None)
+        context.user_data.pop("pending_signal_text", None)
+        context.user_data.pop("pending_preview_token", None)
         return
     raw_text = (update.message.text or "").strip()
     if not raw_text:

@@ -407,6 +407,167 @@ def check_preview_callback_identity_and_single_use() -> None:
     assert calls == ["B-SIGNAL"]
 
 
+def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
+    """Late edit-text requests cannot use or clear a newer preview."""
+    async def superseded(allowed: bool, cancelled: bool) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls, replies = [], []
+        state = {
+            "awaiting_edit": True,
+            "pending_signal_text": "OLD",
+            "pending_preview_token": "a" * 16,
+        }
+        context = SimpleNamespace(user_data=state)
+
+        async def reply_text(text, **_kwargs):
+            replies.append(text)
+
+        update = SimpleNamespace(message=SimpleNamespace(
+            text="OLD BUY SL 1 TP1 2", reply_text=reply_text
+        ))
+
+        async def source(_update):
+            entered.set()
+            await release.wait()
+            return allowed
+
+        async def create(_update, _context, raw_text):
+            calls.append(raw_text)
+            return "synthetic-only"
+
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", source),
+            patch.object(handlers, "_create_and_broadcast", create),
+        ):
+            older = asyncio.create_task(handlers.on_text(update, context))
+            await asyncio.wait_for(entered.wait(), 1)
+            # The first text is suspended; screenshot B or Cancel supersedes it.
+            state.clear()
+            if not cancelled:
+                state.update({
+                    "pending_signal_text": "NEW",
+                    "pending_preview_token": "b" * 16,
+                })
+            expected = dict(state)
+            release.set()
+            await asyncio.wait_for(older, 1)
+        assert not calls, "Obsolete edit reached signal creation"
+        assert state == expected, "Old edit modified a newer/cancelled preview"
+        assert not replies
+
+    async def two_edit_messages() -> None:
+        both_entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+        entered = 0
+        state = {
+            "awaiting_edit": True,
+            "pending_signal_text": "OLD",
+            "pending_preview_token": "a" * 16,
+        }
+        context = SimpleNamespace(user_data=state)
+
+        async def reply_text(_text, **_kwargs):
+            return None
+
+        update = SimpleNamespace(message=SimpleNamespace(
+            text="EDITED BUY SL 1 TP1 2", reply_text=reply_text
+        ))
+
+        async def source(_update):
+            nonlocal entered
+            entered += 1
+            if entered == 2:
+                both_entered.set()
+            await release.wait()
+            return True
+
+        async def create(_update, _context, raw_text):
+            calls.append(raw_text)
+            return "synthetic-only"
+
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", source),
+            patch.object(handlers, "_create_and_broadcast", create),
+        ):
+            first = asyncio.create_task(handlers.on_text(update, context))
+            second = asyncio.create_task(handlers.on_text(update, context))
+            await asyncio.wait_for(both_entered.wait(), 1)
+            release.set()
+            await asyncio.wait_for(asyncio.gather(first, second), 1)
+        assert calls == ["EDITED BUY SL 1 TP1 2"], (
+            "Two edits of one preview created duplicate signals"
+        )
+        assert state == {}, "Completed edit left reusable preview state"
+
+    async def revoked_then_valid() -> None:
+        calls, replies = [], []
+        state = {
+            "awaiting_edit": True,
+            "pending_signal_text": "OLD",
+            "pending_preview_token": "a" * 16,
+        }
+        context = SimpleNamespace(user_data=state)
+
+        async def reply_text(text, **_kwargs):
+            replies.append(text)
+
+        update = SimpleNamespace(message=SimpleNamespace(
+            text="VALID BUY SL 1 TP1 2", reply_text=reply_text
+        ))
+
+        async def create(_update, _context, raw_text):
+            calls.append(raw_text)
+            return "synthetic-only"
+
+        async def refused(_update):
+            return False
+
+        async def allowed(_update):
+            return True
+
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", refused),
+            patch.object(handlers, "_create_and_broadcast", create),
+        ):
+            await handlers.on_text(update, context)
+        assert state == {}, "Revocation retained an old edit authorization"
+        assert not calls
+
+        state.update({
+            "awaiting_edit": True,
+            "pending_signal_text": "OLD",
+            "pending_preview_token": "a" * 16,
+        })
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", allowed),
+            patch.object(handlers, "_create_and_broadcast", create),
+        ):
+            await handlers.on_text(update, context)
+            await handlers.on_text(update, context)
+        assert calls == ["VALID BUY SL 1 TP1 2"]
+        assert replies == ["synthetic-only"]
+        assert state == {}
+
+        state.update({
+            "awaiting_edit": True,
+            "pending_signal_text": "OLD",
+            "pending_preview_token": "\u2603" * 16,
+        })
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", allowed),
+            patch.object(handlers, "_create_and_broadcast", create),
+        ):
+            await handlers.on_text(update, context)
+        assert calls == ["VALID BUY SL 1 TP1 2"]
+        assert not state.get("awaiting_edit"), "Invalid preview token allowed editing"
+
+    asyncio.run(superseded(True, False))
+    asyncio.run(superseded(False, False))
+    asyncio.run(superseded(True, True))
+    asyncio.run(two_edit_messages())
+    asyncio.run(revoked_then_valid())
+
+
 def check_hosted_legacy_provider_status_never_grants_identity() -> None:
     """Even a stale local-provider flag cannot claim hosted provider authority."""
     assert config.require_license is True
@@ -821,6 +982,7 @@ def main() -> int:
     check_malformed_pending_confirmation_fails_closed()
     check_preview_keyboard_token_contract()
     check_preview_callback_identity_and_single_use()
+    check_edit_text_bound_to_preview_across_authorisation_await()
     check_hosted_legacy_provider_status_never_grants_identity()
     check_connectprovider_error_does_not_echo_backend_secrets()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")

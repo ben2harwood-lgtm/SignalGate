@@ -109,6 +109,12 @@ newer screenshot arriving during the lookup cannot be confirmed, edited or
 cancelled by the earlier button. Revoked sources clear the matching outstanding
 preview rather than forwarding it; a superseded preview is never cleared by
 the older request.
+Edited signal text is also tied to its original preview identifier:
+after an asynchronous provider permission check, stale corrections cannot act
+if a newer screenshot, Cancel or competing correction invalidated that preview.
+A revoked source clears only its still-current edit state. Offline interleaving
+tests verify this in memory, not actual Telegram delivery.
+
 The source's backend remains responsible for identity, tenant policy,
 subscriber consent and idempotent signal processing. The binding here is
 an **in-memory preview integrity guard**, not an authentication credential, a
