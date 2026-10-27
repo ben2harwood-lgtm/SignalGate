@@ -200,17 +200,21 @@ class ClaudeExtractor:
 
 
 def _parse_model_json(text: str, engine: str) -> ExtractionResult:
-    """Leniently parse the model's JSON response into an ExtractionResult."""
+    """Fail closed on untrusted model JSON before exposing a signal preview."""
+    # The model is configured for 400 output tokens. Refuse anomalously large
+    # upstream text before JSON parsing; never spend unbounded work on it.
+    if len(text) > 8192:
+        return _unreadable(engine, "Vision response exceeds preview limit.")
     payload = None
     try:
         payload = json.loads(text)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         # Try to salvage a JSON object embedded in any extra prose.
         start, end = text.find("{"), text.rfind("}")
         if start != -1 and end != -1 and end > start:
             try:
                 payload = json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 payload = None
 
     if not isinstance(payload, dict):
@@ -244,7 +248,11 @@ def _parse_model_json(text: str, engine: str) -> ExtractionResult:
     if (
         not normalized
         or len(normalized) > 2048
-        or any(ord(character) < 32 for character in normalized)
+        # Reject Unicode line/paragraph separators, bidi formatting and
+        # invisible/control characters, including at trimmed boundaries.
+        # Signal syntax is ASCII; non-ASCII annotations belong in notes.
+        or not raw_text.isascii()
+        or not raw_text.isprintable()
     ):
         return _unreadable(engine, "Model returned invalid signal text.")
     return ExtractionResult(
