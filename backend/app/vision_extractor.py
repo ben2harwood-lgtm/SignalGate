@@ -125,6 +125,9 @@ class FakeExtractor:
 
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+# Bound even malformed upstream HTTP envelopes before decoding or joining text.
+MAX_VISION_HTTP_BYTES = 65536
+MAX_MODEL_JSON_CHARS = 8192
 
 
 class ClaudeExtractor:
@@ -172,12 +175,27 @@ class ClaudeExtractor:
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
+            # Compression must not be applied before our response-size bound.
+            "accept-encoding": "identity",
         }
         try:
             with httpx.Client(timeout=60.0) as http:
-                resp = http.post(ANTHROPIC_URL, headers=headers, json=body)
-                resp.raise_for_status()
-                payload = resp.json()
+                # http.post()/resp.json() first buffers an untrusted, unbounded
+                # HTTP body. Request identity encoding and stream raw bytes in
+                # small chunks to refuse oversized data before JSON decoding.
+                with http.stream("POST", ANTHROPIC_URL, headers=headers, json=body) as resp:
+                    resp.raise_for_status()
+                    # httpx.iter_bytes() can expand a gzip/brotli bomb before
+                    # yielding a capped chunk. Reject all content encoding
+                    # other than identity BEFORE consuming response bytes.
+                    if resp.headers.get("content-encoding", "identity").strip().lower() != "identity":
+                        return _unreadable(self.engine, "Vision service returned unsupported encoding.")
+                    response_bytes = bytearray()
+                    for chunk in resp.iter_raw(chunk_size=8192):
+                        if len(chunk) > MAX_VISION_HTTP_BYTES - len(response_bytes):
+                            return _unreadable(self.engine, "Vision service response exceeds size limit.")
+                        response_bytes.extend(chunk)
+                    payload = json.loads(response_bytes)
         except Exception:  # noqa: BLE001
             # Never return an HTTP transport/response exception string to the bot:
             # these strings may contain credential-bearing request details.
@@ -188,6 +206,7 @@ class ClaudeExtractor:
         if not isinstance(payload, dict) or not isinstance(payload.get("content"), list):
             return _unreadable(self.engine, "Vision service returned invalid content.")
         text_parts: list[str] = []
+        text_chars = 0
         for block in payload["content"]:
             if not isinstance(block, dict):
                 return _unreadable(self.engine, "Vision service returned invalid content.")
@@ -195,22 +214,29 @@ class ClaudeExtractor:
                 value = block.get("text")
                 if not isinstance(value, str):
                     return _unreadable(self.engine, "Vision service returned invalid content.")
+                if len(value) > MAX_MODEL_JSON_CHARS - text_chars:
+                    return _unreadable(self.engine, "Vision response exceeds preview limit.")
+                text_chars += len(value)
                 text_parts.append(value)
         return _parse_model_json("".join(text_parts).strip(), engine=self.engine)
 
 
 def _parse_model_json(text: str, engine: str) -> ExtractionResult:
-    """Leniently parse the model's JSON response into an ExtractionResult."""
+    """Fail closed on untrusted model JSON before exposing a signal preview."""
+    # The model is configured for 400 output tokens. Refuse anomalously large
+    # upstream text before JSON parsing; never spend unbounded work on it.
+    if len(text) > MAX_MODEL_JSON_CHARS:
+        return _unreadable(engine, "Vision response exceeds preview limit.")
     payload = None
     try:
         payload = json.loads(text)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         # Try to salvage a JSON object embedded in any extra prose.
         start, end = text.find("{"), text.rfind("}")
         if start != -1 and end != -1 and end > start:
             try:
                 payload = json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 payload = None
 
     if not isinstance(payload, dict):
@@ -244,7 +270,11 @@ def _parse_model_json(text: str, engine: str) -> ExtractionResult:
     if (
         not normalized
         or len(normalized) > 2048
-        or any(ord(character) < 32 for character in normalized)
+        # Reject Unicode line/paragraph separators, bidi formatting and
+        # invisible/control characters, including at trimmed boundaries.
+        # Signal syntax is ASCII; non-ASCII annotations belong in notes.
+        or not raw_text.isascii()
+        or not raw_text.isprintable()
     ):
         return _unreadable(engine, "Model returned invalid signal text.")
     return ExtractionResult(
