@@ -73,10 +73,16 @@ An oversized/invalid attempt clears the previous pending confirmation/edit token
 apply the same 5 MiB limit. These are offline-only resource and stale-preview
 boundaries, not Telegram-delivery or broker-demo acceptance.
 
-Each new screenshot attempt invalidates any earlier unconfirmed preview. Hosted mode
-rechecks the persisted provider/feed binding immediately before extraction; if it
-has been revoked or cannot be verified, extraction stops without falling back to
-the local-demo endpoint. Backend error bodies and exception messages are not
+Each new screenshot attempt invalidates any earlier unconfirmed preview.
+An attempt-specific nonce also makes an older async authorisation, Telegram
+download or backend extraction result inert when a newer screenshot starts; a
+late response cannot replace the newer candidate or restore an old confirm
+button. The offline concurrency regressions deliberately overlap photo and
+document downloads and extractor responses. They do not establish actual
+Telegram delivery or broker-demo acceptance.
+Hosted mode rechecks the persisted provider/feed binding immediately before
+extraction; if it has been revoked or cannot be verified, extraction stops
+without falling back to the local-demo endpoint. Backend error bodies and exception messages are not
 forwarded into Telegram or operator logs; users receive generic failure text and
 logs retain only HTTP status or exception class. Even a backend HTTP 200 is
 untrusted: malformed JSON roots, non-string extracted text, invalid preview fields,
