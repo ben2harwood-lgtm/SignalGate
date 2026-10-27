@@ -5,6 +5,7 @@ Do not use on a hosted system or with a customer/production database.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 
@@ -51,16 +52,18 @@ def _require_local_demo_target(
     path = Path(url.database)
     if not path.is_absolute():
         path = (cwd or Path.cwd()) / path
-    # Keep the trusted allowlist lexical: resolving the allowlist would
-    # accidentally bless a canonical file symlink pointing outside this repo.
-    # Resolve only the candidate path, and refuse symlinks at the file itself.
+    # SQLite's pysqlite dialect normalizes relative/absolute filenames using
+    # os.path.abspath *before* filesystem lookup. pathlib.resolve alone can
+    # follow a directory symlink before collapsing '..', approving a DIFFERENT
+    # file from the one the SQLite driver actually opens. Match the driver.
+    driver_path = Path(os.path.abspath(str(path)))
     approved = {
         _ROOT / "signalgate.db",
         _BACKEND / "signalgate.db",
     }
-    if path.is_symlink():
+    if driver_path.is_symlink():
         raise RuntimeError("Refusing reset: local demo database must not be a symlink.")
-    target = path.resolve()
+    target = driver_path.resolve()
     if target not in approved:
         raise RuntimeError("Refusing reset: database is not the canonical local demo file.")
     return target
@@ -89,9 +92,18 @@ def main(argv: list[str] | None = None) -> int:
         require_license=settings.require_license,
     )
 
-    # The database module holds an engine created from cached settings. Check
-    # the *actual* engine target as well in case another module initialised it
-    # earlier with different environment values.
+    # The SQLite driver captures its absolute filename during engine creation,
+    # but engine.url can retain a relative URL. If this module was imported
+    # before the preflight (possibly in a different working directory), its
+    # actual cached connection target cannot be established from engine.url.
+    # This destructive CLI must start in a fresh process with no cached engine.
+    if "app.database" in sys.modules:
+        raise RuntimeError(
+            "Refusing reset: pre-existing database engine cannot be verified."
+        )
+
+    # Import only after the caller's filename and policy are validated. The
+    # current working directory stays fixed while the engine binds its target.
     from app.database import Base, engine, init_db, settings as engine_settings
     from app.main import seed_settings
 

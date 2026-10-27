@@ -110,4 +110,4 @@ python -m pytest -q
   ```bash
   python ../scripts/reset_local_db.py --confirm-local-demo-reset
   ```
-  Even with the explicit confirmation flag, reset refuses hosted/licensed or non-demo mode, PostgreSQL, memory/URI SQLite, alternate paths, and symbolic links to a canonical-looking database file. Do not run against customer databases, use this as a migration/backup substitute, or treat this guard as public ingress/MT5/external acceptance proof.
+  Even with the explicit confirmation flag, reset refuses hosted/licensed or non-demo mode, PostgreSQL, memory/URI SQLite, alternate paths, driver-normalized symbolic-link aliases, and previously imported/cached database engines. Launch in a fresh CLI process. Do not run against customer databases, use this as a migration/backup substitute, or treat this guard as public ingress/MT5/external acceptance proof.

@@ -115,3 +115,63 @@ def test_reset_rejects_canonical_file_symlink_without_mutating_target(
             cwd=root,
         )
     assert dest.read_bytes() == b"sentinel: do not alter"
+
+
+def test_reset_rejects_driver_normalized_directory_symlink_dotdot(tmp_path):
+    """SQLite removes '..' lexically before following symlinks; mirror its target."""
+    root = tmp_path / "source"
+    backend = root / "backend"
+    child = root / "child"
+    backend.mkdir(parents=True)
+    child.mkdir()
+    (backend / "link").symlink_to(child, target_is_directory=True)
+    original = root / "signalgate.db"
+    original.write_bytes(b"safe repository db")
+    outside = tmp_path / "customer.db"
+    outside.write_bytes(b"external sentinel unchanged")
+    (backend / "signalgate.db").symlink_to(outside)
+
+    gate = _gate()
+    gate.__globals__["_ROOT"] = root
+    gate.__globals__["_BACKEND"] = backend
+    tricky = backend / "link" / ".." / "signalgate.db"
+    with pytest.raises(RuntimeError, match="must not be a symlink"):
+        gate(
+            "sqlite:///" + str(tricky),
+            demo_only_mode=True,
+            require_license=False,
+            cwd=backend,
+        )
+    assert original.read_bytes() == b"safe repository db"
+    assert outside.read_bytes() == b"external sentinel unchanged"
+
+
+def test_reset_refuses_cached_relative_engine_after_working_directory_change(
+    tmp_path, monkeypatch
+):
+    """Never trust engine.url after SQLAlchemy already bound a filename."""
+    import sys
+    from types import ModuleType
+    from sqlalchemy import create_engine
+
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    engine = create_engine("sqlite:///./signalgate.db")  # does not connect
+    cached = ModuleType("app.database")
+    cached.engine = engine
+    monkeypatch.setitem(sys.modules, "app.database", cached)
+
+    # The raw relative engine URL still looks local after this cwd switch, but
+    # its original connection creator was bound outside the canonical repo.
+    monkeypatch.chdir(ROOT / "backend")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///./signalgate.db")
+    monkeypatch.setenv("REQUIRE_LICENSE", "false")
+    monkeypatch.setenv("DEMO_ONLY_MODE", "true")
+    main = runpy.run_path(str(SCRIPT), run_name="signalreset_preflight_test")["main"]
+    try:
+        with pytest.raises(RuntimeError, match="pre-existing database engine"):
+            main(["--confirm-local-demo-reset"])
+        assert not (other / "signalgate.db").exists()
+    finally:
+        engine.dispose()
