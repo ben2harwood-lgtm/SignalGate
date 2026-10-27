@@ -1,6 +1,7 @@
 """Offline hostile vision-response tests. No API key, network or broker access."""
 from __future__ import annotations
 
+import gzip
 import json
 
 import httpx
@@ -69,7 +70,24 @@ def test_valid_model_text_and_embedded_json_remain_readable():
 def _mock_http_client(monkeypatch, responder):
     # httpx.MockTransport prevents all outbound traffic, even on exceptions.
     actual_client = httpx.Client
-    transport = httpx.MockTransport(responder)
+
+    def streamed_responder(request):
+        response = responder(request)
+        # Response(..., json=...) eagerly buffers synthetic bodies, unlike a
+        # network response inside Client.stream(). Re-expose test fixtures as
+        # truly streamed bytes so production iter_raw() exercises the JSON
+        # parser rather than failing with httpx.StreamConsumed. Preserve
+        # explicitly streamed hostile-gzip responses untouched.
+        if response.is_stream_consumed:
+            response = httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                stream=httpx.ByteStream(response.content),
+                request=request,
+            )
+        return response
+
+    transport = httpx.MockTransport(streamed_responder)
 
     def replacement(*args, **kwargs):
         return actual_client(*args, transport=transport, **kwargs)
@@ -131,3 +149,116 @@ def test_http_error_body_does_not_appear_in_preview(monkeypatch):
     result = ClaudeExtractor().extract(b"offline-placeholder")
     _must_refuse(result)
     assert "synthetic-secret-token-in-body" not in result.notes
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "\u2028",  # Unicode line separator (renders as another line).
+        "\u2029",  # Unicode paragraph separator.
+        "\u200b",  # Zero-width space.
+        "\u202e",  # Right-to-left override.
+        "\u2066",  # Left-to-right isolate.
+        "\x7f",    # ASCII delete/control (not caught by ord < 32).
+        "\n",      # Actual newline, even after trim.
+        "\t",      # Tab, even after trim.
+    ],
+)
+def test_vision_signal_text_refuses_invisible_or_multiline_controls(unsafe):
+    candidate = TRADE.replace(" TP1", unsafe + " TP1", 1)
+    _must_refuse(_parse_model_json(
+        json.dumps({**GOOD_MODEL, "signal_text": candidate}), engine="claude",
+    ))
+    # Trimming must not turn a hidden boundary character into a valid preview.
+    _must_refuse(_parse_model_json(
+        json.dumps({**GOOD_MODEL, "signal_text": TRADE + unsafe}), engine="claude",
+    ))
+
+
+def test_vision_model_json_is_bounded_before_parsing():
+    # An untrusted service may violate the upstream 400-token output setting.
+    # Neither an oversized plain response nor deeply nested JSON is a signal.
+    for text in ("x" * 8193, "[" * 5000 + "]" * 5000):
+        _must_refuse(_parse_model_json(text, engine="claude"))
+
+
+def test_streamed_gzip_response_is_refused_without_reading_or_decompressing(monkeypatch):
+    # httpx.iter_bytes() decompresses a transport chunk before splitting it.
+    # Prove we refuse compressed responses BEFORE even reading the raw stream.
+    valid_large_envelope = json.dumps({
+        "content": [{"type": "text", "text": json.dumps(GOOD_MODEL)}],
+        "padding": "x" * 1_000_000,
+    }).encode("utf-8")
+
+    class TrackedGzipStream(httpx.SyncByteStream):
+        def __init__(self, data):
+            self.data = data
+            self.consumed = False
+
+        def __iter__(self):
+            self.consumed = True
+            yield self.data
+
+    stream = TrackedGzipStream(gzip.compress(valid_large_envelope))
+
+    def compressed_response(request):
+        assert request.headers["accept-encoding"] == "identity"
+        return httpx.Response(
+            200, headers={"content-encoding": "gzip"}, stream=stream,
+        )
+
+    _mock_http_client(monkeypatch, compressed_response)
+    _must_refuse(ClaudeExtractor().extract(b"offline-placeholder"))
+    assert stream.consumed is False
+
+
+def test_http_envelope_size_bound_rejects_otherwise_valid_vision_json(monkeypatch):
+    # A small valid model answer inside a giant upstream envelope must not
+    # pass after an unbounded response read. MockTransport is fully offline.
+    envelope = {
+        "content": [{"type": "text", "text": json.dumps(GOOD_MODEL)}],
+        "padding": "x" * 65536,
+    }
+    _mock_http_client(
+        monkeypatch, lambda request: httpx.Response(200, json=envelope),
+    )
+    _must_refuse(ClaudeExtractor().extract(b"offline-placeholder"))
+
+
+@pytest.mark.parametrize("surrounding_first", [False, True])
+def test_multiblock_model_text_refuses_oversize_even_if_trim_would_hide_it(
+    monkeypatch, surrounding_first,
+):
+    # Joining then stripping could previously hide arbitrarily many spaces.
+    model = json.dumps(GOOD_MODEL)
+    blocks = [" " * 8192, model] if surrounding_first else [model, " " * 8192]
+    envelope = {"content": [{"type": "text", "text": item} for item in blocks]}
+    _mock_http_client(
+        monkeypatch, lambda request: httpx.Response(200, json=envelope),
+    )
+    _must_refuse(ClaudeExtractor().extract(b"offline-placeholder"))
+
+
+def test_model_text_at_exact_incremental_limit_remains_compatible(monkeypatch):
+    model = json.dumps(GOOD_MODEL)
+    envelope = {
+        "content": [
+            {"type": "text", "text": " " * (8192 - len(model))},
+            {"type": "text", "text": model},
+        ],
+    }
+    _mock_http_client(
+        monkeypatch, lambda request: httpx.Response(200, json=envelope),
+    )
+    result = ClaudeExtractor().extract(b"offline-placeholder")
+    assert result.readable is True
+    assert result.raw_text == TRADE
+
+
+def test_vision_signal_allows_plain_ascii_surrounding_spaces():
+    result = _parse_model_json(
+        json.dumps({**GOOD_MODEL, "signal_text": "  " + TRADE + "  "}),
+        engine="claude",
+    )
+    assert result.readable is True
+    assert result.raw_text == TRADE
