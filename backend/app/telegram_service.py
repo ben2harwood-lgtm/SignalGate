@@ -1,8 +1,7 @@
-"""Outbound Telegram notifications from the backend.
+"""Best-effort backend Telegram notifications with secret-free diagnostics.
 
-Used to confirm trade lifecycle events to the user/admin. This is best-effort:
-if no bot token is configured, calls become no-ops so the backend still works
-fully for local testing without Telegram.
+A send failure must never interrupt trade lifecycle recording. Logs never
+include the bot credential (embedded in the HTTP URL), chat identity or message.
 """
 from __future__ import annotations
 
@@ -14,6 +13,9 @@ import httpx
 from .config import get_settings
 
 logger = logging.getLogger("signalgate.telegram")
+# httpx INFO emits full request URLs; Telegram embeds the bot credential in
+# its API URL path. Suppress the library's URL-bearing request logs globally.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 settings = get_settings()
 
 _API = "https://api.telegram.org/bot{token}/sendMessage"
@@ -24,13 +26,12 @@ def _enabled() -> bool:
 
 
 def send_message(chat_id: str, text: str) -> bool:
-    """Send a Telegram message. Returns True on success, False otherwise.
+    """Send a Telegram notification, returning False on any delivery failure.
 
-    Never raises into the request path — notification failures must not break
-    trade lifecycle recording.
+    No transport URL, exception details, chat id or message text enter logs.
     """
     if not _enabled():
-        logger.debug("Telegram disabled; skipping message to %s: %s", chat_id, text)
+        logger.debug("Telegram notification disabled; send skipped")
         return False
     try:
         resp = httpx.post(
@@ -39,8 +40,8 @@ def send_message(chat_id: str, text: str) -> bool:
             timeout=5.0,
         )
         return resp.status_code == 200
-    except Exception as exc:  # noqa: BLE001 - best effort
-        logger.warning("Telegram send failed: %s", exc)
+    except Exception:  # noqa: BLE001 - notification failure must not break request
+        logger.warning("Telegram notification failed (transport or client error)")
         return False
 
 
