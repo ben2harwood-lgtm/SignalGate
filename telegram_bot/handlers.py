@@ -569,11 +569,40 @@ MAX_SIGNAL_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 def _clear_pending_screenshot_preview(context: ContextTypes.DEFAULT_TYPE) -> None:
-    for key in ("pending_signal_text", "awaiting_edit", "pending_preview_token"):
+    for key in (
+        "pending_signal_text", "awaiting_edit", "pending_preview_token",
+        "active_screenshot_attempt",
+    ):
         context.user_data.pop(key, None)
 
 
-async def _reject_screenshot_size(update: Update, context: ContextTypes.DEFAULT_TYPE, size: int | None) -> bool:
+def _begin_screenshot_attempt(context: ContextTypes.DEFAULT_TYPE) -> str:
+    # A later screenshot supersedes every earlier in-flight download/extraction.
+    _clear_pending_screenshot_preview(context)
+    attempt_token = secrets.token_hex(16)
+    context.user_data["active_screenshot_attempt"] = attempt_token
+    return attempt_token
+
+
+def _is_current_screenshot_attempt(
+    context: ContextTypes.DEFAULT_TYPE, attempt_token: str
+) -> bool:
+    current = context.user_data.get("active_screenshot_attempt")
+    return (
+        isinstance(current, str)
+        and secrets.compare_digest(attempt_token, current)
+    )
+
+
+async def _reject_screenshot_size(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    size: int | None,
+    attempt_token: str,
+) -> bool:
+    # A delayed older request must never clear or upload a newer screenshot.
+    if not _is_current_screenshot_attempt(context, attempt_token):
+        return True
     # Missing Telegram metadata is allowed only until the actual download size
     # is checked; malformed or oversized reported sizes fail closed immediately.
     if size is None:
@@ -588,8 +617,12 @@ async def _reject_screenshot_size(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    _clear_pending_screenshot_preview(context)
-    if not await _can_submit_provider_signal(update):
+    attempt_token = _begin_screenshot_attempt(context)
+    authorised = await _can_submit_provider_signal(update)
+    if not _is_current_screenshot_attempt(context, attempt_token):
+        return
+    if not authorised:
+        _clear_pending_screenshot_preview(context)
         await update.message.reply_text(
             "Connect this Telegram account to a provider feed with "
             "/connectprovider before submitting screenshots."
@@ -598,31 +631,35 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Refuse oversized metadata before any Telegram file download.
     photo = update.message.photo[-1]
-    if await _reject_screenshot_size(update, context, photo.file_size):
+    if await _reject_screenshot_size(update, context, photo.file_size, attempt_token):
         return
     await update.message.reply_text("📷 Reading your screenshot…")
+    if not _is_current_screenshot_attempt(context, attempt_token):
+        return
     tg_file = await context.bot.get_file(photo.file_id)
-    # Telegram's resolved File may report a separate size even if message
-    # metadata was absent or understated. Check before downloading.
-    if await _reject_screenshot_size(update, context, tg_file.file_size):
+    # The resolved Telegram File may disagree with the original message size.
+    if await _reject_screenshot_size(update, context, tg_file.file_size, attempt_token):
         return
     downloaded_image = await tg_file.download_as_bytearray()
-    if await _reject_screenshot_size(update, context, len(downloaded_image)):
+    if await _reject_screenshot_size(update, context, len(downloaded_image), attempt_token):
         return
-    # Avoid duplicating memory for an oversized response.
-    image_bytes = bytes(downloaded_image)
-
+    # No expensive immutable copy for an oversized/stale response.
     await _preview_screenshot(
         update=update,
         context=context,
-        image_bytes=image_bytes,
+        image_bytes=bytes(downloaded_image),
         mime="image/jpeg",
+        attempt_token=attempt_token,
     )
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    _clear_pending_screenshot_preview(context)
-    if not await _can_submit_provider_signal(update):
+    attempt_token = _begin_screenshot_attempt(context)
+    authorised = await _can_submit_provider_signal(update)
+    if not _is_current_screenshot_attempt(context, attempt_token):
+        return
+    if not authorised:
+        _clear_pending_screenshot_preview(context)
         await update.message.reply_text(
             "Connect this Telegram account to a provider feed with "
             "/connectprovider before submitting screenshots."
@@ -632,27 +669,27 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     document = update.message.document
     mime = document.mime_type or "application/octet-stream"
     if not mime.startswith("image/"):
+        _clear_pending_screenshot_preview(context)
         await update.message.reply_text("Please send an image screenshot.")
         return
 
-    if await _reject_screenshot_size(update, context, document.file_size):
+    if await _reject_screenshot_size(update, context, document.file_size, attempt_token):
         return
     await update.message.reply_text("📷 Reading your screenshot…")
+    if not _is_current_screenshot_attempt(context, attempt_token):
+        return
     tg_file = await context.bot.get_file(document.file_id)
-    # Telegram's resolved File may report a separate size even if message
-    # metadata was absent or understated. Check before downloading.
-    if await _reject_screenshot_size(update, context, tg_file.file_size):
+    if await _reject_screenshot_size(update, context, tg_file.file_size, attempt_token):
         return
     downloaded_image = await tg_file.download_as_bytearray()
-    if await _reject_screenshot_size(update, context, len(downloaded_image)):
+    if await _reject_screenshot_size(update, context, len(downloaded_image), attempt_token):
         return
-    # Avoid duplicating memory for an oversized response.
-    image_bytes = bytes(downloaded_image)
     await _preview_screenshot(
         update=update,
         context=context,
-        image_bytes=image_bytes,
+        image_bytes=bytes(downloaded_image),
         mime=mime,
+        attempt_token=attempt_token,
     )
 
 
@@ -694,12 +731,20 @@ async def _preview_screenshot(
     context: ContextTypes.DEFAULT_TYPE,
     image_bytes: bytes,
     mime: str,
+    attempt_token: str | None = None,
 ) -> None:
-    # Never leave an earlier unsent preview available when a new screenshot
-    # fails extraction or its provider source has been revoked.
-    _clear_pending_screenshot_preview(context)
+    # Direct/offline callers preserve the earlier fresh-preview behaviour.
+    # Telegram screenshot handlers supply the same token across awaits.
+    if attempt_token is None:
+        _clear_pending_screenshot_preview(context)
+    elif not _is_current_screenshot_attempt(context, attempt_token):
+        return
     user_id = update.effective_user.id
     source = await _provider_source_status(user_id)
+    if attempt_token is not None and not _is_current_screenshot_attempt(
+        context, attempt_token
+    ):
+        return
     if source:
         url = f"{config.backend_base_url}/provider-sources/telegram/extract"
         headers = _registration_headers()
@@ -726,8 +771,14 @@ async def _preview_screenshot(
                 headers=headers,
                 files={"file": ("signal", image_bytes, mime)},
             )
+            if attempt_token is not None and not _is_current_screenshot_attempt(
+                context, attempt_token
+            ):
+                return
             if resp.status_code != 200:
                 # Backend error bodies may contain secrets or internal details.
+                if attempt_token is not None:
+                    _clear_pending_screenshot_preview(context)
                 logger.warning("backend screenshot extraction returned HTTP %s", resp.status_code)
                 await update.message.reply_text(
                     "Screenshot extraction was rejected by the backend. "
@@ -736,6 +787,10 @@ async def _preview_screenshot(
                 return
             data = resp.json()
     except Exception as exc:  # noqa: BLE001
+        if attempt_token is not None:
+            if not _is_current_screenshot_attempt(context, attempt_token):
+                return
+            _clear_pending_screenshot_preview(context)
         # HTTP exceptions can include credential-bearing URLs or response text.
         logger.warning("extract failed: %s", type(exc).__name__)
         await update.message.reply_text(
@@ -746,6 +801,8 @@ async def _preview_screenshot(
     # Treat extractor JSON as untrusted even on HTTP 200. A malformed response
     # must not crash callbacks or leave an earlier preview confirmable.
     if not _valid_screenshot_preview_payload(data):
+        if attempt_token is not None:
+            _clear_pending_screenshot_preview(context)
         logger.warning("backend screenshot extraction returned invalid preview shape")
         await update.message.reply_text(
             "Screenshot extraction returned an invalid response. Nothing was saved. "
@@ -762,6 +819,8 @@ async def _preview_screenshot(
         preview_length = len(preview.encode("utf-16-le")) // 2
         preview.encode("utf-8")
     except (TypeError, ValueError, UnicodeError, OverflowError):
+        if attempt_token is not None:
+            _clear_pending_screenshot_preview(context)
         logger.warning("backend screenshot extraction returned unrenderable preview")
         await update.message.reply_text(
             "Screenshot preview could not be rendered. Nothing was saved. "
@@ -769,6 +828,8 @@ async def _preview_screenshot(
         )
         return
     if preview_length > 3900:
+        if attempt_token is not None:
+            _clear_pending_screenshot_preview(context)
         logger.warning("backend screenshot extraction preview exceeded display limit")
         await update.message.reply_text(
             "Screenshot preview was too long. Nothing was saved. "
@@ -776,7 +837,12 @@ async def _preview_screenshot(
         )
         return
 
-    # Old message buttons must never authorise the current screenshot.
+    # An older extraction may complete after a newer screenshot was started.
+    # Never let it overwrite the new preview or issue a confirmable callback.
+    if attempt_token is not None:
+        if not _is_current_screenshot_attempt(context, attempt_token):
+            return
+        context.user_data.pop("active_screenshot_attempt", None)
     preview_token = secrets.token_hex(8)
     context.user_data["pending_signal_text"] = data.get("extracted_text", "")
     context.user_data["pending_preview_token"] = preview_token
