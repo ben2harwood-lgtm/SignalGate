@@ -2,9 +2,19 @@
 
 The MQL5 EA is safety-critical and **source-level CI is not a compiler receipt**.
 
+**Frozen RC2 is NOT a valid broker-demo onboarding candidate.** The exact RC2
+release SHA `3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2` failed official
+MetaEditor compilation with **18 errors / 4 warnings** (workflow run
+`35464044898`; see issue #46). A later repaired EA compiled at a *different*
+SHA; it does not turn RC2 into a compiler PASS. Keep RC2 immutable. Before
+collecting *new* broker-demo acceptance evidence, pin a separately reviewed
+replacement candidate, obtain its own exact-source **0 errors / 0 warnings**
+MetaEditor receipt, and satisfy the demo-broker scenarios below. PR #60's
+execution-attribution HOLD remains open as of 23 October 2026.
+
 Before this lane can be called release-accepted, compile `mt5_ea/SignalGateEA.mq5` in the target MetaTrader 5 MetaEditor and record:
 
-- frozen candidate ref + exact commit SHA;
+- named candidate ref + exact commit SHA;
 - SHA-256 of the exact EA source;
 - MetaEditor/build version;
 - broker/demo terminal version;
@@ -19,7 +29,7 @@ Post-RC tooling includes:
 - `scripts/capture_mt5_compile_evidence.ps1`
 - `scripts/Run-MT5-Compile-Acceptance.bat`
 
-The harness does **not** compile whatever code happens to be checked out. It resolves the frozen release ref, verifies the expected SHA, creates a detached temporary Git worktree at that exact commit, compiles the EA from that worktree, then records/copies:
+The harness does **not** compile whatever code happens to be checked out. It resolves the named candidate ref, verifies the expected SHA, creates a detached temporary Git worktree at that exact commit, compiles the EA from that worktree, then records/copies:
 
 - candidate ref and SHA;
 - detached-worktree HEAD;
@@ -33,7 +43,8 @@ The harness does **not** compile whatever code happens to be checked out. It res
 - raw MetaEditor `.log`;
 - JSON and Markdown receipts.
 
-For RC2 on a Windows machine with MetaEditor installed:
+Historical RC2 *failure reproduction only* on a Windows machine with MetaEditor
+installed (do **not** use this command as a passing acceptance candidate):
 
 ```bat
 scripts\Run-MT5-Compile-Acceptance.bat ^
@@ -53,6 +64,11 @@ Then run these demo-account scenarios and retain backend audit/ledger receipts:
 4. broker rejection / market closed — no fake successful execution;
 5. stop-loss close — ledger records `STOPPED_OUT`, never TP;
 6. manual/unknown close — ledger remains unattributed unless broker TP/SL reason proves otherwise;
+   TP1/TP2/TP3 stage receipts require the **specific child position/deal's** broker
+   TP-exit reason, not just a reduced open-position count or an earlier child's TP.
+   A partial manual/unknown close, or manual final close after an earlier TP,
+   must not falsely advance a TP stage; broker-mutated identifiers/comments
+   must fail closed pending reconciliation;
 7. netting account — split-ticket mode falls back safely;
 8. network interruption after broker fill — open-position reconciliation recovers the missing callback;
 9. EA restart with an open SignalGate position — reconciliation runs and new command polling remains blocked until flat;
@@ -99,7 +115,6 @@ scenario `NOT_RUN`. Suffix handling, LIMIT refusal, netting behaviour and restar
 poll blocking still require the exact EA in an authorised, positively identified
 demo terminal. Retain actual broker/terminal receipts separately; do not relabel a
 synthetic snapshot or source assertion as broker evidence.
-
 
 ### Candidate-test execution trust boundary
 
