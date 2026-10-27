@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import stat
 from pathlib import Path
 import sys
 
@@ -66,6 +67,25 @@ def _require_local_demo_target(
     target = driver_path.resolve()
     if target not in approved:
         raise RuntimeError("Refusing reset: database is not the canonical local demo file.")
+
+    # The SQLite engine opens this pathname after preflight, not an already
+    # validated file descriptor. Refuse directories another local principal can
+    # replace, and never reset an aliased inode through a hardlink. This only
+    # mitigates cross-account local file swaps; the CLI still requires a trusted
+    # operator and cannot defend against a hostile process using the same UID.
+    if os.name == "posix":
+        directory_info = driver_path.parent.stat()
+        if directory_info.st_uid != os.geteuid() or directory_info.st_mode & 0o022:
+            raise RuntimeError("Refusing reset: local demo database directory must be private.")
+    try:
+        file_info = driver_path.lstat()
+    except FileNotFoundError:
+        pass  # A fresh local demo database has not been created yet.
+    else:
+        if not stat.S_ISREG(file_info.st_mode) or file_info.st_nlink != 1:
+            raise RuntimeError("Refusing reset: database must be a single-link regular file.")
+        if os.name == "posix" and file_info.st_uid != os.geteuid():
+            raise RuntimeError("Refusing reset: demo database must be owned by the operator.")
     return target
 
 
