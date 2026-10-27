@@ -124,6 +124,12 @@ extracted text with non-sensitive operator-facing errors, never a guessed
 signal or a raw HTTP exception. The normal deterministic parser and human
 provider confirmation remain separate mandatory stages before signal creation.
 
+The combined upstream model response is capped at 8,192 characters before JSON
+parsing. A nonempty preview must be printable ASCII only; invisible/bidirectional
+Unicode controls, non-ASCII line separators, DEL and trailing control characters
+fail closed. Natural-language annotations belong in `notes`, not in the signal
+text. These are offline input-boundary checks, not live OCR or MT5 evidence.
+
 `backend/tests/test_vision_extractor_failclosed.py` uses only synthetic JSON
 and `httpx.MockTransport` (no external API, customer data, Telegram, EA or
 broker connection). These tests prove defensive handling of selected hostile
