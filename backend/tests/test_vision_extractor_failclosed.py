@@ -131,3 +131,43 @@ def test_http_error_body_does_not_appear_in_preview(monkeypatch):
     result = ClaudeExtractor().extract(b"offline-placeholder")
     _must_refuse(result)
     assert "synthetic-secret-token-in-body" not in result.notes
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "\\u2028",  # Unicode line separator (renders as another line).
+        "\\u2029",  # Unicode paragraph separator.
+        "\\u200b",  # Zero-width space.
+        "\\u202e",  # Right-to-left override.
+        "\\u2066",  # Left-to-right isolate.
+        "\\x7f",    # ASCII delete/control (not caught by ord < 32).
+        "\\n",      # Actual newline, even after trim.
+        "\\t",      # Tab, even after trim.
+    ],
+)
+def test_vision_signal_text_refuses_invisible_or_multiline_controls(unsafe):
+    candidate = TRADE.replace(" TP1", unsafe + " TP1", 1)
+    _must_refuse(_parse_model_json(
+        json.dumps({**GOOD_MODEL, "signal_text": candidate}), engine="claude",
+    ))
+    # Trimming must not turn a hidden boundary character into a valid preview.
+    _must_refuse(_parse_model_json(
+        json.dumps({**GOOD_MODEL, "signal_text": TRADE + unsafe}), engine="claude",
+    ))
+
+
+def test_vision_model_json_is_bounded_before_parsing():
+    # An untrusted service may violate the upstream 400-token output setting.
+    # Neither an oversized plain response nor deeply nested JSON is a signal.
+    for text in ("x" * 8193, "[" * 5000 + "]" * 5000):
+        _must_refuse(_parse_model_json(text, engine="claude"))
+
+
+def test_vision_signal_allows_plain_ascii_surrounding_spaces():
+    result = _parse_model_json(
+        json.dumps({**GOOD_MODEL, "signal_text": "  " + TRADE + "  "}),
+        engine="claude",
+    )
+    assert result.readable is True
+    assert result.raw_text == TRADE
