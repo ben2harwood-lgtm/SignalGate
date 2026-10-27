@@ -562,6 +562,11 @@ def check_screenshot_upload_size_guard() -> None:
                 )
 
         async def preview(**kwargs):
+            assert handlers._is_current_screenshot_attempt(
+                kwargs["context"], kwargs["attempt_token"]
+            ), "Photo/document preview has lost its attempt identity"
+            # Mirror the real preview's transition to a confirmable callback.
+            kwargs["context"].user_data.pop("active_screenshot_attempt", None)
             previews.append((kwargs["image_bytes"], kwargs["mime"]))
 
         asset = SimpleNamespace(file_id="OFFLINE", file_size=size, mime_type="image/png")
@@ -639,6 +644,137 @@ def check_screenshot_upload_size_guard() -> None:
         assert not state
 
 
+def check_overlapping_screenshot_attempts_fail_closed() -> None:
+    """A delayed older screenshot cannot overwrite a newer preview."""
+    async def permitted(_update):
+        return True
+
+    async def exercise_delayed_get_file(kind: str):
+        requests, previews, replies = [], [], []
+        entered, release = asyncio.Event(), asyncio.Event()
+        state = {"pending_signal_text": "OLD", "pending_preview_token": "0" * 16}
+
+        async def reply_text(text, **_kwargs):
+            replies.append(text)
+
+        class Bot:
+            async def get_file(self, file_id):
+                requests.append(("get_file", file_id))
+                if file_id == "OLDER":
+                    entered.set()
+                    await release.wait()
+
+                async def download():
+                    requests.append(("download", file_id))
+                    return bytearray(b"BBB" if file_id == "NEWER" else b"AAA")
+
+                return SimpleNamespace(file_size=3, download_as_bytearray=download)
+
+        def make_update(file_id):
+            asset = SimpleNamespace(
+                file_id=file_id, file_size=3, mime_type="image/png"
+            )
+            return SimpleNamespace(
+                effective_user=SimpleNamespace(id=12345),
+                message=SimpleNamespace(
+                    photo=[asset], document=asset, reply_text=reply_text,
+                ),
+            )
+
+        async def preview(**kwargs):
+            assert handlers._is_current_screenshot_attempt(
+                kwargs["context"], kwargs["attempt_token"]
+            ), "Stale file created a preview"
+            previews.append(kwargs["image_bytes"])
+            state["pending_signal_text"] = kwargs["image_bytes"].decode()
+            state["pending_preview_token"] = "b" * 16
+            state.pop("active_screenshot_attempt", None)
+
+        context = SimpleNamespace(user_data=state, bot=Bot())
+        handler = handlers.on_photo if kind == "photo" else handlers.on_document
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", permitted),
+            patch.object(handlers, "_preview_screenshot", preview),
+        ):
+            older = asyncio.create_task(handler(make_update("OLDER"), context))
+            await asyncio.wait_for(entered.wait(), 1)
+            await handler(make_update("NEWER"), context)
+            assert previews == [b"BBB"], (kind, previews)
+            assert state["pending_signal_text"] == "BBB"
+            release.set()
+            await asyncio.wait_for(older, 1)
+        assert previews == [b"BBB"], "Late older file reached preview"
+        assert ("download", "OLDER") not in requests, "Late file was downloaded"
+        assert state["pending_preview_token"] == "b" * 16
+        assert state["pending_signal_text"] == "BBB"
+
+    async def exercise_delayed_extraction():
+        entered, release = asyncio.Event(), asyncio.Event()
+        requests, replies = [], []
+        state = {}
+        context = SimpleNamespace(user_data=state)
+
+        async def source(_user_id):
+            if asyncio.current_task().get_name() == "old-extraction":
+                entered.set()
+                await release.wait()
+            return {"feed_id": "OFFLINE"}
+
+        async def reply_text(text, **_kwargs):
+            replies.append(text)
+
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=12345),
+            message=SimpleNamespace(reply_text=reply_text),
+        )
+        original_client = httpx.AsyncClient
+
+        def respond(request):
+            requests.append(request.url.path)
+            return httpx.Response(
+                200, json={
+                    "parser_status": "VALID",
+                    "extracted_text": "NEWER BUY SL 1 TP1 2",
+                },
+            )
+
+        transport = httpx.MockTransport(respond)
+        with (
+            patch.object(handlers, "_provider_source_status", source),
+            patch.object(
+                handlers.httpx,
+                "AsyncClient",
+                lambda *args, **kwargs: original_client(
+                    *args, transport=transport, **kwargs
+                ),
+            ),
+        ):
+            old_token = handlers._begin_screenshot_attempt(context)
+            older = asyncio.create_task(
+                handlers._preview_screenshot(
+                    update, context, b"OLDER", "image/jpeg", old_token
+                ),
+                name="old-extraction",
+            )
+            await asyncio.wait_for(entered.wait(), 1)
+            new_token = handlers._begin_screenshot_attempt(context)
+            await handlers._preview_screenshot(
+                update, context, b"NEWER", "image/jpeg", new_token
+            )
+            assert state["pending_signal_text"] == "NEWER BUY SL 1 TP1 2"
+            preview_nonce = state["pending_preview_token"]
+            release.set()
+            await asyncio.wait_for(older, 1)
+        assert requests == ["/provider-sources/telegram/extract"]
+        assert state["pending_signal_text"] == "NEWER BUY SL 1 TP1 2"
+        assert state["pending_preview_token"] == preview_nonce
+        assert len(replies) == 1 and "Read from your screenshot" in replies[0]
+
+    for kind in ("photo", "document"):
+        asyncio.run(exercise_delayed_get_file(kind))
+    asyncio.run(exercise_delayed_extraction())
+
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -681,6 +817,7 @@ def main() -> int:
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()
     check_screenshot_upload_size_guard()
+    check_overlapping_screenshot_attempts_fail_closed()
     check_malformed_pending_confirmation_fails_closed()
     check_preview_keyboard_token_contract()
     check_preview_callback_identity_and_single_use()
