@@ -125,6 +125,9 @@ class FakeExtractor:
 
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+# Bound even malformed upstream HTTP envelopes before decoding or joining text.
+MAX_VISION_HTTP_BYTES = 65536
+MAX_MODEL_JSON_CHARS = 8192
 
 
 class ClaudeExtractor:
@@ -175,9 +178,17 @@ class ClaudeExtractor:
         }
         try:
             with httpx.Client(timeout=60.0) as http:
-                resp = http.post(ANTHROPIC_URL, headers=headers, json=body)
-                resp.raise_for_status()
-                payload = resp.json()
+                # http.post()/resp.json() first buffers an untrusted, unbounded
+                # HTTP body. Stream in small chunks and refuse oversized data
+                # before allocating/decoding the complete JSON envelope.
+                with http.stream("POST", ANTHROPIC_URL, headers=headers, json=body) as resp:
+                    resp.raise_for_status()
+                    response_bytes = bytearray()
+                    for chunk in resp.iter_bytes(chunk_size=8192):
+                        if len(chunk) > MAX_VISION_HTTP_BYTES - len(response_bytes):
+                            return _unreadable(self.engine, "Vision service response exceeds size limit.")
+                        response_bytes.extend(chunk)
+                    payload = json.loads(response_bytes)
         except Exception:  # noqa: BLE001
             # Never return an HTTP transport/response exception string to the bot:
             # these strings may contain credential-bearing request details.
@@ -188,6 +199,7 @@ class ClaudeExtractor:
         if not isinstance(payload, dict) or not isinstance(payload.get("content"), list):
             return _unreadable(self.engine, "Vision service returned invalid content.")
         text_parts: list[str] = []
+        text_chars = 0
         for block in payload["content"]:
             if not isinstance(block, dict):
                 return _unreadable(self.engine, "Vision service returned invalid content.")
@@ -195,6 +207,9 @@ class ClaudeExtractor:
                 value = block.get("text")
                 if not isinstance(value, str):
                     return _unreadable(self.engine, "Vision service returned invalid content.")
+                if len(value) > MAX_MODEL_JSON_CHARS - text_chars:
+                    return _unreadable(self.engine, "Vision response exceeds preview limit.")
+                text_chars += len(value)
                 text_parts.append(value)
         return _parse_model_json("".join(text_parts).strip(), engine=self.engine)
 
@@ -203,7 +218,7 @@ def _parse_model_json(text: str, engine: str) -> ExtractionResult:
     """Fail closed on untrusted model JSON before exposing a signal preview."""
     # The model is configured for 400 output tokens. Refuse anomalously large
     # upstream text before JSON parsing; never spend unbounded work on it.
-    if len(text) > 8192:
+    if len(text) > MAX_MODEL_JSON_CHARS:
         return _unreadable(engine, "Vision response exceeds preview limit.")
     payload = None
     try:

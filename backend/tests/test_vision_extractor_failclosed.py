@@ -164,6 +164,49 @@ def test_vision_model_json_is_bounded_before_parsing():
         _must_refuse(_parse_model_json(text, engine="claude"))
 
 
+def test_http_envelope_size_bound_rejects_otherwise_valid_vision_json(monkeypatch):
+    # A small valid model answer inside a giant upstream envelope must not
+    # pass after an unbounded response read. MockTransport is fully offline.
+    envelope = {
+        "content": [{"type": "text", "text": json.dumps(GOOD_MODEL)}],
+        "padding": "x" * 65536,
+    }
+    _mock_http_client(
+        monkeypatch, lambda request: httpx.Response(200, json=envelope),
+    )
+    _must_refuse(ClaudeExtractor().extract(b"offline-placeholder"))
+
+
+@pytest.mark.parametrize("surrounding_first", [False, True])
+def test_multiblock_model_text_refuses_oversize_even_if_trim_would_hide_it(
+    monkeypatch, surrounding_first,
+):
+    # Joining then stripping could previously hide arbitrarily many spaces.
+    model = json.dumps(GOOD_MODEL)
+    blocks = [" " * 8192, model] if surrounding_first else [model, " " * 8192]
+    envelope = {"content": [{"type": "text", "text": item} for item in blocks]}
+    _mock_http_client(
+        monkeypatch, lambda request: httpx.Response(200, json=envelope),
+    )
+    _must_refuse(ClaudeExtractor().extract(b"offline-placeholder"))
+
+
+def test_model_text_at_exact_incremental_limit_remains_compatible(monkeypatch):
+    model = json.dumps(GOOD_MODEL)
+    envelope = {
+        "content": [
+            {"type": "text", "text": " " * (8192 - len(model))},
+            {"type": "text", "text": model},
+        ],
+    }
+    _mock_http_client(
+        monkeypatch, lambda request: httpx.Response(200, json=envelope),
+    )
+    result = ClaudeExtractor().extract(b"offline-placeholder")
+    assert result.readable is True
+    assert result.raw_text == TRADE
+
+
 def test_vision_signal_allows_plain_ascii_surrounding_spaces():
     result = _parse_model_json(
         json.dumps({**GOOD_MODEL, "signal_text": "  " + TRADE + "  "}),
