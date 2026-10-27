@@ -123,6 +123,23 @@ Every provider-scoped or execution-boundary change must preserve negative covera
 
 The deterministic parser fuzz/hostile corpus remains part of the automated assurance layer.
 
+### Screenshot vision-response boundary (post-RC)
+
+The image-to-text engine is **not** trade authority. Third-party model/API
+responses are untrusted: an explicit JSON boolean `readable: true`, correctly
+typed/bounded single-line signal text, accepted confidence/notes fields, and a
+valid service content envelope are required for a parseable preview. Malformed
+responses, false/unreadable flags, and transport failures produce **empty**
+extracted text with non-sensitive operator-facing errors, never a guessed
+signal or a raw HTTP exception. The normal deterministic parser and human
+provider confirmation remain separate mandatory stages before signal creation.
+
+`backend/tests/test_vision_extractor_failclosed.py` uses only synthetic JSON
+and `httpx.MockTransport` (no external API, customer data, Telegram, EA or
+broker connection). These tests prove defensive handling of selected hostile
+payloads, **not** the correctness of real model OCR, real provider delivery,
+MT5 demo acceptance or external security assurance.
+
 ## MT5 acceptance — external/manual
 
 Source-level tests are **not** a MetaEditor compiler receipt.
