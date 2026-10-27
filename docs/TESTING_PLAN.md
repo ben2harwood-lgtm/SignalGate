@@ -142,7 +142,10 @@ characters while collecting content blocks, before joining or trimming.
 A nonempty preview must be printable ASCII only; invisible/bidirectional
 Unicode controls, non-ASCII line separators, DEL and trailing control characters
 fail closed. Natural-language annotations belong in `notes`, not in the signal
-text. These are offline input-boundary checks, not live OCR or MT5 evidence.
+text. Overlong integer literals in otherwise size-bounded model JSON must
+return an unreadable result, including after embedded-JSON salvage, rather than
+raising an uncaught parse error. These are offline input-boundary checks, not
+live OCR or MT5 evidence.
 
 `backend/tests/test_vision_extractor_failclosed.py` uses only synthetic JSON
 and `httpx.MockTransport` (no external API, customer data, Telegram, EA or

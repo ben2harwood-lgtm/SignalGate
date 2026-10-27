@@ -230,13 +230,15 @@ def _parse_model_json(text: str, engine: str) -> ExtractionResult:
     payload = None
     try:
         payload = json.loads(text)
-    except (json.JSONDecodeError, RecursionError):
+    # Python may raise ValueError for excessively long JSON integer literals.
+    # Treat that malformed, untrusted model text as unreadable, not HTTP 500.
+    except (ValueError, RecursionError):
         # Try to salvage a JSON object embedded in any extra prose.
         start, end = text.find("{"), text.rfind("}")
         if start != -1 and end != -1 and end > start:
             try:
                 payload = json.loads(text[start : end + 1])
-            except (json.JSONDecodeError, RecursionError):
+            except (ValueError, RecursionError):
                 payload = None
 
     if not isinstance(payload, dict):
