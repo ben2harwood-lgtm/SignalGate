@@ -5,6 +5,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "scripts" / "capture_mt5_compile_evidence.ps1"
+GATE = ROOT / "scripts" / "verify_mt5_compile_artifact.ps1"
+OFFICIAL_CI = ROOT / ".github" / "workflows" / "mt5-official-compile.yml"
 WRAPPER = ROOT / "scripts" / "Run-MT5-Compile-Acceptance.bat"
 ACCEPTANCE = ROOT / "docs" / "MT5_ACCEPTANCE.md"
 SETUP = ROOT / "mt5_ea" / "README_MT5_SETUP.md"
@@ -41,8 +43,25 @@ def test_harness_requires_zero_errors_and_zero_warnings():
     assert "/include:" in text
     assert "'/log'" in text
     assert r"result\s*:?\s*(\d+)\s+errors?,\s+(\d+)\s+warnings?" in text
-    assert "$result.Errors -eq 0 -and $result.Warnings -eq 0" in text
+    assert "Test-SignalGateCompileEvidence" in text
+    assert "-Errors $result.Errors -Warnings $result.Warnings" in text
+    assert "-CompiledBinaryPath $compiledBinary" in text
+    assert "Remove-Item -LiteralPath $compiledBinary -Force" in text
+    gate = _text(GATE)
+    assert "$Errors -ne 0 -or $Warnings -ne 0" in gate
+    assert "$CompilerExitCode -ne 0 -and $CompilerExitCode -ne 1" in gate
+    assert 'SourceSha256After -ne $ExpectedSourceSha256.ToLowerInvariant()' in gate
+    assert 'CompiledEx5Sha256' in gate
     assert "exit 2" in text
+
+
+def test_official_compiler_uses_same_gate_and_removes_stale_ex5():
+    workflow = _text(OFFICIAL_CI)
+    assert "Test-SignalGateCompileEvidence" in workflow
+    assert "Remove-Item -LiteralPath $compiledBinary -Force" in workflow
+    assert "source_sha256_after = $evidenceGate.SourceSha256After" in workflow
+    assert "compiled_ex5_sha256 = $evidenceGate.CompiledEx5Sha256" in workflow
+    assert 'if (-not $evidenceGate.Passed)' in workflow
 
 
 def test_wrapper_calls_only_the_evidence_harness():
