@@ -244,6 +244,39 @@ class Settings:
                     f"Hosted mode requires a strong {name} (minimum 32 characters)."
                 )
 
+    def validate_cli_bootstrap(self) -> None:
+        """Fail closed for standalone database bootstrap commands.
+
+        The unlicensed bootstrap CLI is for local file-backed SQLite only.
+        Hosted bootstrap still requires validate_startup() and the existing
+        migration check in app.database.init_db(). This is a *CLI* boundary; other partial app-level guards do not
+        establish public network or reverse-proxy isolation (issue #108).
+        """
+        self.validate_startup()
+        if self.require_license:
+            return
+
+        from sqlalchemy.engine import make_url
+        from sqlalchemy.exc import ArgumentError
+
+        try:
+            url = make_url(self.database_url)
+        except (ArgumentError, TypeError, ValueError):
+            raise RuntimeError("Refusing CLI bootstrap: invalid database URL.") from None
+
+        if (
+            url.drivername != "sqlite"
+            or url.database in (None, "", ":memory:")
+            or bool(url.query)
+            or url.host is not None
+            or url.username is not None
+            or url.password is not None
+            or url.port is not None
+        ):
+            raise RuntimeError(
+                "Refusing CLI bootstrap: unlicensed mode requires a local SQLite file."
+            )
+
     def is_admin(self, telegram_user_id: str) -> bool:
         return str(telegram_user_id) in self.admin_telegram_ids
 
