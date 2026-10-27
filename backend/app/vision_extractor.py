@@ -220,8 +220,6 @@ class ClaudeExtractor:
                 text_parts.append(value)
         return _parse_model_json("".join(text_parts).strip(), engine=self.engine)
 
-
-
 def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     """Refuse ambiguous JSON rather than silently trusting the last key."""
     result: dict[str, object] = {}
@@ -241,8 +239,8 @@ def _parse_model_json(text: str, engine: str) -> ExtractionResult:
     payload = None
     try:
         payload = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
-    # Python may raise ValueError for excessively long JSON integer literals.
-    # Treat that malformed, untrusted model text as unreadable, not HTTP 500.
+    # Python may raise ValueError for excessively long JSON integer literals;
+    # duplicate keys are also invalid. Never expose an untrusted parse failure.
     except (ValueError, RecursionError):
         # Try to salvage a JSON object embedded in any extra prose.
         start, end = text.find("{"), text.rfind("}")
