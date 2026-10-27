@@ -1,6 +1,7 @@
 """Offline hostile vision-response tests. No API key, network or broker access."""
 from __future__ import annotations
 
+import gzip
 import json
 
 import httpx
@@ -162,6 +163,36 @@ def test_vision_model_json_is_bounded_before_parsing():
     # Neither an oversized plain response nor deeply nested JSON is a signal.
     for text in ("x" * 8193, "[" * 5000 + "]" * 5000):
         _must_refuse(_parse_model_json(text, engine="claude"))
+
+
+def test_streamed_gzip_response_is_refused_without_reading_or_decompressing(monkeypatch):
+    # httpx.iter_bytes() decompresses a transport chunk before splitting it.
+    # Prove we refuse compressed responses BEFORE even reading the raw stream.
+    valid_large_envelope = json.dumps({
+        "content": [{"type": "text", "text": json.dumps(GOOD_MODEL)}],
+        "padding": "x" * 1_000_000,
+    }).encode("utf-8")
+
+    class TrackedGzipStream(httpx.SyncByteStream):
+        def __init__(self, data):
+            self.data = data
+            self.consumed = False
+
+        def __iter__(self):
+            self.consumed = True
+            yield self.data
+
+    stream = TrackedGzipStream(gzip.compress(valid_large_envelope))
+
+    def compressed_response(request):
+        assert request.headers["accept-encoding"] == "identity"
+        return httpx.Response(
+            200, headers={"content-encoding": "gzip"}, stream=stream,
+        )
+
+    _mock_http_client(monkeypatch, compressed_response)
+    _must_refuse(ClaudeExtractor().extract(b"offline-placeholder"))
+    assert stream.consumed is False
 
 
 def test_http_envelope_size_bound_rejects_otherwise_valid_vision_json(monkeypatch):

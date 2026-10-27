@@ -175,16 +175,23 @@ class ClaudeExtractor:
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
+            # Compression must not be applied before our response-size bound.
+            "accept-encoding": "identity",
         }
         try:
             with httpx.Client(timeout=60.0) as http:
                 # http.post()/resp.json() first buffers an untrusted, unbounded
-                # HTTP body. Stream in small chunks and refuse oversized data
-                # before allocating/decoding the complete JSON envelope.
+                # HTTP body. Request identity encoding and stream raw bytes in
+                # small chunks to refuse oversized data before JSON decoding.
                 with http.stream("POST", ANTHROPIC_URL, headers=headers, json=body) as resp:
                     resp.raise_for_status()
+                    # httpx.iter_bytes() can expand a gzip/brotli bomb before
+                    # yielding a capped chunk. Reject all content encoding
+                    # other than identity BEFORE consuming response bytes.
+                    if resp.headers.get("content-encoding", "identity").strip().lower() != "identity":
+                        return _unreadable(self.engine, "Vision service returned unsupported encoding.")
                     response_bytes = bytearray()
-                    for chunk in resp.iter_bytes(chunk_size=8192):
+                    for chunk in resp.iter_raw(chunk_size=8192):
                         if len(chunk) > MAX_VISION_HTTP_BYTES - len(response_bytes):
                             return _unreadable(self.engine, "Vision service response exceeds size limit.")
                         response_bytes.extend(chunk)
