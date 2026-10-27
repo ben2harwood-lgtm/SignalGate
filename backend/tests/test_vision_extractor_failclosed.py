@@ -182,6 +182,31 @@ def test_vision_model_json_is_bounded_before_parsing():
         _must_refuse(_parse_model_json(text, engine="claude"))
 
 
+
+def _overlong_numeric_model_json():
+    # Below the 8,192-character input cap, but Python 3.11+ may raise
+    # ValueError when decoding an integer token exceeding 4,300 digits.
+    return (
+        '{"readable":true,"signal_text":' + json.dumps(TRADE)
+        + ',"confidence":"HIGH","notes":' + ("9" * 5000) + "}"
+    )
+
+
+@pytest.mark.parametrize("embedded_in_prose", [False, True])
+def test_vision_model_json_overlong_integer_refuses_without_exception(embedded_in_prose):
+    model_text = _overlong_numeric_model_json()
+    if embedded_in_prose:
+        model_text = "preview " + model_text + " end"
+    assert len(model_text) < 8192
+    _must_refuse(_parse_model_json(model_text, engine="claude"))
+
+
+def test_vision_http_model_integer_refuses_without_server_error(monkeypatch):
+    # The HTTP envelope itself is well-formed and within the raw byte bound.
+    envelope = {"content": [{"type": "text", "text": _overlong_numeric_model_json()}]}
+    _mock_http_client(monkeypatch, lambda request: httpx.Response(200, json=envelope))
+    _must_refuse(ClaudeExtractor().extract(b"offline-placeholder"))
+
 def test_streamed_gzip_response_is_refused_without_reading_or_decompressing(monkeypatch):
     # httpx.iter_bytes() decompresses a transport chunk before splitting it.
     # Prove we refuse compressed responses BEFORE even reading the raw stream.
