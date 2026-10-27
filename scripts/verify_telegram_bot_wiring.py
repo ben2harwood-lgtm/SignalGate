@@ -531,6 +531,83 @@ def check_telegram_httpx_token_log_privacy() -> None:
         transport_logger.setLevel(original_level)
 
 
+def check_screenshot_upload_size_guard() -> None:
+    """Telegram image metadata and actual bytes cannot bypass the backend limit."""
+    assert handlers.MAX_SIGNAL_IMAGE_BYTES == 5 * 1024 * 1024
+
+    async def permitted(_update):
+        return True
+
+    async def exercise(kind, size, contents):
+        requests, previews, replies = [], [], []
+        state = {
+            "pending_signal_text": "OLD-PREVIEW",
+            "pending_preview_token": "a" * 16,
+            "awaiting_edit": True,
+        }
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def download_as_bytearray():
+            requests.append("download")
+            return bytearray(contents)
+
+        class OfflineBot:
+            async def get_file(self, _file_id):
+                requests.append("get_file")
+                return SimpleNamespace(download_as_bytearray=download_as_bytearray)
+
+        async def preview(**kwargs):
+            previews.append((kwargs["image_bytes"], kwargs["mime"]))
+
+        asset = SimpleNamespace(file_id="OFFLINE", file_size=size, mime_type="image/png")
+        message = SimpleNamespace(
+            reply_text=reply_text,
+            photo=[asset],
+            document=asset,
+        )
+        update = SimpleNamespace(message=message, effective_user=SimpleNamespace(id=123))
+        context = SimpleNamespace(user_data=state, bot=OfflineBot())
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", permitted),
+            patch.object(handlers, "_preview_screenshot", preview),
+            patch.object(handlers, "MAX_SIGNAL_IMAGE_BYTES", 4),
+        ):
+            await (handlers.on_photo if kind == "photo" else handlers.on_document)(
+                update, context
+            )
+        return requests, previews, replies, state
+
+    for kind in ("photo", "document"):
+        # Oversized or invalid Telegram metadata must stop BEFORE get_file.
+        for reported_size in (5, -1, "5", True):
+            requests, previews, replies, state = asyncio.run(
+                exercise(kind, reported_size, b"abc")
+            )
+            assert not requests and not previews, (kind, reported_size)
+            assert "no preview" in replies[-1].lower()
+            assert state == {}, "Old confirmable screenshot survived rejection"
+
+        # A missing/small claimed size cannot authorize an oversized download.
+        for reported_size in (None, 3):
+            requests, previews, replies, state = asyncio.run(
+                exercise(kind, reported_size, b"abcde")
+            )
+            assert requests == ["get_file", "download"], (kind, reported_size)
+            assert not previews
+            assert "no preview" in replies[-1].lower()
+            assert state == {}
+
+        # Exact-limit images still reach preview, but no external call occurs.
+        requests, previews, replies, state = asyncio.run(
+            exercise(kind, 4, b"abcd")
+        )
+        assert requests == ["get_file", "download"]
+        assert previews == [(b"abcd", "image/jpeg" if kind == "photo" else "image/png")]
+        assert not state, "New screenshot must invalidate prior pending tokens"
+
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -572,6 +649,7 @@ def main() -> int:
     check_backend_http_fail_closed()
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()
+    check_screenshot_upload_size_guard()
     check_malformed_pending_confirmation_fails_closed()
     check_preview_keyboard_token_contract()
     check_preview_callback_identity_and_single_use()

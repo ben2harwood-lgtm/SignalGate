@@ -563,7 +563,32 @@ async def testsignal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # parser. We PREVIEW the result and only broadcast after the provider taps
 # Confirm. Nothing about extraction bypasses the parser or the human check.
 
+# Match the backend's 5 MiB signal-image limit before requesting a Telegram
+# download. Backend validates again; Telegram metadata alone is not authority.
+MAX_SIGNAL_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def _clear_pending_screenshot_preview(context: ContextTypes.DEFAULT_TYPE) -> None:
+    for key in ("pending_signal_text", "awaiting_edit", "pending_preview_token"):
+        context.user_data.pop(key, None)
+
+
+async def _reject_screenshot_size(update: Update, context: ContextTypes.DEFAULT_TYPE, size: int | None) -> bool:
+    # Missing Telegram metadata is allowed only until the actual download size
+    # is checked; malformed or oversized reported sizes fail closed immediately.
+    if size is None:
+        return False
+    if type(size) is int and 0 <= size <= MAX_SIGNAL_IMAGE_BYTES:
+        return False
+    _clear_pending_screenshot_preview(context)
+    await update.message.reply_text(
+        "Screenshot size is invalid or exceeds 5 MiB; no preview was saved."
+    )
+    return True
+
+
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _clear_pending_screenshot_preview(context)
     if not await _can_submit_provider_signal(update):
         await update.message.reply_text(
             "Connect this Telegram account to a provider feed with "
@@ -571,12 +596,15 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    await update.message.reply_text("📷 Reading your screenshot…")
-
-    # Download the highest-resolution version of the photo.
+    # Refuse oversized metadata before any Telegram file download.
     photo = update.message.photo[-1]
+    if await _reject_screenshot_size(update, context, photo.file_size):
+        return
+    await update.message.reply_text("📷 Reading your screenshot…")
     tg_file = await context.bot.get_file(photo.file_id)
     image_bytes = bytes(await tg_file.download_as_bytearray())
+    if await _reject_screenshot_size(update, context, len(image_bytes)):
+        return
 
     await _preview_screenshot(
         update=update,
@@ -587,6 +615,7 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _clear_pending_screenshot_preview(context)
     if not await _can_submit_provider_signal(update):
         await update.message.reply_text(
             "Connect this Telegram account to a provider feed with "
@@ -600,9 +629,13 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("Please send an image screenshot.")
         return
 
+    if await _reject_screenshot_size(update, context, document.file_size):
+        return
     await update.message.reply_text("📷 Reading your screenshot…")
     tg_file = await context.bot.get_file(document.file_id)
     image_bytes = bytes(await tg_file.download_as_bytearray())
+    if await _reject_screenshot_size(update, context, len(image_bytes)):
+        return
     await _preview_screenshot(
         update=update,
         context=context,
@@ -652,9 +685,7 @@ async def _preview_screenshot(
 ) -> None:
     # Never leave an earlier unsent preview available when a new screenshot
     # fails extraction or its provider source has been revoked.
-    context.user_data.pop("pending_signal_text", None)
-    context.user_data.pop("awaiting_edit", None)
-    context.user_data.pop("pending_preview_token", None)
+    _clear_pending_screenshot_preview(context)
     user_id = update.effective_user.id
     source = await _provider_source_status(user_id)
     if source:
