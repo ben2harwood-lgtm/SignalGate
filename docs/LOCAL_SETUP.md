@@ -106,4 +106,8 @@ python -m pytest -q
 
 - `scripts/init_db.py` — create tables + seed settings.
 - `scripts/seed_settings.py` — (re)seed default settings only.
-- `scripts/reset_local_db.py` — drop everything and recreate (LOCAL ONLY).
+- `scripts/reset_local_db.py` — **destructive LOCAL demo reset only**. Stop the local backend and bot first, then run from `backend/`:
+  ```bash
+  python ../scripts/reset_local_db.py --confirm-local-demo-reset
+  ```
+  Even with the explicit confirmation flag, reset refuses hosted/licensed or non-demo mode, PostgreSQL, memory/URI SQLite, alternate paths, and symbolic links to a canonical-looking database file. Do not run against customer databases, use this as a migration/backup substitute, or treat this guard as public ingress/MT5/external acceptance proof.
