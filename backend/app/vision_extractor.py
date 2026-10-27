@@ -195,7 +195,7 @@ class ClaudeExtractor:
                         if len(chunk) > MAX_VISION_HTTP_BYTES - len(response_bytes):
                             return _unreadable(self.engine, "Vision service response exceeds size limit.")
                         response_bytes.extend(chunk)
-                    payload = json.loads(response_bytes)
+                    payload = json.loads(response_bytes, object_pairs_hook=_reject_duplicate_json_keys)
         except Exception:  # noqa: BLE001
             # Never return an HTTP transport/response exception string to the bot:
             # these strings may contain credential-bearing request details.
@@ -221,6 +221,17 @@ class ClaudeExtractor:
         return _parse_model_json("".join(text_parts).strip(), engine=self.engine)
 
 
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Refuse ambiguous JSON rather than silently trusting the last key."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate JSON field")
+        result[key] = value
+    return result
+
+
 def _parse_model_json(text: str, engine: str) -> ExtractionResult:
     """Fail closed on untrusted model JSON before exposing a signal preview."""
     # The model is configured for 400 output tokens. Refuse anomalously large
@@ -229,7 +240,7 @@ def _parse_model_json(text: str, engine: str) -> ExtractionResult:
         return _unreadable(engine, "Vision response exceeds preview limit.")
     payload = None
     try:
-        payload = json.loads(text)
+        payload = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
     # Python may raise ValueError for excessively long JSON integer literals.
     # Treat that malformed, untrusted model text as unreadable, not HTTP 500.
     except (ValueError, RecursionError):
@@ -237,7 +248,7 @@ def _parse_model_json(text: str, engine: str) -> ExtractionResult:
         start, end = text.find("{"), text.rfind("}")
         if start != -1 and end != -1 and end > start:
             try:
-                payload = json.loads(text[start : end + 1])
+                payload = json.loads(text[start : end + 1], object_pairs_hook=_reject_duplicate_json_keys)
             except (ValueError, RecursionError):
                 payload = None
 
