@@ -1,7 +1,9 @@
 """Non-destructive regressions for the local demo reset's fail-closed gate."""
 from __future__ import annotations
 
+import os
 import runpy
+import stat
 from pathlib import Path
 
 import pytest
@@ -144,6 +146,49 @@ def test_reset_rejects_driver_normalized_directory_symlink_dotdot(tmp_path):
         )
     assert original.read_bytes() == b"safe repository db"
     assert outside.read_bytes() == b"external sentinel unchanged"
+
+
+def test_reset_refuses_hardlinked_database_without_touching_other_file(tmp_path):
+    """The canonical name must not be another DB inode's second hardlink."""
+    root = tmp_path / "source"
+    root.mkdir()
+    backend = root / "backend"
+    backend.mkdir()
+    external = tmp_path / "other-database.db"
+    sentinel = b"outside sqlite sentinel: do not alter"
+    external.write_bytes(sentinel)
+    os.link(external, root / "signalgate.db")
+
+    gate = _gate()
+    gate.__globals__["_ROOT"] = root
+    gate.__globals__["_BACKEND"] = backend
+    with pytest.raises(RuntimeError, match="single-link regular file"):
+        gate("sqlite:///./signalgate.db", demo_only_mode=True,
+             require_license=False, cwd=root)
+    assert external.read_bytes() == sentinel
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory mode policy")
+def test_reset_refuses_shared_writable_demo_directory_without_mutation(tmp_path):
+    """A lower-privileged neighbour must not be able to replace the DB path."""
+    root = tmp_path / "source"
+    backend = root / "backend"
+    backend.mkdir(parents=True)
+    database = backend / "signalgate.db"
+    sentinel = b"untouched local demo DB"
+    database.write_bytes(sentinel)
+    initial_mode = stat.S_IMODE(backend.stat().st_mode)
+    gate = _gate()
+    gate.__globals__["_ROOT"] = root
+    gate.__globals__["_BACKEND"] = backend
+    try:
+        backend.chmod(initial_mode | stat.S_IWGRP)
+        with pytest.raises(RuntimeError, match="directory must be private"):
+            gate("sqlite:///./signalgate.db", demo_only_mode=True,
+                 require_license=False, cwd=backend)
+    finally:
+        backend.chmod(initial_mode)
+    assert database.read_bytes() == sentinel
 
 
 def test_reset_refuses_cached_relative_engine_after_working_directory_change(
