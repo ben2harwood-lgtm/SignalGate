@@ -264,6 +264,41 @@ def test_bound_source_recipients_are_only_that_feeds_consented_subscribers(clien
     assert ids == {"9205"}
 
 
+
+def test_bound_source_recipients_refuse_pause_after_source_connect(client, db):
+    """A pause between signal storage and recipient lookup cannot broadcast."""
+    provider, feed, key = _provider(db, "recipients-pause")
+    subscriber = register_user(client, "9358", "paused_user", "Paused User")
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber["id"])
+    )
+    db.commit()
+    invite = _source_invite(client, provider, feed, key)
+    connected = _connect(client, invite, "9359")
+    assert connected.status_code == 200, connected.text
+
+    def lookup():
+        return client.get(
+            "/provider-sources/telegram/recipients",
+            params={"telegram_user_id": "9359"},
+        )
+
+    before = lookup()
+    assert before.status_code == 200
+    assert [r["telegram_user_id"] for r in before.json()["recipients"]] == ["9358"]
+    for paused_scope in (feed, provider):
+        paused_scope.paused = True
+        db.commit()
+        denied = lookup()
+        assert denied.status_code == 403
+        assert "paused" in denied.json()["detail"].lower()
+        paused_scope.paused = False
+        db.commit()
+    after = lookup()
+    assert after.status_code == 200
+    assert [r["telegram_user_id"] for r in after.json()["recipients"]] == ["9358"]
+
+
 def test_bound_source_extract_uses_feed_allowlist(client, db):
     provider, feed, key = _provider(db, "extract-policy")
     crud.update_feed_policy(db, feed, {"allowed_symbols": ["EURUSD"]})
