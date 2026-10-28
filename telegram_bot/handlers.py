@@ -512,12 +512,22 @@ async def _create_and_broadcast(
                 except (TypeError, ValueError):
                     expiry = 5
 
-    if signal is None:
-        return "Backend unreachable."
-    if signal.get("detail"):
-        return f"Signal not created: {signal.get('detail')}"
+    # A POST can have persisted a signal despite a malformed/failed response.
+    # Never echo untrusted backend detail or parser_error (possibly credentials)
+    # into Telegram; tell the provider to inspect history before retrying.
+    uncertain = (
+        "Signal submission could not be confirmed. Check provider history "
+        "before retrying; no subscriber card was sent."
+    )
+    if not isinstance(signal, dict) or signal.get("detail"):
+        return uncertain
     if signal.get("parser_status") != "VALID":
-        return f"Parser rejected signal: {signal.get('parser_error')}"
+        return (
+            "Parser did not accept this signal. Review the text and feed policy; "
+            "no subscriber card was sent."
+        )
+    if not isinstance(signal.get("id"), str) or not signal["id"].strip():
+        return uncertain
 
     from keyboards import format_trade_card, trade_card_keyboard
 

@@ -1132,6 +1132,60 @@ def check_broadcast_failure_logs_are_private() -> None:
     assert all(secret not in item for item in warnings)
     assert all(failed_chat not in item and good_chat not in item for item in warnings)
 
+
+def check_signal_create_backend_errors_remain_private() -> None:
+    """Provider creation failures must not echo backend secrets or send cards."""
+    secret = "SYNTHETIC-CREATE-RESPONSE-SECRET-NOT-FOR-TELEGRAM"
+    received = []
+
+    async def source_status(_user_id):
+        return {"feed_id": "FEED-OFFLINE", "expiry_minutes": 5}
+
+    async def forbidden_recipients(_update, _source):
+        raise AssertionError("Malformed creation reached recipient lookup")
+
+    class OfflineBot:
+        async def send_message(self, **_kwargs):
+            raise AssertionError("Malformed creation broadcast a card")
+
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123456),
+        effective_chat=SimpleNamespace(id=123456),
+        effective_message=SimpleNamespace(message_id=98),
+    )
+    context = SimpleNamespace(bot=OfflineBot())
+    cases = (
+        ({"detail": f"internal token={secret}"}, "could not be confirmed"),
+        ({"detail": {"trace": secret}}, "could not be confirmed"),
+        ({"parser_status": "REJECTED", "parser_error": secret}, "did not accept"),
+        (None, "could not be confirmed"),
+        (["unexpected", secret], "could not be confirmed"),
+        ({"parser_status": "VALID"}, "could not be confirmed"),
+        ({"parser_status": "VALID", "id": [secret]}, "could not be confirmed"),
+    )
+
+    async def fake_post(path, **kwargs):
+        assert path == "/provider-sources/telegram/signals"
+        assert kwargs["json"]["raw_text"] == "XAUUSD BUY SL 1 TP1 2"
+        received.append(path)
+        return current_response
+
+    with (
+        patch.object(handlers, "_provider_source_status", source_status),
+        patch.object(handlers, "_backend_post", fake_post),
+        patch.object(handlers, "_active_recipients", forbidden_recipients),
+    ):
+        for current_response, expected in cases:
+            summary = asyncio.run(
+                handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+            )
+            assert expected in summary.lower(), "Creation response was not safely rejected"
+            assert "no subscriber card was sent" in summary.lower()
+            assert secret not in summary, "Untrusted error leaked into Telegram reply"
+            assert "created and card sent" not in summary.lower()
+    assert received == ["/provider-sources/telegram/signals"] * len(cases)
+
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -1171,6 +1225,7 @@ def main() -> int:
     )
     check_telegram_httpx_token_log_privacy()
     check_broadcast_failure_logs_are_private()
+    check_signal_create_backend_errors_remain_private()
     check_backend_http_fail_closed()
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()

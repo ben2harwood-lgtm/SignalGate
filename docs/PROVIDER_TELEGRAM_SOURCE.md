@@ -136,6 +136,14 @@ identifier or exception text reaches operator warnings, and verifies that
 other recipients still get an attempted delivery. It is not a real Telegram
 delivery or external acceptance receipt.
 
+Backend signal-creation results are also untrusted. The bot does not echo
+arbitrary `detail` or `parser_error` strings into provider Telegram replies
+and does not broadcast a card for malformed or missing signal identifiers.
+Because a POST may persist a signal despite a failed response, providers
+must check their feed history before retrying an unconfirmed creation.
+Offline synthetic negative tests cover secret-bearing and malformed responses;
+they do not prove Telegram delivery or broker-demo acceptance.
+
 Bot transport logging is intentionally restricted to WARNING and above for
 `httpx` and `httpcore`: HTTPX INFO request diagnostics include Telegram Bot API
 URLs containing the bot token. Never enable transport DEBUG/INFO with real bot
