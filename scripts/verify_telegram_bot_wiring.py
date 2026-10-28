@@ -2012,7 +2012,7 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
         update = SimpleNamespace(
             message=message,
             effective_user=SimpleNamespace(id=123456),
-            effective_chat=SimpleNamespace(id=123456),
+            effective_chat=SimpleNamespace(id=123456, type="private"),
             effective_message=message,
         )
         context = SimpleNamespace(user_data=state, bot=Bot())
