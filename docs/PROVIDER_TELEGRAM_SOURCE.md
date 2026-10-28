@@ -229,6 +229,19 @@ replace deployed log-review or independent security assurance.
 The same offline smoke refuses Python `-O`, `-OO` or `PYTHONOPTIMIZE`,
 which would otherwise disable its assertion-based checks and print a false PASS.
 
+## Private-chat boundary for one-time credentials (offline verified only)
+
+The Telegram bot handles `/start` registration, `/join INVITE_TOKEN` and
+`/connectprovider CONNECTION_TOKEN` **only in a private chat** with the bot.
+Group, supergroup, channel and missing/unknown chat contexts fail closed
+**before any registration, invitation-acceptance or source-connection POST**.
+The bot sends only a generic private-chat instruction, without displaying an
+EA licence or echoing an invite/source token. A token pasted into a shared
+chat may already have been exposed to others, so obtain a replacement rather
+than reusing that exposed one-time token. Valid private-chat flows remain
+unchanged. Offline tests cover these refusal paths; this does not establish
+actual Telegram delivery or external acceptance.
+
 ## /start registration receipt privacy (offline verified only)
 
 The hosted bot must not display a newly issued one-time EA licence based only

@@ -61,6 +61,11 @@ def _valid_signal_id(value: Any) -> bool:
     )
 
 
+def _private_command_chat(update: Update) -> bool:
+    """Keep one-time credentials and registration out of shared Telegram chats."""
+    return getattr(getattr(update, "effective_chat", None), "type", None) == "private"
+
+
 def _safe_registration_license(value: Any) -> bool:
     """One-time EA keys must be bounded, printable ASCII before any reply."""
     return value is None or (
@@ -197,6 +202,12 @@ async def _preview_source_authorised(
 # --- user commands --------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Registration and one-time EA licences require a private chat with "
+            "SignalGate. Nothing was registered here."
+        )
+        return
     user = update.effective_user
     source = await _provider_source_status(user.id)
     if source:
@@ -266,6 +277,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Subscriber-consent flow for a provider feed invite."""
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Accept feed invitations in a private chat with SignalGate. "
+            "No registration or invitation was submitted here."
+        )
+        return
     user = update.effective_user
     token = " ".join(context.args).strip() if context.args else ""
     if not token:
@@ -397,6 +414,12 @@ async def connect_provider_source(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     """Consume a one-time provider/feed Telegram source connection token."""
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Connect provider sources in a private chat with SignalGate. "
+            "No source token was submitted here."
+        )
+        return
     user = update.effective_user
     token = " ".join(context.args).strip() if context.args else ""
     if not token:

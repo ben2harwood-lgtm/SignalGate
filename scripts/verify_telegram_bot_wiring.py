@@ -749,6 +749,7 @@ def check_hosted_legacy_provider_status_never_grants_identity() -> None:
     )
     update = SimpleNamespace(
         effective_user=user,
+        effective_chat=SimpleNamespace(type="private"),
         message=SimpleNamespace(reply_text=reply_text),
     )
     with (
@@ -805,6 +806,7 @@ def check_start_registration_receipt_integrity() -> None:
             effective_user=SimpleNamespace(
                 id=123456, username="offline", first_name="Test"
             ),
+            effective_chat=SimpleNamespace(type="private"),
             message=SimpleNamespace(reply_text=reply_text),
         )
         with (
@@ -882,6 +884,7 @@ def check_join_invite_backend_response_integrity() -> None:
             effective_user=SimpleNamespace(
                 id=123456, username="offline", first_name="Test"
             ),
+            effective_chat=SimpleNamespace(type="private"),
             message=SimpleNamespace(reply_text=reply_text),
         )
         with patch.object(handlers, "_backend_post", fake_post):
@@ -939,6 +942,61 @@ def check_join_invite_backend_response_integrity() -> None:
     assert secret not in reply and "one-time EA licence" not in reply
 
 
+
+def check_private_chat_credential_commands() -> None:
+    """Sensitive Telegram commands must refuse shared chats before HTTP calls."""
+    async def forbidden_backend(*_args, **_kwargs):
+        raise AssertionError("Sensitive command reached backend from shared chat")
+
+    async def forbidden_source(*_args, **_kwargs):
+        raise AssertionError("Shared-chat /start looked up provider source")
+
+    for chat_type in ("group", "supergroup", "channel", None):
+        replies = []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        update = SimpleNamespace(
+            effective_chat=(
+                SimpleNamespace(type=chat_type) if chat_type is not None else None
+            ),
+            effective_user=SimpleNamespace(
+                id=123456, username="offline", first_name="Test"
+            ),
+            message=SimpleNamespace(reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers, "_backend_post", forbidden_backend),
+            patch.object(handlers, "_provider_source_status", forbidden_source),
+        ):
+            asyncio.run(handlers.start(update, None))
+            asyncio.run(
+                handlers.join_feed(
+                    update, SimpleNamespace(args=["SYNTHETIC-INVITE-TOKEN"])
+                )
+            )
+            asyncio.run(
+                handlers.connect_provider_source(
+                    update, SimpleNamespace(args=["SYNTHETIC-SOURCE-TOKEN"])
+                )
+            )
+        assert len(replies) == 3, "Expected one private-chat refusal per command"
+        assert all("private chat" in text.lower() for text in replies)
+        assert all(
+            phrase not in text
+            for text in replies
+            for phrase in (
+                "SYNTHETIC-INVITE-TOKEN",
+                "SYNTHETIC-SOURCE-TOKEN",
+                "one-time EA licence is:",
+                "Demo tester registered",
+                "Joined ",
+                "Provider source connected",
+            )
+        ), "Shared chat revealed or claimed a sensitive one-time action"
+
+
 def check_connectprovider_error_does_not_echo_backend_secrets() -> None:
     """Backend error detail is untrusted and cannot enter Telegram replies."""
     secret = "SYNTHETIC_BACKEND_SECRET_DO_NOT_ECHO"
@@ -954,6 +1012,7 @@ def check_connectprovider_error_does_not_echo_backend_secrets() -> None:
 
     update = SimpleNamespace(
         effective_user=SimpleNamespace(id=123456),
+        effective_chat=SimpleNamespace(type="private"),
         message=SimpleNamespace(reply_text=reply_text),
     )
     context = SimpleNamespace(args=["SYNTHETIC-ONE-TIME-TOKEN"])
@@ -994,6 +1053,7 @@ def check_connectprovider_success_receipt_integrity() -> None:
 
         update = SimpleNamespace(
             effective_user=SimpleNamespace(id=123456),
+            effective_chat=SimpleNamespace(type="private"),
             message=SimpleNamespace(reply_text=reply_text),
         )
         with patch.object(handlers, "_backend_post", fake_post):
@@ -1967,6 +2027,7 @@ def main() -> int:
     check_connectprovider_error_does_not_echo_backend_secrets()
     check_start_registration_receipt_integrity()
     check_join_invite_backend_response_integrity()
+    check_private_chat_credential_commands()
     check_connectprovider_success_receipt_integrity()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")
     return 0
