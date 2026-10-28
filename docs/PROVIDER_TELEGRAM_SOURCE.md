@@ -30,9 +30,11 @@ The backend source identity is the internal binding id, not a shared provider se
 Signal creation returns a persisted provider/feed/source identity. Before
 broadcasting subscriber cards, the bot checks that identity against the
 original Telegram binding; the separately queried recipient list must carry
-matching binding/provider/feed identifiers. If that identity was rebound
-between creation and enumeration, or if any recipient identifier is malformed,
-the bot **sends no cards** and tells the provider to inspect history. This
+matching binding/provider/feed identifiers. An HTTP 200 recipient response
+containing an error `detail` is refused even if its scope identifiers match.
+If the source was rebound between creation and enumeration, or if any recipient
+identifier is malformed, the bot **sends no cards** and tells the provider to
+inspect history. This
 prevents a prior feed's signal being broadcast to a later feed's subscribers.
 Recipient enumeration also refuses a provider or feed paused after signal
 creation but before recipient lookup (HTTP 403; no subscriber cards). Pausing
