@@ -264,10 +264,11 @@ def test_bound_source_recipients_are_only_that_feeds_consented_subscribers(clien
     assert ids == {"9205"}
 
 
-
 def test_bound_source_recipients_refuse_pause_after_source_connect(client, db):
     """A pause between signal storage and recipient lookup cannot broadcast."""
     provider, feed, key = _provider(db, "recipients-pause")
+    crud.update_feed_policy(db, feed, {"allowed_symbols": ["EURUSD"]})
+    db.commit()
     subscriber = register_user(client, "9358", "paused_user", "Paused User")
     crud.subscribe_user_to_feed(
         db, provider, feed, db.get(models.User, subscriber["id"])
