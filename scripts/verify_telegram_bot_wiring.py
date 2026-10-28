@@ -805,6 +805,142 @@ def check_screenshot_upload_size_guard() -> None:
         assert not state
 
 
+def check_telegram_download_transport_failures_fail_closed() -> None:
+    """No token-bearing exception escapes; older failed uploads cannot erase newer previews."""
+    secret = "OFFLINE-TELEGRAM-TOKEN-NOT-FOR-LOGS"
+
+    async def permitted(_update):
+        return True
+
+    async def failure(kind: str, stage: str) -> None:
+        warnings, replies, previews = [], [], []
+        state = {
+            "pending_signal_text": "PREVIOUS",
+            "pending_preview_token": "a" * 16,
+            "awaiting_edit": True,
+        }
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        class Bot:
+            async def get_file(self, _file_id):
+                if stage == "get_file":
+                    raise RuntimeError(
+                        f"https://api.telegram.org/bot{secret}/getFile"
+                    )
+
+                async def download_as_bytearray():
+                    raise ValueError(
+                        f"https://api.telegram.org/bot{secret}/download"
+                    )
+
+                return SimpleNamespace(
+                    file_size=3, download_as_bytearray=download_as_bytearray
+                )
+
+        async def preview(**_kwargs):
+            previews.append("SHOULD-NOT-HAPPEN")
+
+        asset = SimpleNamespace(file_id="FAKE", file_size=3, mime_type="image/png")
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=12345),
+            message=SimpleNamespace(
+                photo=[asset], document=asset, reply_text=reply_text,
+            ),
+        )
+        context = SimpleNamespace(user_data=state, bot=Bot())
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", permitted),
+            patch.object(handlers, "_preview_screenshot", preview),
+            patch.object(
+                handlers.logger, "warning",
+                lambda fmt, *args: warnings.append(fmt % args),
+            ),
+        ):
+            await (handlers.on_photo if kind == "photo" else handlers.on_document)(
+                update, context
+            )
+        expected_type = "RuntimeError" if stage == "get_file" else "ValueError"
+        assert warnings == [
+            f"Telegram screenshot download failed: {expected_type}"
+        ], (kind, stage, warnings)
+        assert not previews and state == {}, "Failed upload retained confirmation state"
+        assert any("couldn't be retrieved" in text for text in replies), replies
+        assert all(secret not in text for text in replies + warnings)
+
+    async def stale_failure(kind: str) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        warnings, replies, previews = [], [], []
+        state = {}
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        class Bot:
+            async def get_file(self, file_id):
+                if file_id == "OLD":
+                    entered.set()
+                    await release.wait()
+                    raise RuntimeError(secret)
+
+                async def download_as_bytearray():
+                    return bytearray(b"NEW")
+
+                return SimpleNamespace(
+                    file_size=3, download_as_bytearray=download_as_bytearray
+                )
+
+        async def preview(**kwargs):
+            previews.append(kwargs["image_bytes"])
+            assert handlers._is_current_screenshot_attempt(
+                kwargs["context"], kwargs["attempt_token"]
+            )
+            state.pop("active_screenshot_attempt", None)
+            state["pending_signal_text"] = "NEW"
+            state["pending_preview_token"] = "b" * 16
+
+        def make_update(file_id):
+            asset = SimpleNamespace(
+                file_id=file_id, file_size=3, mime_type="image/png"
+            )
+            return SimpleNamespace(
+                effective_user=SimpleNamespace(id=12345),
+                message=SimpleNamespace(
+                    photo=[asset], document=asset, reply_text=reply_text,
+                ),
+            )
+
+        context = SimpleNamespace(user_data=state, bot=Bot())
+        handler = handlers.on_photo if kind == "photo" else handlers.on_document
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", permitted),
+            patch.object(handlers, "_preview_screenshot", preview),
+            patch.object(
+                handlers.logger, "warning",
+                lambda fmt, *args: warnings.append(fmt % args),
+            ),
+        ):
+            older = asyncio.create_task(handler(make_update("OLD"), context))
+            await asyncio.wait_for(entered.wait(), 1)
+            await handler(make_update("NEW"), context)
+            release.set()
+            await asyncio.wait_for(older, 1)
+
+        assert previews == [b"NEW"]
+        assert state == {
+            "pending_signal_text": "NEW", "pending_preview_token": "b" * 16
+        }, "Late download failure erased newer preview"
+        assert not warnings, "A stale failed upload emitted sensitive logs"
+        assert all(secret not in text for text in replies)
+
+    for kind in ("photo", "document"):
+        for stage in ("get_file", "download"):
+            asyncio.run(failure(kind, stage))
+        asyncio.run(stale_failure(kind))
+
+
+
 def check_overlapping_screenshot_attempts_fail_closed() -> None:
     """A delayed older screenshot cannot overwrite a newer preview."""
     async def permitted(_update):
@@ -1039,6 +1175,7 @@ def main() -> int:
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()
     check_screenshot_upload_size_guard()
+    check_telegram_download_transport_failures_fail_closed()
     check_overlapping_screenshot_attempts_fail_closed()
     check_malformed_pending_confirmation_fails_closed()
     check_preview_keyboard_token_contract()

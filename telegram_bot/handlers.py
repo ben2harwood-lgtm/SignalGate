@@ -614,6 +614,40 @@ async def _reject_screenshot_size(
     return True
 
 
+async def _download_telegram_screenshot(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    file_id: str,
+    attempt_token: str,
+) -> Optional[bytes]:
+    """Contain Telegram file errors without logging bot-token-bearing exception text."""
+    try:
+        tg_file = await context.bot.get_file(file_id)
+        # The resolved File may disagree with message metadata. Refuse before
+        # allocating image bytes; only the current screenshot may change state.
+        if await _reject_screenshot_size(
+            update, context, tg_file.file_size, attempt_token
+        ):
+            return None
+        downloaded = await tg_file.download_as_bytearray()
+        if await _reject_screenshot_size(
+            update, context, len(downloaded), attempt_token
+        ):
+            return None
+        return bytes(downloaded)
+    except Exception as exc:  # noqa: BLE001
+        # Unhandled Telegram transport errors may contain full /bot<TOKEN>/
+        # URLs. A late failed request must not erase a newer preview.
+        if not _is_current_screenshot_attempt(context, attempt_token):
+            return None
+        _clear_pending_screenshot_preview(context)
+        logger.warning("Telegram screenshot download failed: %s", type(exc).__name__)
+        await update.message.reply_text(
+            "Screenshot couldn't be retrieved. No preview was saved. Please try again."
+        )
+        return None
+
+
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     attempt_token = _begin_screenshot_attempt(context)
     authorised = await _can_submit_provider_signal(update)
@@ -634,18 +668,15 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("📷 Reading your screenshot…")
     if not _is_current_screenshot_attempt(context, attempt_token):
         return
-    tg_file = await context.bot.get_file(photo.file_id)
-    # The resolved Telegram File may disagree with the original message size.
-    if await _reject_screenshot_size(update, context, tg_file.file_size, attempt_token):
+    image_bytes = await _download_telegram_screenshot(
+        update, context, photo.file_id, attempt_token
+    )
+    if image_bytes is None:
         return
-    downloaded_image = await tg_file.download_as_bytearray()
-    if await _reject_screenshot_size(update, context, len(downloaded_image), attempt_token):
-        return
-    # No expensive immutable copy for an oversized/stale response.
     await _preview_screenshot(
         update=update,
         context=context,
-        image_bytes=bytes(downloaded_image),
+        image_bytes=image_bytes,
         mime="image/jpeg",
         attempt_token=attempt_token,
     )
@@ -676,16 +707,15 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text("📷 Reading your screenshot…")
     if not _is_current_screenshot_attempt(context, attempt_token):
         return
-    tg_file = await context.bot.get_file(document.file_id)
-    if await _reject_screenshot_size(update, context, tg_file.file_size, attempt_token):
-        return
-    downloaded_image = await tg_file.download_as_bytearray()
-    if await _reject_screenshot_size(update, context, len(downloaded_image), attempt_token):
+    image_bytes = await _download_telegram_screenshot(
+        update, context, document.file_id, attempt_token
+    )
+    if image_bytes is None:
         return
     await _preview_screenshot(
         update=update,
         context=context,
-        image_bytes=bytes(downloaded_image),
+        image_bytes=image_bytes,
         mime=mime,
         attempt_token=attempt_token,
     )

@@ -69,7 +69,13 @@ The Telegram bot refuses screenshot photos/documents whose reported size exceeds
 checks its separately reported size before allocating download bytes, then counts
 the downloaded bytearray *before* copying it into an upload. Missing metadata
 at either stage never bypasses the actual-byte check; malformed sizes fail closed.
-An oversized/invalid attempt clears the previous pending confirmation/edit token. Both backend extraction endpoints also
+An oversized/invalid attempt clears the previous pending confirmation/edit token. Telegram File resolution/download failures are contained at the bot boundary:
+only the safe exception class is logged, not transport exception text that may
+contain a bot-token URL. Failed uploads clear their own confirmation state and
+show a generic error; a delayed failure from an older attempt cannot erase a
+newer's preview. Offline photo/document tests cover both error stages and
+overlapping requests. No external Telegram or broker call is used.
+Both backend extraction endpoints also
 apply the same 5 MiB limit. These are offline-only resource and stale-preview
 boundaries, not Telegram-delivery or broker-demo acceptance.
 
