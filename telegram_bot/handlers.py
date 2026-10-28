@@ -127,6 +127,35 @@ async def _can_submit_provider_signal(update: Update) -> bool:
     return config.is_signal_provider(update.effective_user.id)
 
 
+
+def _source_scope(source: Any) -> Optional[Dict[str, str]]:
+    """Return the immutable identity fields used to bind a screenshot preview."""
+    fields = ("binding_id", "provider_id", "feed_id")
+    if not isinstance(source, dict) or any(
+        not isinstance(source.get(field), str) or not source[field].strip()
+        for field in fields
+    ):
+        return None
+    return {field: source[field] for field in fields}
+
+
+async def _preview_source_authorised(
+    update: Update, original_scope: Any
+) -> bool:
+    """A new ACTIVE binding is not authority over another feed's old preview."""
+    if original_scope is not None:
+        expected = _source_scope(original_scope)
+        if expected is None:
+            return False
+        current = await _provider_source_status(update.effective_user.id)
+        return _source_scope(current) == expected
+    # Hosted callbacks missing a source snapshot (including pre-upgrade or
+    # corrupted in-memory previews) must fail closed.
+    if config.require_license:
+        return False
+    return await _can_submit_provider_signal(update)
+
+
 # --- user commands --------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -510,7 +539,11 @@ async def screenshot_help(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _create_and_broadcast(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, raw_text: str
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    raw_text: str,
+    *,
+    original_source_scope: Optional[Dict[str, str]] = None,
 ) -> str:
     """Create one tenant-bound signal and broadcast only to its feed subscribers."""
     if update.effective_chat is None or update.effective_message is None:
@@ -520,6 +553,18 @@ async def _create_and_broadcast(
     chat_id = update.effective_chat.id
     message_id = str(update.effective_message.message_id)
     source = await _provider_source_status(user_id)
+
+    # Recheck the exact preview binding immediately before signal creation.
+    # A provider rebound from feed A to B may be ACTIVE but cannot submit A's
+    # confirmed screenshot to B. The backend remains the final tenant authority.
+    if original_source_scope is not None and (
+        _source_scope(original_source_scope) is None
+        or _source_scope(source) != _source_scope(original_source_scope)
+    ):
+        return (
+            "Provider source changed since this screenshot preview. "
+            "Nothing was submitted or sent; capture a new screenshot."
+        )
 
     if source:
         signal = await _backend_post(
@@ -656,7 +701,7 @@ MAX_SIGNAL_IMAGE_BYTES = 5 * 1024 * 1024
 def _clear_pending_screenshot_preview(context: ContextTypes.DEFAULT_TYPE) -> None:
     for key in (
         "pending_signal_text", "awaiting_edit", "pending_preview_token",
-        "active_screenshot_attempt",
+        "pending_provider_source_scope", "active_screenshot_attempt",
     ):
         context.user_data.pop(key, None)
 
@@ -959,6 +1004,11 @@ async def _preview_screenshot(
             return
         context.user_data.pop("active_screenshot_attempt", None)
     preview_token = secrets.token_hex(8)
+    # An old A preview must not become a B signal if Telegram identity is
+    # rebound between extraction and the provider's Confirm/Edit action.
+    scope = _source_scope(source)
+    if scope is not None:
+        context.user_data["pending_provider_source_scope"] = scope
     context.user_data["pending_signal_text"] = data.get("extracted_text", "")
     context.user_data["pending_preview_token"] = preview_token
     await update.message.reply_text(
@@ -986,31 +1036,31 @@ async def on_signal_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "This screenshot preview has expired. Nothing was sent."
         )
         return
-    authorised = await _can_submit_provider_signal(update)
-    # The permission lookup awaits HTTP. Another screenshot can supersede this
-    # preview while it is suspended: check the nonce again after the await.
+    original_scope = context.user_data.get("pending_provider_source_scope")
+    if isinstance(original_scope, dict):
+        original_scope = dict(original_scope)
+    authorised = await _preview_source_authorised(update, original_scope)
+    # Permission lookup awaits HTTP: a later screenshot or cancellation could
+    # supersede this callback. Scope as well as nonce must remain unchanged.
     refreshed_token = context.user_data.get("pending_preview_token")
     if (
         not isinstance(refreshed_token, str)
         or not secrets.compare_digest(token, refreshed_token)
+        or original_scope != context.user_data.get("pending_provider_source_scope")
     ):
         await query.edit_message_text(
             "This screenshot preview has expired. Nothing was sent."
         )
         return
     if not authorised:
-        context.user_data.pop("pending_signal_text", None)
-        context.user_data.pop("awaiting_edit", None)
-        context.user_data.pop("pending_preview_token", None)
+        _clear_pending_screenshot_preview(context)
         await query.edit_message_text(
-            "Provider source is no longer connected. Nothing was sent."
+            "Provider source changed or is no longer connected. Nothing was sent."
         )
         return
 
     if action == "SIGNO":
-        context.user_data.pop("pending_signal_text", None)
-        context.user_data.pop("awaiting_edit", None)
-        context.user_data.pop("pending_preview_token", None)
+        _clear_pending_screenshot_preview(context)
         await query.edit_message_text("❌ Cancelled. Nothing was sent.")
         return
 
@@ -1028,18 +1078,16 @@ async def on_signal_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         candidate = context.user_data.get("pending_signal_text")
         raw_text = candidate.strip() if isinstance(candidate, str) else ""
         if not raw_text:
-            context.user_data.pop("pending_signal_text", None)
-            context.user_data.pop("awaiting_edit", None)
-            context.user_data.pop("pending_preview_token", None)
+            _clear_pending_screenshot_preview(context)
             await query.edit_message_text(
                 "Nothing to send — I couldn't read any text. Tap Edit next time."
             )
             return
         # Consume the preview before awaiting I/O: a second tap cannot reuse it.
-        context.user_data.pop("pending_signal_text", None)
-        context.user_data.pop("awaiting_edit", None)
-        context.user_data.pop("pending_preview_token", None)
-        result = await _create_and_broadcast(update, context, raw_text)
+        _clear_pending_screenshot_preview(context)
+        result = await _create_and_broadcast(
+            update, context, raw_text, original_source_scope=original_scope
+        )
         await query.edit_message_text(f"{query.message.text}\n\n➡️ {result}")
 
 
@@ -1047,17 +1095,20 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Free-text handler. Only acts when the admin is editing an extracted signal."""
     if not context.user_data.get("awaiting_edit"):
         return  # ignore ordinary chatter
-    # Bind corrected text to its exact preview across the async permission check.
-    # A newer screenshot/cancel or another edit can consume it while I/O awaits.
+    # Bind corrected text to its exact preview and source across the async
+    # permission check. A newer screenshot/rebind/Cancel cannot reuse it.
     edit_token = context.user_data.get("pending_preview_token")
     if (
         not isinstance(edit_token, str)
         or len(edit_token) != 16
         or any(ch not in "0123456789abcdef" for ch in edit_token)
     ):
-        context.user_data.pop("awaiting_edit", None)
+        _clear_pending_screenshot_preview(context)
         return
-    authorised = await _can_submit_provider_signal(update)
+    original_scope = context.user_data.get("pending_provider_source_scope")
+    if isinstance(original_scope, dict):
+        original_scope = dict(original_scope)
+    authorised = await _preview_source_authorised(update, original_scope)
     refreshed = context.user_data.get("pending_preview_token")
     if (
         not context.user_data.get("awaiting_edit")
@@ -1065,21 +1116,20 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         or len(refreshed) != 16
         or any(ch not in "0123456789abcdef" for ch in refreshed)
         or not secrets.compare_digest(edit_token, refreshed)
+        or original_scope != context.user_data.get("pending_provider_source_scope")
     ):
         return  # An obsolete edit must never act on a newer preview.
     if not authorised:
-        context.user_data.pop("awaiting_edit", None)
-        context.user_data.pop("pending_signal_text", None)
-        context.user_data.pop("pending_preview_token", None)
+        _clear_pending_screenshot_preview(context)
         return
     raw_text = (update.message.text or "").strip()
     if not raw_text:
         await update.message.reply_text("Empty — send the corrected signal text.")
         return
-    context.user_data.pop("awaiting_edit", None)
-    context.user_data.pop("pending_signal_text", None)
-    context.user_data.pop("pending_preview_token", None)
-    result = await _create_and_broadcast(update, context, raw_text)
+    _clear_pending_screenshot_preview(context)
+    result = await _create_and_broadcast(
+        update, context, raw_text, original_source_scope=original_scope
+    )
     await update.message.reply_text(result)
 
 
