@@ -340,6 +340,10 @@ def telegram_provider_source_signal(
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Idempotent source-message replay may return a previously VALID row whose
+    # deadline has elapsed. Refresh its persisted state before the bot can
+    # treat this response as authority to broadcast another subscriber card.
+    crud.refresh_signal_expiry(db, signal)
     db.commit()
     return SignalOut.model_validate(signal)
 
