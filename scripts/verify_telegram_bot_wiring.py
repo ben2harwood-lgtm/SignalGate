@@ -568,6 +568,80 @@ def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
     asyncio.run(revoked_then_valid())
 
 
+def check_provider_source_status_requires_active_typed_binding() -> None:
+    """Malformed or revoked status receipts cannot grant hosted screenshot access."""
+    assert config.require_license is True
+    secret = "OFFLINE-STATUS-PRIVATE-DIAGNOSTIC"
+    valid = {
+        "binding_id": "BIND-OFFLINE",
+        "provider_id": "PROVIDER-OFFLINE",
+        "provider_name": "Provider Offline",
+        "feed_id": "FEED-OFFLINE",
+        "feed_name": "Feed Offline",
+        "source_type": "TELEGRAM",
+        "status": "ACTIVE",
+    }
+    invalid = (
+        None, [], [{}], {}, {"detail": secret},
+        {**valid, "detail": ""},
+        {**valid, "status": "REVOKED"},
+        {**valid, "source_type": "OTHER"},
+        {**valid, "binding_id": None},
+        {**valid, "provider_id": 123},
+        {**valid, "provider_name": {"debug": secret}},
+        {**valid, "feed_name": ""},
+    )
+    user = SimpleNamespace(id=123456)
+    replies = []
+
+    async def reply_text(message, **_kwargs):
+        replies.append(message)
+
+    update = SimpleNamespace(
+        effective_user=user,
+        message=SimpleNamespace(reply_text=reply_text),
+    )
+
+    def exercise(response, expected):
+        requests = []
+
+        async def status_reply(path, **kwargs):
+            requests.append(path)
+            assert path == "/provider-sources/telegram/status"
+            assert kwargs["params"] == {"telegram_user_id": "123456"}
+            assert kwargs["headers"] == handlers._registration_headers()
+            return response
+
+        # A stale local provider flag must never rescue bad hosted status.
+        with (
+            patch.object(handlers, "_backend_get", status_reply),
+            patch.object(config, "is_signal_provider", lambda _id: True),
+        ):
+            receipt = asyncio.run(handlers._provider_source_status(user.id))
+            permitted = asyncio.run(handlers._can_submit_provider_signal(update))
+            assert bool(receipt) is expected
+            assert permitted is expected
+
+            if not expected:
+                # The photo path must stop before resolving/download/upload and
+                # must also discard an old confirmable screenshot.
+                state = {
+                    "pending_signal_text": "OLD",
+                    "pending_preview_token": "a" * 16,
+                    "awaiting_edit": True,
+                }
+                context = SimpleNamespace(user_data=state, bot=SimpleNamespace())
+                asyncio.run(handlers.on_photo(update, context))
+                assert state == {}, "Invalid binding preserved old preview"
+                assert "Connect this Telegram account" in replies[-1]
+                assert secret not in replies[-1]
+        assert len(requests) == (2 if expected else 3), requests
+
+    for response in invalid:
+        exercise(response, False)
+    exercise(valid, True)
+
+
 def check_hosted_legacy_provider_status_never_grants_identity() -> None:
     """Even a stale local-provider flag cannot claim hosted provider authority."""
     assert config.require_license is True
@@ -1384,6 +1458,7 @@ def main() -> int:
     check_preview_keyboard_token_contract()
     check_preview_callback_identity_and_single_use()
     check_edit_text_bound_to_preview_across_authorisation_await()
+    check_provider_source_status_requires_active_typed_binding()
     check_hosted_legacy_provider_status_never_grants_identity()
     check_connectprovider_error_does_not_echo_backend_secrets()
     check_join_invite_backend_response_integrity()
