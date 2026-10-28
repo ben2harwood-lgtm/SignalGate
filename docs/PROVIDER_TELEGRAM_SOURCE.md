@@ -25,6 +25,16 @@ Telegram screenshot -> bot -> tenant-bound extraction preview -> provider human 
 
 The backend source identity is the internal binding id, not a shared provider secret or raw Telegram id.
 
+## Screenshot-preview callback privacy (offline guard)
+
+Confirm, Edit and Cancel screenshot buttons are accepted only in a private
+Telegram chat. A group, supergroup, channel or missing-chat callback receives
+generic private-chat guidance before provider-source lookup, pending-preview
+state changes or signal creation/broadcast. An existing private preview remains
+unchanged on a shared-chat refusal; its text, source and tokens are not echoed.
+This is tested with synthetic handler updates only and is **not** evidence of
+real Telegram callback delivery, a broker-demo trade or external assurance.
+
 ## Broadcast recipient ownership and source rebinds (offline guard)
 
 Signal creation returns a persisted provider/feed/source identity. Before
