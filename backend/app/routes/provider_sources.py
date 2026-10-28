@@ -344,6 +344,18 @@ def telegram_provider_source_signal(
     return SignalOut.model_validate(signal)
 
 
+def _is_direct_telegram_user_id(value: str) -> bool:
+    """Return only canonical Telegram private-user IDs, never group/channel IDs."""
+    return (
+        isinstance(value, str)
+        and value.isascii()
+        and value.isdecimal()
+        and not value.startswith("0")
+        and len(value) <= 16
+        and int(value) <= (1 << 52) - 1
+    )
+
+
 @router.get("/provider-sources/telegram/recipients")
 def telegram_provider_source_recipients(
     telegram_user_id: str,
@@ -371,6 +383,6 @@ def telegram_provider_source_recipients(
                 "telegram_user_id": user.telegram_user_id,
             }
             for user in users
-            if user.telegram_user_id.lstrip("-").isdigit()
+            if _is_direct_telegram_user_id(user.telegram_user_id)
         ]
     }
