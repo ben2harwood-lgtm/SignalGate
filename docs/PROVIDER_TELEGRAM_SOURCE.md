@@ -34,6 +34,9 @@ matching binding/provider/feed identifiers. If that identity was rebound
 between creation and enumeration, or if any recipient identifier is malformed,
 the bot **sends no cards** and tells the provider to inspect history. This
 prevents a prior feed's signal being broadcast to a later feed's subscribers.
+Recipient enumeration also refuses a provider or feed paused after signal
+creation but before recipient lookup (HTTP 403; no subscriber cards). Pausing
+a source **after** the recipient lookup remains a non-atomic delivery window.
 This is an offline-tested cross-tenant guard, **not** a guarantee of atomic
 revocation during Telegram delivery and not actual Telegram/MT5 acceptance.
 
