@@ -245,6 +245,16 @@ shared chats receive only a generic instruction **before** either `/health`
 or provider-source status is queried. Offline tests cover these refusal paths;
 this does not establish actual Telegram delivery or external acceptance.
 
+## Provider screenshot upload privacy (offline verified only)
+
+Photos and image documents sent to SignalGate must arrive in a **private chat**.
+Group, supergroup, channel and missing/unknown chats receive a generic refusal
+before provider-source lookup, Telegram file download, image extraction or any
+pending-preview mutation. Existing private-chat upload/size/transport tests still
+apply. These are offline handler checks, not real Telegram delivery or permission
+to broadcast or trade; callback and edit-message privacy require their own
+separate verification.
+
 ## /start registration receipt privacy (offline verified only)
 
 The hosted bot must not display a newly issued one-time EA licence based only
