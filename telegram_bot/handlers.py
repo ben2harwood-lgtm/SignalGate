@@ -38,6 +38,17 @@ DECISION_MESSAGES = {
     "ACCOUNT_NOT_FOUND": "No active provider trading account found. No command created.",
 }
 
+# The backend YES/NO routes have different permissible outcomes. A known code
+# from the wrong endpoint is still a contradictory receipt, not permission to
+# tell a subscriber that a different decision was recorded.
+DECISION_ALLOWED_BY_ACTION = {
+    "YES": frozenset(DECISION_MESSAGES) - {"REJECTED"},
+    "NO": frozenset({
+        "REJECTED", "ALREADY_REJECTED", "ALREADY_APPROVED",
+        "USER_NOT_FOUND", "SIGNAL_NOT_FOUND",
+    }),
+}
+
 
 # --- backend helpers ------------------------------------------------------
 
@@ -503,7 +514,7 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         not isinstance(result, dict)
         or "detail" in result
         or not isinstance(code, str)
-        or code not in DECISION_MESSAGES
+        or code not in DECISION_ALLOWED_BY_ACTION[decision]
     ):
         await query.edit_message_text(
             "Decision could not be confirmed. Check the current trade state "
