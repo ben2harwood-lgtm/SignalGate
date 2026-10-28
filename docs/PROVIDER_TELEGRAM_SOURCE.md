@@ -165,6 +165,17 @@ An unconfirmed response may still have consumed an invite, so subscribers should
 check membership with their provider before retrying. This is verified using
 synthetic offline response fixtures only; no real subscriber or provider was used.
 
+## Provider-source connection receipt integrity (offline verified only)
+
+The one-time `/connectprovider` command now requires a well-formed `ACTIVE`
+`TELEGRAM` binding receipt with nonempty binding/provider/feed identifiers and
+names before telling the provider the source is connected. Unknown, malformed
+or error-shaped HTTP 200 results are not reported as success; arbitrary backend
+`detail` text and credentials are never echoed. A connection POST can succeed
+even if its response is lost, so an unconfirmed connection must be checked in
+the Provider Portal before another token is requested. These are synthetic
+bot-handler tests, not evidence of real Telegram delivery or provider acceptance.
+
 ## Security properties
 
 - one-time token stored only as SHA-256 hash;

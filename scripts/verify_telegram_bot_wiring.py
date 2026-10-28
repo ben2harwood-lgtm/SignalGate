@@ -667,6 +667,7 @@ def check_join_invite_backend_response_integrity() -> None:
         None, [], {"detail": {"internal": secret}}, {},
         {**registration, "telegram_user_id": "OTHER-USER"},
         {**registration, "status": "INACTIVE"},
+        {**registration, "detail": ""},
         {**registration, "id": None},
     )
     for body in invalid_registrations:
@@ -678,6 +679,7 @@ def check_join_invite_backend_response_integrity() -> None:
     invalid_acceptances = (
         None, [], {"detail": f"token={invite}; {secret}"},
         {"detail": {"trace": secret}}, {},
+        {**acceptance, "detail": ""},
         {**acceptance, "status": "PENDING"},
         {**acceptance, "subscription_id": None},
         {**acceptance, "feed_id": []},
@@ -732,6 +734,67 @@ def check_connectprovider_error_does_not_echo_backend_secrets() -> None:
     assert "Provider Portal" in replies[0]
     assert secret not in replies[0]
     assert "SYNTHETIC-ONE-TIME-TOKEN" not in replies[0]
+
+def check_connectprovider_success_receipt_integrity() -> None:
+    """Connection claims require a typed, ACTIVE Telegram binding response."""
+    secret = "OFFLINE-SOURCE-CONNECTION-PRIVATE-DIAGNOSTIC"
+    token = "OFFLINE-ONE-TIME-SOURCE-TOKEN"
+    valid = {
+        "binding_id": "BIND-OFFLINE", "provider_id": "PROVIDER-OFFLINE",
+        "provider_name": "Provider Offline", "provider_display_name": None,
+        "feed_id": "FEED-OFFLINE", "feed_name": "Feed Offline",
+        "source_type": "TELEGRAM", "status": "ACTIVE",
+    }
+
+    def exercise(response):
+        replies, paths = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def fake_post(path, **kwargs):
+            paths.append(path)
+            assert kwargs["json"] == {
+                "connection_token": token, "telegram_user_id": "123456",
+            }
+            return response
+
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(reply_text=reply_text),
+        )
+        with patch.object(handlers, "_backend_post", fake_post):
+            asyncio.run(
+                handlers.connect_provider_source(
+                    update, SimpleNamespace(args=[token])
+                )
+            )
+        assert paths == ["/provider-sources/telegram/connect"]
+        assert len(replies) == 1
+        return replies[0]
+
+    negatives = (
+        None, [], {}, {"detail": {"error": secret}},
+        {**valid, "detail": ""}, {**valid, "status": "REVOKED"},
+        {**valid, "source_type": "UNKNOWN"},
+        {**valid, "binding_id": None}, {**valid, "feed_id": ""},
+        {**valid, "provider_name": 45},
+    )
+    for value in negatives:
+        reply = exercise(value)
+        assert "connection could not be confirmed" in reply.lower()
+        assert "source connected to" not in reply.lower()
+        assert secret not in reply and token not in reply
+        assert "Provider Portal" in reply
+
+    reply = exercise(valid)
+    assert "Provider source connected to Provider Offline — Feed Offline." in reply
+    assert "Demo mode only" in reply
+    assert token not in reply
+    reply = exercise({**valid, "provider_display_name": { "detail": secret }})
+    assert "Provider source connected to Provider Offline — Feed Offline." in reply
+    assert secret not in reply
+
 
 def check_telegram_httpx_token_log_privacy() -> None:
     """Synthetic Bot API URLs must not reach HTTPX INFO transport logs."""
@@ -1324,6 +1387,7 @@ def main() -> int:
     check_hosted_legacy_provider_status_never_grants_identity()
     check_connectprovider_error_does_not_echo_backend_secrets()
     check_join_invite_backend_response_integrity()
+    check_connectprovider_success_receipt_integrity()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")
     return 0
 

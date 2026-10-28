@@ -194,7 +194,7 @@ async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Malformed/other-user registration is not authority to use an invite.
     if (
         not isinstance(registration, dict)
-        or registration.get("detail")
+        or "detail" in registration
         or registration.get("telegram_user_id") != str(user.id)
         or registration.get("status") != "ACTIVE"
         or not isinstance(registration.get("id"), str)
@@ -214,11 +214,13 @@ async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         headers=_registration_headers(),
     )
     if result is None:
+        # A non-2xx or transport error is not proof the one-use POST was undone.
         await update.message.reply_text(
-            "SignalGate backend is unreachable. The invite was not confirmed."
+            "Invite acceptance could not be confirmed. Check feed membership "
+            "with your provider before retrying this one-time token."
         )
         return
-    if not isinstance(result, dict) or result.get("detail"):
+    if not isinstance(result, dict) or "detail" in result:
         # Do not disclose backend diagnostic/token text in a Telegram reply.
         # An unconfirmed POST may still have consumed the one-time invite.
         await update.message.reply_text(
@@ -317,23 +319,35 @@ async def connect_provider_source(
         },
         headers=_registration_headers(),
     )
-    if result is None:
+    if result is None or not isinstance(result, dict) or "detail" in result:
+        # The POST may have connected the source despite an ambiguous reply.
+        # Never echo backend details or advise blind re-use of a one-time token.
         await update.message.reply_text(
-            "SignalGate backend is unreachable. Provider source was not connected."
+            "Provider source connection could not be confirmed. Check its status "
+            "in the Provider Portal before requesting another one-time token."
         )
         return
-    if result.get("detail"):
-        # Backend diagnostics can contain token text or server internals.
-        # Never echo an arbitrary error detail to a Telegram conversation.
+    required_fields = (
+        "binding_id", "provider_id", "provider_name", "feed_id", "feed_name",
+    )
+    if (
+        result.get("status") != "ACTIVE"
+        or result.get("source_type") != "TELEGRAM"
+        or any(
+            not isinstance(result.get(field), str) or not result[field].strip()
+            for field in required_fields
+        )
+    ):
         await update.message.reply_text(
-            "Provider source not connected. The token may be invalid, expired, "
-            "or already used. Generate a new feed-bound token in the Provider Portal."
+            "Provider source connection could not be confirmed. Check its status "
+            "in the Provider Portal before requesting another one-time token."
         )
         return
+    display_name = result.get("provider_display_name")
     provider_name = (
-        result.get("provider_display_name")
-        or result.get("provider_name")
-        or "provider"
+        display_name
+        if isinstance(display_name, str) and display_name.strip()
+        else result["provider_name"]
     )
     await update.message.reply_text(
         f"Provider source connected to {provider_name} — "
