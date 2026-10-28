@@ -276,6 +276,18 @@ def test_bound_source_recipients_refuse_pause_after_source_connect(client, db):
     invite = _source_invite(client, provider, feed, key)
     connected = _connect(client, invite, "9359")
     assert connected.status_code == 200, connected.text
+    stored = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": "9359",
+            "raw_text": EUR_BUY,
+            "source_message_id": "9359:1",
+        },
+    )
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["parser_status"] == "VALID"
+    assert stored.json()["provider_id"] == provider.id
+    assert stored.json()["feed_id"] == feed.id
 
     def lookup():
         return client.get(
