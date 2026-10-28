@@ -62,6 +62,19 @@ A failed `/connectprovider` request produces a generic token-reissue message,
 not an arbitrary backend `detail` string. The bot never reflects one-time
 token text or server diagnostics from that failure into Telegram.
 
+## Provider-source status receipt boundary (offline verified only)
+
+Hosted screenshot eligibility now requires a well-formed `ACTIVE` / `TELEGRAM`
+provider-source status response with nonempty binding, provider and feed
+identifiers and names. An HTTP 200 with an array, error detail, revoked binding,
+other source type or incomplete fields is **not** authority to submit a
+screenshot; an existing confirmable preview is invalidated instead. A stale
+local-demo provider ID cannot override this hosted refusal. The backend's
+authenticated, tenant-bound lookup is still authoritative, and the bot never
+treats an identifier/header alone as authentication. Synthetic offline tests
+exercise the malformed, revoked and valid cases without Telegram or broker
+traffic. This does not establish external provider or MT5 demo acceptance.
+
 ## Screenshot extraction failures
 
 The Telegram bot refuses screenshot photos/documents whose reported size exceeds
