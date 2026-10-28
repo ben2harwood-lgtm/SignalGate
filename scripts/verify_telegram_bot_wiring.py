@@ -730,7 +730,7 @@ def check_connectprovider_error_does_not_echo_backend_secrets() -> None:
         ("/provider-sources/telegram/connect", "SYNTHETIC-ONE-TIME-TOKEN")
     ]
     assert len(replies) == 1
-    assert "not connected" in replies[0].lower()
+    assert "connection could not be confirmed" in replies[0].lower()
     assert "Provider Portal" in replies[0]
     assert secret not in replies[0]
     assert "SYNTHETIC-ONE-TIME-TOKEN" not in replies[0]
