@@ -677,6 +677,7 @@ def check_provider_source_status_requires_active_typed_binding() -> None:
         replies.append(message)
 
     update = SimpleNamespace(
+        effective_chat=SimpleNamespace(type="private"),
         effective_user=user,
         message=SimpleNamespace(reply_text=reply_text),
     )
@@ -1003,6 +1004,55 @@ def check_private_chat_credential_commands() -> None:
         ), "Shared chat revealed or claimed sensitive account/source details"
 
 
+def check_shared_chat_screenshot_uploads_fail_closed() -> None:
+    """Group/unknown chat photos and images never reach source lookup or download."""
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("Shared-chat screenshot reached an external path")
+
+    for chat_type in ("group", "supergroup", "channel", None):
+        for kind in ("photo", "document"):
+            replies = []
+
+            async def reply_text(message, **_kwargs):
+                replies.append(message)
+
+            asset = SimpleNamespace(
+                file_id="OFFLINE-SHARED-IMAGE", file_size=3, mime_type="image/png"
+            )
+            update = SimpleNamespace(
+                effective_chat=(
+                    SimpleNamespace(type=chat_type) if chat_type is not None else None
+                ),
+                effective_user=SimpleNamespace(id=123456),
+                message=SimpleNamespace(
+                    reply_text=reply_text, photo=[asset], document=asset
+                ),
+            )
+            state = {
+                "pending_signal_text": "PRIVATE-EXISTING",
+                "pending_preview_token": "a" * 16,
+                "awaiting_edit": True,
+            }
+            original = dict(state)
+            context = SimpleNamespace(
+                user_data=state, bot=SimpleNamespace(get_file=forbidden)
+            )
+            with (
+                patch.object(handlers, "_can_submit_provider_signal", forbidden),
+                patch.object(handlers, "_preview_screenshot", forbidden),
+                patch.object(handlers, "_download_telegram_screenshot", forbidden),
+            ):
+                asyncio.run(
+                    (handlers.on_photo if kind == "photo" else handlers.on_document)(
+                        update, context
+                    )
+                )
+            assert state == original, (kind, chat_type, state)
+            assert len(replies) == 1 and "private chat" in replies[0].lower()
+            assert "nothing was downloaded or previewed" in replies[0].lower()
+            assert "PRIVATE-EXISTING" not in replies[0]
+
+
 def check_connectprovider_error_does_not_echo_backend_secrets() -> None:
     """Backend error detail is untrusted and cannot enter Telegram replies."""
     secret = "SYNTHETIC_BACKEND_SECRET_DO_NOT_ECHO"
@@ -1183,7 +1233,11 @@ def check_screenshot_upload_size_guard() -> None:
             photo=[asset],
             document=asset,
         )
-        update = SimpleNamespace(message=message, effective_user=SimpleNamespace(id=123))
+        update = SimpleNamespace(
+            message=message,
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123),
+        )
         context = SimpleNamespace(user_data=state, bot=OfflineBot())
         with (
             patch.object(handlers, "_can_submit_provider_signal", permitted),
@@ -1291,6 +1345,7 @@ def check_telegram_download_transport_failures_fail_closed() -> None:
 
         asset = SimpleNamespace(file_id="FAKE", file_size=3, mime_type="image/png")
         update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
             effective_user=SimpleNamespace(id=12345),
             message=SimpleNamespace(
                 photo=[asset], document=asset, reply_text=reply_text,
@@ -1352,6 +1407,7 @@ def check_telegram_download_transport_failures_fail_closed() -> None:
                 file_id=file_id, file_size=3, mime_type="image/png"
             )
             return SimpleNamespace(
+                effective_chat=SimpleNamespace(type="private"),
                 effective_user=SimpleNamespace(id=12345),
                 message=SimpleNamespace(
                     photo=[asset], document=asset, reply_text=reply_text,
@@ -1419,6 +1475,7 @@ def check_overlapping_screenshot_attempts_fail_closed() -> None:
                 file_id=file_id, file_size=3, mime_type="image/png"
             )
             return SimpleNamespace(
+                effective_chat=SimpleNamespace(type="private"),
                 effective_user=SimpleNamespace(id=12345),
                 message=SimpleNamespace(
                     photo=[asset], document=asset, reply_text=reply_text,
@@ -1468,6 +1525,7 @@ def check_overlapping_screenshot_attempts_fail_closed() -> None:
             replies.append(text)
 
         update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
             effective_user=SimpleNamespace(id=12345),
             message=SimpleNamespace(reply_text=reply_text),
         )
@@ -2034,6 +2092,7 @@ def main() -> int:
     check_start_registration_receipt_integrity()
     check_join_invite_backend_response_integrity()
     check_private_chat_credential_commands()
+    check_shared_chat_screenshot_uploads_fail_closed()
     check_connectprovider_success_receipt_integrity()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")
     return 0
