@@ -243,7 +243,7 @@ def check_malformed_pending_confirmation_fails_closed() -> None:
     replies = []
     calls = []
 
-    async def connected(_update):
+    async def connected(_update, _scope=None):
         return True
 
     async def broadcast(*_args, **_kwargs):
@@ -265,7 +265,7 @@ def check_malformed_pending_confirmation_fails_closed() -> None:
     })
     update = SimpleNamespace(callback_query=Query())
     with (
-        patch.object(handlers, "_can_submit_provider_signal", connected),
+        patch.object(handlers, "_preview_source_authorised", connected),
         patch.object(handlers, "_create_and_broadcast", broadcast),
     ):
         asyncio.run(handlers.on_signal_preview(update, context))
@@ -307,13 +307,13 @@ def check_preview_callback_identity_and_single_use() -> None:
     calls = []
     replies = []
 
-    async def connected(_update):
+    async def connected(_update, _scope=None):
         return True
 
-    async def disconnected(_update):
+    async def disconnected(_update, _scope=None):
         return False
 
-    async def broadcast(_update, _context, raw_text):
+    async def broadcast(_update, _context, raw_text, **_kwargs):
         calls.append(raw_text)
         return "synthetic-created"
 
@@ -335,7 +335,7 @@ def check_preview_callback_identity_and_single_use() -> None:
     async def click(data, authorised=connected):
         update = SimpleNamespace(callback_query=Query(data))
         with (
-            patch.object(handlers, "_can_submit_provider_signal", authorised),
+            patch.object(handlers, "_preview_source_authorised", authorised),
             patch.object(handlers, "_create_and_broadcast", broadcast),
         ):
             await handlers.on_signal_preview(update, context)
@@ -375,7 +375,7 @@ def check_preview_callback_identity_and_single_use() -> None:
     for old_action in ("SIGOK", "SIGEDIT", "SIGNO"):
         state.clear()
         state.update({"pending_signal_text": "OLD", "pending_preview_token": token_b})
-        async def superseded(_update):
+        async def superseded(_update, _scope=None):
             await asyncio.sleep(0)
             state.clear()
             state.update({"pending_signal_text": "NEW", "pending_preview_token": token_a})
@@ -390,7 +390,7 @@ def check_preview_callback_identity_and_single_use() -> None:
     # Revocation of the old source must not wipe a newer preview created during I/O.
     state.clear()
     state.update({"pending_signal_text": "OLD", "pending_preview_token": token_b})
-    async def revoked_after_supersession(_update):
+    async def revoked_after_supersession(_update, _scope=None):
         await asyncio.sleep(0)
         state.clear()
         state.update({"pending_signal_text": "NEW", "pending_preview_token": token_a})
@@ -426,17 +426,17 @@ def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
             text="OLD BUY SL 1 TP1 2", reply_text=reply_text
         ))
 
-        async def source(_update):
+        async def source(_update, _scope=None):
             entered.set()
             await release.wait()
             return allowed
 
-        async def create(_update, _context, raw_text):
+        async def create(_update, _context, raw_text, **_kwargs):
             calls.append(raw_text)
             return "synthetic-only"
 
         with (
-            patch.object(handlers, "_can_submit_provider_signal", source),
+            patch.object(handlers, "_preview_source_authorised", source),
             patch.object(handlers, "_create_and_broadcast", create),
         ):
             older = asyncio.create_task(handlers.on_text(update, context))
@@ -473,7 +473,7 @@ def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
             text="EDITED BUY SL 1 TP1 2", reply_text=reply_text
         ))
 
-        async def source(_update):
+        async def source(_update, _scope=None):
             nonlocal entered
             entered += 1
             if entered == 2:
@@ -481,12 +481,12 @@ def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
             await release.wait()
             return True
 
-        async def create(_update, _context, raw_text):
+        async def create(_update, _context, raw_text, **_kwargs):
             calls.append(raw_text)
             return "synthetic-only"
 
         with (
-            patch.object(handlers, "_can_submit_provider_signal", source),
+            patch.object(handlers, "_preview_source_authorised", source),
             patch.object(handlers, "_create_and_broadcast", create),
         ):
             first = asyncio.create_task(handlers.on_text(update, context))
@@ -515,18 +515,18 @@ def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
             text="VALID BUY SL 1 TP1 2", reply_text=reply_text
         ))
 
-        async def create(_update, _context, raw_text):
+        async def create(_update, _context, raw_text, **_kwargs):
             calls.append(raw_text)
             return "synthetic-only"
 
-        async def refused(_update):
+        async def refused(_update, _scope=None):
             return False
 
-        async def allowed(_update):
+        async def allowed(_update, _scope=None):
             return True
 
         with (
-            patch.object(handlers, "_can_submit_provider_signal", refused),
+            patch.object(handlers, "_preview_source_authorised", refused),
             patch.object(handlers, "_create_and_broadcast", create),
         ):
             await handlers.on_text(update, context)
@@ -539,7 +539,7 @@ def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
             "pending_preview_token": "a" * 16,
         })
         with (
-            patch.object(handlers, "_can_submit_provider_signal", allowed),
+            patch.object(handlers, "_preview_source_authorised", allowed),
             patch.object(handlers, "_create_and_broadcast", create),
         ):
             await handlers.on_text(update, context)
@@ -554,7 +554,7 @@ def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
             "pending_preview_token": "\u2603" * 16,
         })
         with (
-            patch.object(handlers, "_can_submit_provider_signal", allowed),
+            patch.object(handlers, "_preview_source_authorised", allowed),
             patch.object(handlers, "_create_and_broadcast", create),
         ):
             await handlers.on_text(update, context)
@@ -1524,6 +1524,183 @@ def check_signal_create_backend_errors_remain_private() -> None:
     assert received == ["/provider-sources/telegram/signals"] * len(cases)
 
 
+
+def check_preview_source_rebind_blocks_confirmation() -> None:
+    """A screenshot preview for feed A cannot be confirmed/edited into feed B."""
+    assert config.require_license is True
+    source_a = {
+        "binding_id": "BINDING-A", "provider_id": "PROVIDER-A",
+        "provider_name": "Provider A", "feed_id": "FEED-A",
+        "feed_name": "Feed A", "source_type": "TELEGRAM", "status": "ACTIVE",
+    }
+    source_b = {
+        "binding_id": "BINDING-B", "provider_id": "PROVIDER-B",
+        "provider_name": "Provider B", "feed_id": "FEED-B",
+        "feed_name": "Feed B", "source_type": "TELEGRAM", "status": "ACTIVE",
+    }
+    extracted = {
+        "parser_status": "VALID", "extracted_text": "EURUSD BUY SL 1.05 TP1 1.07",
+        "symbol": "EURUSD", "direction": "BUY", "initial_stop_loss": 1.05,
+        "tp1": 1.07, "confidence": "HIGH", "engine": "offline",
+    }
+    original_client = httpx.AsyncClient
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(200, json=extracted)
+    )
+
+    async def exercise() -> None:
+        source = dict(source_a)
+        response_override = None
+        source_reads = 0
+        backend_calls, sends, replies = [], [], []
+        state = {}
+
+        async def source_status(_user_id):
+            nonlocal source_reads
+            source_reads += 1
+            if response_override == "rebind-during-confirm" and source_reads >= 2:
+                return dict(source_b)
+            return dict(source)
+
+        async def fake_post(path, **kwargs):
+            backend_calls.append(("POST", path))
+            assert path == "/provider-sources/telegram/signals"
+            assert kwargs["json"]["raw_text"] in (
+                extracted["extracted_text"], "EURUSD SELL SL 1.05 TP1 1.04",
+            )
+            return {
+                "id": "SIG-A", "parser_status": "VALID",
+                "provider_id": "PROVIDER-A", "feed_id": "FEED-A",
+                "source": "FEED:FEED-A:TELEGRAM_BINDING:BINDING-A",
+            }
+
+        async def fake_get(path, **_kwargs):
+            backend_calls.append(("GET", path))
+            assert path == "/provider-sources/telegram/recipients"
+            return {
+                "binding_id": "BINDING-A", "provider_id": "PROVIDER-A",
+                "feed_id": "FEED-A",
+                "recipients": [{"telegram_user_id": "900000000011"}],
+            }
+
+        async def reply_text(text, **_kwargs):
+            replies.append(text)
+
+        class Bot:
+            async def send_message(self, **kwargs):
+                sends.append(kwargs["chat_id"])
+
+        class Query:
+            def __init__(self, action, token):
+                self.data = f"{action}:{token}"
+                self.message = SimpleNamespace(text="OFFLINE-PREVIEW")
+
+            async def answer(self):
+                return None
+
+            async def edit_message_text(self, text):
+                replies.append(text)
+
+        message = SimpleNamespace(
+            text="EURUSD SELL SL 1.05 TP1 1.04",
+            message_id=100,
+            reply_text=reply_text,
+        )
+        update = SimpleNamespace(
+            message=message,
+            effective_user=SimpleNamespace(id=123456),
+            effective_chat=SimpleNamespace(id=123456),
+            effective_message=message,
+        )
+        context = SimpleNamespace(user_data=state, bot=Bot())
+
+        async def preview():
+            await handlers._preview_screenshot(
+                update, context, b"OFFLINE-IMAGE", "image/jpeg"
+            )
+            assert state["pending_signal_text"] == extracted["extracted_text"]
+            assert state["pending_provider_source_scope"] == {
+                "binding_id": "BINDING-A", "provider_id": "PROVIDER-A",
+                "feed_id": "FEED-A",
+            }
+            return state["pending_preview_token"]
+
+        async def click(action, token):
+            query_update = SimpleNamespace(
+                callback_query=Query(action, token),
+                effective_user=update.effective_user,
+                effective_chat=update.effective_chat,
+                effective_message=message,
+            )
+            await handlers.on_signal_preview(query_update, context)
+
+        with (
+            patch.object(handlers, "_provider_source_status", source_status),
+            patch.object(handlers, "_backend_post", fake_post),
+            patch.object(handlers, "_backend_get", fake_get),
+            patch.object(
+                handlers.httpx, "AsyncClient",
+                lambda *args, **kwargs: original_client(
+                    *args, transport=transport, **kwargs
+                ),
+            ),
+            patch("keyboards.format_trade_card", lambda *_args: "OFFLINE-CARD"),
+            patch("keyboards.trade_card_keyboard", lambda *_args: "OFFLINE-BUTTONS"),
+        ):
+            token = await preview()
+            source.update(source_b)
+            await click("SIGOK", token)
+            assert not backend_calls and not sends
+            assert state == {}, "Rebound Confirm left a reusable preview"
+            assert "nothing was sent" in replies[-1].lower()
+
+            source = dict(source_a)
+            token = await preview()
+            await click("SIGEDIT", token)
+            assert state.get("awaiting_edit") is True
+            source.update(source_b)
+            await handlers.on_text(update, context)
+            assert not backend_calls and not sends
+            assert state == {}, "Rebound edit left reusable source authority"
+
+            # Source A remains valid through the first callback read, but is
+            # rebound immediately before the second pre-create status read.
+            source = dict(source_a)
+            token = await preview()
+            response_override = "rebind-during-confirm"
+            source_reads = 0
+            await click("SIGOK", token)
+            assert source_reads >= 2, "Missing pre-create source recheck"
+            assert not backend_calls and not sends
+            assert "nothing was submitted or sent" in replies[-1].lower()
+            assert state == {}
+            response_override = None
+
+            # A matching unmodified source remains a valid offline preview.
+            source = dict(source_a)
+            token = await preview()
+            await click("SIGOK", token)
+            assert backend_calls == [
+                ("POST", "/provider-sources/telegram/signals"),
+                ("GET", "/provider-sources/telegram/recipients"),
+            ]
+            assert sends == ["900000000011"] and state == {}
+            assert "sent to 1 subscriber" in replies[-1].lower()
+
+            # A pre-upgrade hosted preview with no scope snapshot is invalid.
+            state.update({
+                "pending_signal_text": extracted["extracted_text"],
+                "pending_preview_token": "a" * 16,
+            })
+            backend_calls.clear()
+            sends.clear()
+            await click("SIGOK", "a" * 16)
+            assert not backend_calls and not sends and state == {}
+            assert "nothing was sent" in replies[-1].lower()
+
+    asyncio.run(exercise())
+
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -1574,6 +1751,7 @@ def main() -> int:
     check_malformed_pending_confirmation_fails_closed()
     check_preview_keyboard_token_contract()
     check_preview_callback_identity_and_single_use()
+    check_preview_source_rebind_blocks_confirmation()
     check_edit_text_bound_to_preview_across_authorisation_await()
     check_provider_source_status_requires_active_typed_binding()
     check_hosted_legacy_provider_status_never_grants_identity()
