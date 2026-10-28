@@ -1100,12 +1100,16 @@ async def _active_recipients(
             params={"telegram_user_id": str(update.effective_user.id)},
             headers=_registration_headers(),
         )
-        if not isinstance(data, dict) or any(
-            data.get(field) != source.get(field)
-            for field in ("binding_id", "provider_id", "feed_id")
+        if (
+            not isinstance(data, dict)
+            or "detail" in data
+            or any(
+                data.get(field) != source.get(field)
+                for field in ("binding_id", "provider_id", "feed_id")
+            )
         ):
-            # The Telegram identity may have been rebound to another tenant or
-            # feed between signal creation and recipient enumeration.
+            # An error-shaped HTTP 200 is not a recipient authorisation even
+            # when it echoes matching identifiers. Rebinds also fail closed.
             return None
         recipients: set[str] = set()
     else:
