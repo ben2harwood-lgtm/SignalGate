@@ -151,6 +151,25 @@ if a newer screenshot, Cancel or competing correction invalidated that preview.
 A revoked source clears only its still-current edit state. Offline interleaving
 tests verify this in memory, not actual Telegram delivery.
 
+A screenshot's confirmable state also retains its original
+`binding_id`/`provider_id`/`feed_id` snapshot. Both Confirm and Edit
+compare that exact snapshot with the current ACTIVE provider-source binding,
+including after the asynchronous permission check; hosted pre-upgrade previews
+without a snapshot are refused. The signal-creation path independently
+rechecks the original scope immediately before the create POST, so a provider
+rebound from feed A to feed B cannot knowingly submit A's preview using B's
+binding. Revocation/rebinding invalidates the pending preview; providers must
+capture a new screenshot. Offline interleaving tests cover A-preview → B-rebind
+→ Confirm/Edit, rebind between the two pre-create checks, and a matching
+unchanged-source positive path. No genuine Telegram traffic was used.
+
+This is a **client-side fail-closed check, not a transaction lock**. A rebind
+between the final status read and backend POST may still persist a signal
+against the newer feed; the later persisted signal/recipient checks refuse
+the mismatched subscriber broadcast, but an unconfirmed provider should
+inspect feed history rather than blindly retry. Server-side transactional
+binding checks and real Telegram/MT5 demo evidence remain separate work.
+
 The source's backend remains responsible for identity, tenant policy,
 subscriber consent and idempotent signal processing. The binding here is
 an **in-memory preview integrity guard**, not an authentication credential, a
