@@ -239,8 +239,11 @@ The bot sends only a generic private-chat instruction, without displaying an
 EA licence or echoing an invite/source token. A token pasted into a shared
 chat may already have been exposed to others, so obtain a replacement rather
 than reusing that exposed one-time token. Valid private-chat flows remain
-unchanged. Offline tests cover these refusal paths; this does not establish
-actual Telegram delivery or external acceptance.
+unchanged. `/status` also requires a private chat because the response can
+identify the requester's account role, Telegram ID and provider/feed binding;
+shared chats receive only a generic instruction **before** either `/health`
+or provider-source status is queried. Offline tests cover these refusal paths;
+this does not establish actual Telegram delivery or external acceptance.
 
 ## /start registration receipt privacy (offline verified only)
 

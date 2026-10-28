@@ -949,7 +949,7 @@ def check_private_chat_credential_commands() -> None:
         raise AssertionError("Sensitive command reached backend from shared chat")
 
     async def forbidden_source(*_args, **_kwargs):
-        raise AssertionError("Shared-chat /start looked up provider source")
+        raise AssertionError("Shared chat looked up private provider source")
 
     for chat_type in ("group", "supergroup", "channel", None):
         replies = []
@@ -968,6 +968,7 @@ def check_private_chat_credential_commands() -> None:
         )
         with (
             patch.object(handlers, "_backend_post", forbidden_backend),
+            patch.object(handlers, "_backend_get", forbidden_backend),
             patch.object(handlers, "_provider_source_status", forbidden_source),
         ):
             asyncio.run(handlers.start(update, None))
@@ -981,7 +982,8 @@ def check_private_chat_credential_commands() -> None:
                     update, SimpleNamespace(args=["SYNTHETIC-SOURCE-TOKEN"])
                 )
             )
-        assert len(replies) == 3, "Expected one private-chat refusal per command"
+            asyncio.run(handlers.status(update, None))
+        assert len(replies) == 4, "Expected one private-chat refusal per command"
         assert all("private chat" in text.lower() for text in replies)
         assert all(
             phrase not in text
@@ -993,8 +995,12 @@ def check_private_chat_credential_commands() -> None:
                 "Demo tester registered",
                 "Joined ",
                 "Provider source connected",
+                "Registered: yes",
+                "Role:",
+                "Feed:",
+                "Provider:",
             )
-        ), "Shared chat revealed or claimed a sensitive one-time action"
+        ), "Shared chat revealed or claimed sensitive account/source details"
 
 
 def check_connectprovider_error_does_not_echo_backend_secrets() -> None:

@@ -378,6 +378,13 @@ async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # The response can identify a user's private provider/feed binding.
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Account and provider/feed status requires a private chat with "
+            "SignalGate. No account details were retrieved here."
+        )
+        return
     user = update.effective_user
     health = await _backend_get("/health")
     source = await _provider_source_status(user.id)
