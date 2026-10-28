@@ -272,4 +272,8 @@ bot-handler tests, not evidence of real Telegram delivery or provider acceptance
 - feed symbol/expiry policy is applied during screenshot preview and final signal parsing;
 - replay identity is scoped to the binding;
 - broadcast recipients come only from active subscriptions to the bound feed;
+- the backend recipient receipt filters out noncanonical or nonpositive Telegram
+  user IDs, including group/channel IDs, leading-zero/Unicode identifiers and
+  values over Telegram's 52-bit user-ID limit; the bot independently rejects
+  any malformed recipient entry before sending even one card;
 - no provider-wide shared Telegram credential is required.
