@@ -342,7 +342,9 @@ def check_malformed_pending_confirmation_fails_closed() -> None:
         "pending_signal_text": ["bad"], "awaiting_edit": True,
         "pending_preview_token": "b" * 16,
     })
-    update = SimpleNamespace(callback_query=Query())
+    update = SimpleNamespace(
+        callback_query=Query(), effective_chat=SimpleNamespace(type="private")
+    )
     with (
         patch.object(handlers, "_preview_source_authorised", connected),
         patch.object(handlers, "_create_and_broadcast", broadcast),
@@ -351,6 +353,71 @@ def check_malformed_pending_confirmation_fails_closed() -> None:
     assert len(replies) == 1 and "nothing to send" in replies[0].lower()
     assert calls == [], "Malformed user state reached signal creation"
     assert context.user_data == {}, "Malformed confirmation left pending state"
+
+
+def check_shared_chat_preview_callbacks_fail_closed() -> None:
+    """Group/unknown chat preview buttons never use a private pending signal."""
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("Shared-chat preview reached backend or broadcast")
+
+    for chat_type in ("group", "supergroup", "channel", None):
+        for action in ("SIGOK", "SIGEDIT", "SIGNO"):
+            answers, replies = [], []
+
+            class Query:
+                def __init__(self):
+                    self.data = f"{action}:{'a' * 16}"
+                    self.message = SimpleNamespace(text="PRIVATE-SCREENSHOT-PREVIEW")
+
+                async def answer(self):
+                    answers.append("ack")
+
+                async def edit_message_text(self, message):
+                    replies.append(message)
+
+            state = {
+                "pending_signal_text": "PRIVATE-SIGNAL-DO-NOT-DISCLOSE",
+                "pending_preview_token": "a" * 16,
+                "pending_provider_source_scope": {
+                    "binding_id": "BIND-PRIVATE", "provider_id": "PROVIDER-PRIVATE",
+                    "feed_id": "FEED-PRIVATE",
+                },
+                "awaiting_edit": True,
+            }
+            original = {
+                **state,
+                "pending_provider_source_scope": dict(
+                    state["pending_provider_source_scope"]
+                ),
+            }
+            update = SimpleNamespace(
+                callback_query=Query(),
+                effective_chat=(
+                    SimpleNamespace(type=chat_type) if chat_type else None
+                ),
+                effective_user=SimpleNamespace(id=123456),
+            )
+            context = SimpleNamespace(
+                user_data=state, bot=SimpleNamespace(send_message=forbidden)
+            )
+            with (
+                patch.object(handlers, "_preview_source_authorised", forbidden),
+                patch.object(handlers, "_create_and_broadcast", forbidden),
+                patch.object(handlers, "_backend_get", forbidden),
+                patch.object(handlers, "_backend_post", forbidden),
+            ):
+                asyncio.run(handlers.on_signal_preview(update, context))
+            assert answers == ["ack"], (chat_type, action, answers)
+            assert state == original, (chat_type, action, state)
+            assert len(replies) == 1 and "private chat" in replies[0].lower()
+            assert "nothing was sent" in replies[0].lower()
+            assert all(
+                marker not in replies[0]
+                for marker in (
+                    "PRIVATE-SIGNAL-DO-NOT-DISCLOSE", "PRIVATE-SCREENSHOT-PREVIEW",
+                    "BIND-PRIVATE", "FEED-PRIVATE",
+                )
+            ), "Shared chat leaked private preview or feed identifiers"
 
 
 def check_preview_keyboard_token_contract() -> None:
@@ -412,7 +479,10 @@ def check_preview_callback_identity_and_single_use() -> None:
     context = SimpleNamespace(user_data=state)
 
     async def click(data, authorised=connected):
-        update = SimpleNamespace(callback_query=Query(data))
+        update = SimpleNamespace(
+            callback_query=Query(data),
+            effective_chat=SimpleNamespace(type="private"),
+        )
         with (
             patch.object(handlers, "_preview_source_authorised", authorised),
             patch.object(handlers, "_create_and_broadcast", broadcast),
@@ -2084,6 +2154,7 @@ def main() -> int:
     check_malformed_pending_confirmation_fails_closed()
     check_preview_keyboard_token_contract()
     check_preview_callback_identity_and_single_use()
+    check_shared_chat_preview_callbacks_fail_closed()
     check_preview_source_rebind_blocks_confirmation()
     check_edit_text_bound_to_preview_across_authorisation_await()
     check_provider_source_status_requires_active_typed_binding()
