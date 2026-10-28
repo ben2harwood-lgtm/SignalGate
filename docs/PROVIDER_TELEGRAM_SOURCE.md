@@ -225,8 +225,11 @@ synthetic offline response fixtures only; no real subscriber or provider was use
 
 A Telegram subscriber's YES/NO callback treats a backend decision POST as
 confirmed only when its response contains a known, string-typed decision
-result and no error-shaped `detail` key. Backend-provided `message`,
-unknown codes and malformed JSON roots are never reflected to subscribers.
+result **permitted for the requested YES/NO endpoint**, and no error-shaped
+`detail` key. Backend-provided `message`, unknown codes and malformed JSON
+roots are never reflected to subscribers. A NO request cannot report a newly
+`APPROVED` trade and YES cannot report a newly `REJECTED` response; however,
+`ALREADY_APPROVED` remains a valid NO reply when an earlier YES already won.
 Known provider/feed pause, tenancy, subscription and missing-account refusals
 use fixed, locally controlled wording. An ambiguous POST response may still
 have recorded an approval or rejection: the bot instructs the subscriber
