@@ -619,7 +619,10 @@ async def _create_and_broadcast(
         "Signal submission could not be confirmed. Check provider history "
         "before retrying; no subscriber card was sent."
     )
-    if not isinstance(signal, dict) or signal.get("detail"):
+    # A 200 with a `detail` field is error-shaped even when its value is
+    # null/empty and the rest resembles a valid persisted signal. Never send
+    # subscriber cards on contradictory creation receipts.
+    if not isinstance(signal, dict) or "detail" in signal:
         return uncertain
     if signal.get("parser_status") != "VALID":
         return (
