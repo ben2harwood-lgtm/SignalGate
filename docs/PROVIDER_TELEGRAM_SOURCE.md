@@ -237,6 +237,15 @@ to check current trade state before retrying rather than claiming no action.
 This is an isolated offline mock test, not an MT5 fill, real Telegram
 delivery or external acceptance receipt.
 
+Telegram callback data is treated as untrusted even when it resembles an
+existing inline button: decision callbacks require `YES` or `NO` and an
+ASCII `SIG-[A-Z0-9]{1,32}` identifier (including historical numeric demo
+IDs). Non-string, delimiter-bearing, Unicode-lookalike and overlong IDs
+are refused before any backend decision POST. A malformed signal identifier
+in a nominally valid create receipt also blocks subscriber-card delivery.
+These guards are verified by offline adversarial fixtures only; they do not
+establish real Telegram or MT5 broker acceptance.
+
 ## Provider-source connection receipt integrity (offline verified only)
 
 The one-time `/connectprovider` command now requires a well-formed `ACTIVE`

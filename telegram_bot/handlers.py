@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import secrets
 from typing import Any, Dict, List, Optional
 
@@ -48,6 +49,16 @@ DECISION_ALLOWED_BY_ACTION = {
         "USER_NOT_FOUND", "SIGNAL_NOT_FOUND",
     }),
 }
+
+
+def _valid_signal_id(value: Any) -> bool:
+    """Only backend-issued signal identifiers may enter callback paths/cards."""
+    # Current hosted IDs are SIG- plus 16 uppercase hex characters; retain
+    # older numeric demo IDs, while refusing delimiters and Unicode lookalikes.
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"SIG-[A-Z0-9]{1,32}", value, flags=re.ASCII) is not None
+    )
 
 
 # --- backend helpers ------------------------------------------------------
@@ -487,13 +498,17 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     query = update.callback_query
     await query.answer()
     user = query.from_user
+    callback_data = query.data
+    if not isinstance(callback_data, str):
+        await query.edit_message_text("Invalid action.")
+        return
     try:
-        decision, signal_id = query.data.split(":", 1)
+        decision, signal_id = callback_data.split(":", 1)
     except ValueError:
         await query.edit_message_text("Invalid action.")
         return
 
-    if decision not in {"YES", "NO"} or not signal_id:
+    if decision not in {"YES", "NO"} or not _valid_signal_id(signal_id):
         await query.edit_message_text("Invalid action.")
         return
     path = (
@@ -655,7 +670,7 @@ async def _create_and_broadcast(
             "Parser did not accept this signal. Review the text and feed policy; "
             "no subscriber card was sent."
         )
-    if not isinstance(signal.get("id"), str) or not signal["id"].strip():
+    if not _valid_signal_id(signal.get("id")):
         return uncertain
 
     # The original source binding and the persisted signal must describe the

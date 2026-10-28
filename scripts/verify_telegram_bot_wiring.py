@@ -160,6 +160,28 @@ def check_unconfirmed_decision_does_not_claim_approval() -> None:
         assert seen == ["Invalid action."]
         assert not called
 
+        # Telegram callback data is client-supplied and may be malformed or
+        # adversarial. Reject it before issuing ANY backend decision request.
+        assert handlers._valid_signal_id("SIG-000001")
+        assert handlers._valid_signal_id("SIG-0123456789ABCDEF")
+        bad_callbacks = (
+            None, 123, [], {"action": "YES"}, "YES", "YES:",
+            "YES:OTHER-TEST", "YES:SIG-aBc", "YES:SIG-TEST/approve",
+            "YES:SIG-TEST/../../admin/status", "NO:SIG-TEST?next=1",
+            "YES:SIG-TEST%2Fbad", "YES:SIG-TEST:EXTRA",
+            "YES:SIG-TEST\nSECRET", "YES:SIG-Ａ",
+            "YES:SIG-" + "A" * 33,
+        )
+        for callback_data in bad_callbacks:
+            called.clear()
+            seen.clear()
+            malformed_query = Query()
+            malformed_query.data = callback_data
+            asyncio.run(handlers.on_decision(
+                SimpleNamespace(callback_query=malformed_query), None
+            ))
+            assert seen == ["Invalid action."], callback_data
+            assert not called, callback_data
 
 
 def check_screenshot_extraction_fail_closed() -> None:
@@ -1437,6 +1459,22 @@ def check_broadcast_recipient_feed_binding() -> None:
             )
             assert not sent, "Mismatched/malformed feed receipt sent a card"
             assert "no subscriber card was sent" in result.lower()
+        # A malformed backend signal ID must never become a Telegram
+        # callback URL or reach the recipient-lookup/broadcast stage.
+        for bad_id in (
+            None, "", "SIG-TEST/../../admin/status", "SIG-TEST?next=1",
+            "SIG-TEST%2Fbad", "SIG-Ａ", "SIG-" + "A" * 33,
+        ):
+            sent.clear()
+            before = len(lookups)
+            response_signal = dict(signal, id=bad_id)
+            response_recipients = valid
+            result = asyncio.run(
+                handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+            )
+            assert not sent and len(lookups) == before, bad_id
+            assert "could not be confirmed" in result.lower(), bad_id
+        response_signal = signal
         # A rebind between initial provider status and signal creation must
         # also refuse before ANY recipient lookup.
         sent.clear()
