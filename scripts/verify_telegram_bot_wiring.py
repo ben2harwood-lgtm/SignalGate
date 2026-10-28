@@ -1385,7 +1385,7 @@ def check_broadcast_recipient_feed_binding() -> None:
     }
     signal = {
         "id": "SIG-0123456789ABCDEF",
-        "parser_status": "VALID",
+        "parser_status": "VALID", "status": "VALID",
         "provider_id": "PROVIDER-A",
         "feed_id": "FEED-A",
         "source": "FEED:FEED-A:TELEGRAM_BINDING:BINDING-A",
@@ -1529,7 +1529,7 @@ def check_broadcast_failure_logs_are_private() -> None:
         assert kwargs["json"]["raw_text"] == "XAUUSD BUY SL 1 TP1 2"
         return {
             "id": "SIG-OFFLINE",
-            "parser_status": "VALID",
+            "parser_status": "VALID", "status": "VALID",
             "provider_id": "PROVIDER-OFFLINE",
             "feed_id": "FEED-OFFLINE",
             "source": "FEED:FEED-OFFLINE:TELEGRAM_BINDING:BINDING-OFFLINE",
@@ -1605,11 +1605,19 @@ def check_signal_create_backend_errors_remain_private() -> None:
     # An HTTP 200 with a valid-looking signal and even a falsy `detail`
     # field is an ambiguous/error-shaped response, never card authority.
     valid_signal = {
-        "id": "SIG-OFFLINE", "parser_status": "VALID",
+        "id": "SIG-OFFLINE", "parser_status": "VALID", "status": "VALID",
         "provider_id": "PROVIDER-OFFLINE", "feed_id": "FEED-OFFLINE",
         "source": "FEED:FEED-OFFLINE:TELEGRAM_BINDING:BINDING-OFFLINE",
     }
     cases = (
+        # A duplicate source message can return an older, now-expired signal.
+        # A VALID parser status must not override the persisted signal state.
+        ({**valid_signal, "status": "EXPIRED"}, "not in a broadcastable state"),
+        ({**valid_signal, "status": "REJECTED"}, "not in a broadcastable state"),
+        ({**valid_signal, "status": None}, "not in a broadcastable state"),
+        ({**valid_signal, "status": ["VALID"]}, "not in a broadcastable state"),
+        ({k: v for k, v in valid_signal.items() if k != "status"},
+         "not in a broadcastable state"),
         ({**valid_signal, "detail": None}, "could not be confirmed"),
         ({**valid_signal, "detail": ""}, "could not be confirmed"),
         ({**valid_signal, "detail": []}, "could not be confirmed"),
@@ -1690,7 +1698,7 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
                 extracted["extracted_text"], "EURUSD SELL SL 1.05 TP1 1.04",
             )
             return {
-                "id": "SIG-A", "parser_status": "VALID",
+                "id": "SIG-A", "parser_status": "VALID", "status": "VALID",
                 "provider_id": "PROVIDER-A", "feed_id": "FEED-A",
                 "source": "FEED:FEED-A:TELEGRAM_BINDING:BINDING-A",
             }

@@ -670,6 +670,13 @@ async def _create_and_broadcast(
             "Parser did not accept this signal. Review the text and feed policy; "
             "no subscriber card was sent."
         )
+    # Replay can return an existing, subsequently EXPIRED ledger row.
+    # A VALID parse alone cannot authorise re-sending its old trade card.
+    if signal.get("status") != "VALID":
+        return (
+            "Signal is not in a broadcastable state. No subscriber card was "
+            "sent; check provider history."
+        )
     if not _valid_signal_id(signal.get("id")):
         return uncertain
 

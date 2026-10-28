@@ -195,6 +195,15 @@ identifier or exception text reaches operator warnings, and verifies that
 other recipients still get an attempted delivery. It is not a real Telegram
 delivery or external acceptance receipt.
 
+Backend signal-creation results are also untrusted. Even when the parser
+returns `VALID`, a persisted signal receipt must have ledger `status: VALID`
+to authorise a new subscriber card. The backend may return an existing signal
+for a duplicate source message; if its state has since become `EXPIRED`,
+it must not be re-broadcast. Missing, malformed, rejected or expired status
+receipts fail closed before recipient lookup, with provider-history guidance.
+Offline negative tests prove only this client response guard, not real
+Telegram/broker delivery or atomic expiry/rebinding assurance.
+
 Backend signal-creation results are also untrusted. The bot does not echo
 arbitrary `detail` or `parser_error` strings into provider Telegram replies
 and does not broadcast a card for malformed or missing signal identifiers.
