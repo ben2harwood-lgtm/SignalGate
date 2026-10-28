@@ -35,6 +35,18 @@ unchanged on a shared-chat refusal; its text, source and tokens are not echoed.
 This is tested with synthetic handler updates only and is **not** evidence of
 real Telegram callback delivery, a broker-demo trade or external assurance.
 
+## Screenshot edit-text privacy (offline guard)
+
+A user's pending private screenshot edit can persist in Telegram user-scoped
+bot state. Ordinary text in other chats is ignored, and text sent from a
+group/supergroup/channel or a message with missing chat metadata cannot consume
+that private preview, fetch provider-source authority or create/broadcast a
+signal. When a shared-chat text arrives while an edit is pending, the bot gives
+generic private-chat guidance without echoing either text, source details or
+pending tokens; the private candidate stays available for a private correction.
+The protection has synthetic offline positive/negative coverage, not real
+Telegram delivery or external acceptance evidence.
+
 ## Broadcast recipient ownership and source rebinds (offline guard)
 
 Signal creation returns a persisted provider/feed/source identity. Before
