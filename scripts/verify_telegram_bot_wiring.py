@@ -1342,6 +1342,10 @@ def check_broadcast_recipient_feed_binding() -> None:
     )
     context = SimpleNamespace(bot=OfflineBot())
     bad = (
+        # An HTTP 200 error payload must not authorise a broadcast merely by
+        # echoing valid binding metadata and a recipient list.
+        dict(valid, detail="revoked despite matching identifiers"),
+        dict(valid, detail=None),
         dict(valid, binding_id="BINDING-B"),
         dict(valid, provider_id="PROVIDER-B"),
         dict(valid, feed_id="FEED-B"),
