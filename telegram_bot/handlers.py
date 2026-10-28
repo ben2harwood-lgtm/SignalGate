@@ -1222,15 +1222,17 @@ async def _active_recipients(
         if not isinstance(recipient, dict):
             return None
         telegram_id = recipient.get("telegram_user_id")
+        # Subscriber identities are positive Telegram *user* IDs, not negative
+        # group/channel chat IDs. Refuse noncanonical or out-of-range values
+        # before delivering to any recipient in this response.
         if (
             not isinstance(telegram_id, str)
             or not telegram_id.isascii()
-            or not (
-                telegram_id.isdigit()
-                or (telegram_id.startswith("-") and telegram_id[1:].isdigit())
-            )
+            or not telegram_id.isdecimal()
+            or telegram_id.startswith("0")
+            or len(telegram_id) > 16
+            or int(telegram_id) > (1 << 52) - 1
         ):
-            # Malformed API data must never turn into a different chat target.
             return None
         recipients.add(telegram_id)
     return list(recipients)

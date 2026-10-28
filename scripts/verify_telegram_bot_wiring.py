@@ -1437,6 +1437,20 @@ def check_broadcast_recipient_feed_binding() -> None:
         ["malformed", "body"],
         None,
     )
+    # Even a valid subscriber first in the list must receive NO card if a
+    # later target is a negative group/channel ID, zero, noncanonical,
+    # over-52-bit or non-string identity.
+    bad += tuple(
+        dict(valid, recipients=[
+            {"telegram_user_id": "900000000011"},
+            {"telegram_user_id": malformed},
+        ])
+        for malformed in (
+            "-1001234567890", "0", "0900000000011",
+            "4503599627370496", "9999999999999999999",
+            900000000011,
+        )
+    )
     with (
         patch.object(handlers, "_provider_source_status", source_status),
         patch.object(handlers, "_backend_post", post),

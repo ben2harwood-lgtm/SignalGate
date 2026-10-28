@@ -39,6 +39,12 @@ prevents a prior feed's signal being broadcast to a later feed's subscribers.
 Recipient enumeration also refuses a provider or feed paused after signal
 creation but before recipient lookup (HTTP 403; no subscriber cards). Pausing
 a source **after** the recipient lookup remains a non-atomic delivery window.
+Subscriber targets must be canonical, positive Telegram **user** IDs, not
+negative group/channel chat IDs. The bot refuses zero, negative, leading-zero,
+non-ASCII, non-decimal, non-string and out-of-range (>52-bit) identities before
+sending **any** card from that recipient list, even if earlier entries are valid.
+This is an offline-tested routing boundary, not a substitute for backend tenancy.
+
 This is an offline-tested cross-tenant guard, **not** a guarantee of atomic
 revocation during Telegram delivery and not actual Telegram/MT5 acceptance.
 
