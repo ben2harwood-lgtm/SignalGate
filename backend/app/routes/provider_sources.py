@@ -354,6 +354,10 @@ def telegram_provider_source_recipients(
     if resolved is None:
         raise HTTPException(status_code=403, detail="Telegram provider source not connected")
     binding, provider, feed = resolved
+    # A feed or provider can be paused after its signal was stored but before
+    # Telegram fetches recipients. Never enumerate for a paused source.
+    if provider.paused or feed.paused:
+        raise HTTPException(status_code=403, detail="Provider/feed is paused")
     users = crud.list_active_users_for_feed(db, provider.id, feed.id)
     return {
         # Bind this receipt to the exact current Telegram source and feed.
