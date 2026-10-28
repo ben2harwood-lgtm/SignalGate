@@ -201,8 +201,13 @@ to authorise a new subscriber card. The backend may return an existing signal
 for a duplicate source message; if its state has since become `EXPIRED`,
 it must not be re-broadcast. Missing, malformed, rejected or expired status
 receipts fail closed before recipient lookup, with provider-history guidance.
-Offline negative tests prove only this client response guard, not real
-Telegram/broker delivery or atomic expiry/rebinding assurance.
+The hosted Telegram signal route also refreshes expiry on duplicate-source
+responses. A previously VALID signal past its deadline becomes EXPIRED before
+the bot can consider another card; its id and original deadline are preserved,
+and repeated replays do not duplicate the expiry audit event. SQLite and
+PostgreSQL regression checks cover this server-side temporal guard. These
+offline checks do not prove Telegram/broker delivery or atomic
+expiry/rebinding assurance.
 
 Backend signal-creation results are also untrusted. The bot does not echo
 arbitrary `detail` or `parser_error` strings into provider Telegram replies
