@@ -153,6 +153,18 @@ replace deployed log-review or independent security assurance.
 The same offline smoke refuses Python `-O`, `-OO` or `PYTHONOPTIMIZE`,
 which would otherwise disable its assertion-based checks and print a false PASS.
 
+## Subscriber invite-response integrity (offline verified only)
+
+The hosted bot's `/join INVITE_TOKEN` flow checks that registration returns the
+same active Telegram user before attempting the one-time subscription invite.
+An acceptance response counts as confirmed only when the backend returns an
+active subscription with nonempty subscription/account/provider/feed identifiers
+and names. Malformed or error-shaped HTTP 200 responses never produce a
+"Joined" receipt or disclose arbitrary backend `detail` text or invite tokens.
+An unconfirmed response may still have consumed an invite, so subscribers should
+check membership with their provider before retrying. This is verified using
+synthetic offline response fixtures only; no real subscriber or provider was used.
+
 ## Security properties
 
 - one-time token stored only as SHA-256 hash;

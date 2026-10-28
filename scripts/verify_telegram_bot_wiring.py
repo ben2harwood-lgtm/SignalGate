@@ -619,6 +619,91 @@ def check_hosted_legacy_provider_status_never_grants_identity() -> None:
     assert "Role: screenshot provider" not in replies[1]
 
 
+def check_join_invite_backend_response_integrity() -> None:
+    """Hosted invite joins require matching identity and active membership receipts."""
+    secret = "OFFLINE-SERVER-DETAIL-NOT-FOR-TELEGRAM"
+    invite = "OFFLINE-ONE-TIME-INVITE-TOKEN"
+    licence = "OFFLINE-ONE-TIME-LICENCE"
+    registration = {
+        "id": "USER-OFFLINE", "telegram_user_id": "123456",
+        "status": "ACTIVE", "license_key": licence,
+    }
+    acceptance = {
+        "subscription_id": "SUB-OFFLINE", "account_id": "ACC-OFFLINE",
+        "provider_id": "PROVIDER-OFFLINE", "provider_name": "Test Provider",
+        "provider_display_name": None, "feed_id": "FEED-OFFLINE",
+        "feed_name": "Test Feed", "status": "ACTIVE",
+    }
+
+    def exercise(register_body, accept_body):
+        replies, calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def fake_post(path, **kwargs):
+            calls.append(path)
+            if path == "/register_user":
+                assert kwargs["json"]["telegram_user_id"] == "123456"
+                return register_body
+            assert path == "/subscriptions/accept"
+            assert kwargs["json"] == {
+                "invite_token": invite, "telegram_user_id": "123456",
+            }
+            return accept_body
+
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(
+                id=123456, username="offline", first_name="Test"
+            ),
+            message=SimpleNamespace(reply_text=reply_text),
+        )
+        with patch.object(handlers, "_backend_post", fake_post):
+            asyncio.run(handlers.join_feed(update, SimpleNamespace(args=[invite])))
+        assert len(replies) == 1
+        return replies[0], calls
+
+    invalid_registrations = (
+        None, [], {"detail": {"internal": secret}}, {},
+        {**registration, "telegram_user_id": "OTHER-USER"},
+        {**registration, "status": "INACTIVE"},
+        {**registration, "id": None},
+    )
+    for body in invalid_registrations:
+        reply, calls = exercise(body, acceptance)
+        assert calls == ["/register_user"], "Bad identity consumed a feed invite"
+        assert "nothing was joined" in reply.lower()
+        assert secret not in reply and invite not in reply and licence not in reply
+
+    invalid_acceptances = (
+        None, [], {"detail": f"token={invite}; {secret}"},
+        {"detail": {"trace": secret}}, {},
+        {**acceptance, "status": "PENDING"},
+        {**acceptance, "subscription_id": None},
+        {**acceptance, "feed_id": []},
+        {**acceptance, "feed_name": ""},
+    )
+    for body in invalid_acceptances:
+        reply, calls = exercise(registration, body)
+        assert calls == ["/register_user", "/subscriptions/accept"]
+        assert not reply.startswith("Joined "), "Unconfirmed join claimed success"
+        assert secret not in reply and invite not in reply and licence not in reply
+        assert "check feed membership" in reply.lower() or "not confirmed" in reply.lower()
+
+    reply, calls = exercise(registration, acceptance)
+    assert calls == ["/register_user", "/subscriptions/accept"]
+    assert "Joined Test Provider — Test Feed." in reply
+    assert licence in reply and "Demo mode only" in reply
+    assert invite not in reply
+
+    reply, _ = exercise(
+        {**registration, "license_key": [secret]},
+        {**acceptance, "provider_display_name": {"malformed": secret}},
+    )
+    assert reply.startswith("Joined Test Provider — Test Feed.")
+    assert secret not in reply and "one-time EA licence" not in reply
+
+
 def check_connectprovider_error_does_not_echo_backend_secrets() -> None:
     """Backend error detail is untrusted and cannot enter Telegram replies."""
     secret = "SYNTHETIC_BACKEND_SECRET_DO_NOT_ECHO"
@@ -1238,6 +1323,7 @@ def main() -> int:
     check_edit_text_bound_to_preview_across_authorisation_await()
     check_hosted_legacy_provider_status_never_grants_identity()
     check_connectprovider_error_does_not_echo_backend_secrets()
+    check_join_invite_backend_response_integrity()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")
     return 0
 

@@ -191,7 +191,15 @@ async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         },
         headers=_registration_headers(),
     )
-    if registration is None or registration.get("detail"):
+    # Malformed/other-user registration is not authority to use an invite.
+    if (
+        not isinstance(registration, dict)
+        or registration.get("detail")
+        or registration.get("telegram_user_id") != str(user.id)
+        or registration.get("status") != "ACTIVE"
+        or not isinstance(registration.get("id"), str)
+        or not registration["id"].strip()
+    ):
         await update.message.reply_text(
             "I couldn't confirm your SignalGate registration. Nothing was joined."
         )
@@ -210,16 +218,35 @@ async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "SignalGate backend is unreachable. The invite was not confirmed."
         )
         return
-    if result.get("detail"):
+    if not isinstance(result, dict) or result.get("detail"):
+        # Do not disclose backend diagnostic/token text in a Telegram reply.
+        # An unconfirmed POST may still have consumed the one-time invite.
         await update.message.reply_text(
-            f"Invite not accepted: {result.get('detail')}"
+            "Invite acceptance could not be confirmed. Check feed membership "
+            "with your provider before retrying this one-time token."
         )
         return
 
+    required_fields = (
+        "subscription_id", "account_id", "provider_id", "provider_name",
+        "feed_id", "feed_name",
+    )
+    if result.get("status") != "ACTIVE" or any(
+        not isinstance(result.get(field), str) or not result[field].strip()
+        for field in required_fields
+    ):
+        # A malformed HTTP 200 must not produce a false Joined receipt.
+        await update.message.reply_text(
+            "Invite acceptance could not be confirmed. Check feed membership "
+            "with your provider before retrying this one-time token."
+        )
+        return
+
+    display_name = result.get("provider_display_name")
     provider_name = (
-        result.get("provider_display_name")
-        or result.get("provider_name")
-        or "the provider"
+        display_name
+        if isinstance(display_name, str) and display_name.strip()
+        else result["provider_name"]
     )
     message = (
         f"Joined {provider_name} — {result.get('feed_name', 'feed')}.\n"
@@ -227,7 +254,7 @@ async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Demo mode only. No live trades."
     )
     license_key = registration.get("license_key")
-    if license_key:
+    if isinstance(license_key, str) and license_key:
         message += (
             "\n\nYour one-time EA licence is:\n"
             f"{license_key}\n"
