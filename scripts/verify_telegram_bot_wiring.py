@@ -1533,8 +1533,9 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
         "provider_name": "Provider A", "feed_id": "FEED-A",
         "feed_name": "Feed A", "source_type": "TELEGRAM", "status": "ACTIVE",
     }
+    # Real backend rebinding reuses the binding ID; feed/provider still change.
     source_b = {
-        "binding_id": "BINDING-B", "provider_id": "PROVIDER-B",
+        "binding_id": "BINDING-A", "provider_id": "PROVIDER-B",
         "provider_name": "Provider B", "feed_id": "FEED-B",
         "feed_name": "Feed B", "source_type": "TELEGRAM", "status": "ACTIVE",
     }
