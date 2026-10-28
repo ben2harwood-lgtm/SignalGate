@@ -1384,7 +1384,7 @@ def check_broadcast_recipient_feed_binding() -> None:
         "expiry_minutes": 5,
     }
     signal = {
-        "id": "SIGNAL-A",
+        "id": "SIG-0123456789ABCDEF",
         "parser_status": "VALID",
         "provider_id": "PROVIDER-A",
         "feed_id": "FEED-A",
