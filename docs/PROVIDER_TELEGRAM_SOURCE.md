@@ -234,7 +234,7 @@ which would otherwise disable its assertion-based checks and print a false PASS.
 The hosted bot must not display a newly issued one-time EA licence based only
 on an HTTP 200 from registration. The response must confirm the exact Telegram
 user identity, a nonempty internal user ID and ACTIVE status, with no error
-detail field; a licence value must be a bounded string (or absent). A malformed,
+detail field; a licence value must be a bounded printable ASCII string (or absent). A malformed,
 other-user, inactive or error-shaped response produces generic operator guidance,
 not a false registration receipt or disclosure of backend diagnostics. An
 ambiguous registration may already have issued a one-time key, so the provider
@@ -245,8 +245,12 @@ real Telegram delivery, broker-demo acceptance or external assurance.
 ## Subscriber invite-response integrity (offline verified only)
 
 The hosted bot's `/join INVITE_TOKEN` flow checks that registration returns the
-same active Telegram user before attempting the one-time subscription invite.
-An acceptance response counts as confirmed only when the backend returns an
+same active Telegram user and a bounded printable ASCII one-time licence (or
+no licence) before attempting the one-time subscription invite. Malformed,
+oversized, control-character or Unicode licence values refuse the join before
+the invite is submitted; the registration POST itself may still have consumed
+a newly issued key. An acceptance response counts as confirmed only when the
+backend returns an
 active subscription with nonempty subscription/account/provider/feed identifiers
 and names. Malformed or error-shaped HTTP 200 responses never produce a
 "Joined" receipt or disclose arbitrary backend `detail` text or invite tokens.

@@ -825,6 +825,9 @@ def check_start_registration_receipt_integrity() -> None:
         {**valid, "license_key": [secret]},
         {**valid, "license_key": {"debug": secret}},
         {**valid, "license_key": "X" * 129},
+        {**valid, "license_key": "SG-TEST\n" + secret},
+        {**valid, "license_key": "SG-TEST\x1b" + secret},
+        {**valid, "license_key": "SG-TEST\u202e" + secret},
     )
     for response in invalid:
         reply = exercise(response)
@@ -892,10 +895,16 @@ def check_join_invite_backend_response_integrity() -> None:
         {**registration, "status": "INACTIVE"},
         {**registration, "detail": ""},
         {**registration, "id": None},
+        {**registration, "license_key": [secret]},
+        {**registration, "license_key": {"debug": secret}},
+        {**registration, "license_key": "X" * 129},
+        {**registration, "license_key": "SG-TEST\n" + secret},
+        {**registration, "license_key": "SG-TEST\x1b" + secret},
+        {**registration, "license_key": "SG-TEST\u202e" + secret},
     )
     for body in invalid_registrations:
         reply, calls = exercise(body, acceptance)
-        assert calls == ["/register_user"], "Bad identity consumed a feed invite"
+        assert calls == ["/register_user"], "Malformed registration consumed a feed invite"
         assert "nothing was joined" in reply.lower()
         assert secret not in reply and invite not in reply and licence not in reply
 
@@ -921,10 +930,11 @@ def check_join_invite_backend_response_integrity() -> None:
     assert licence in reply and "Demo mode only" in reply
     assert invite not in reply
 
-    reply, _ = exercise(
-        {**registration, "license_key": [secret]},
+    reply, calls = exercise(
+        {**registration, "license_key": None},
         {**acceptance, "provider_display_name": {"malformed": secret}},
     )
+    assert calls == ["/register_user", "/subscriptions/accept"]
     assert reply.startswith("Joined Test Provider — Test Feed.")
     assert secret not in reply and "one-time EA licence" not in reply
 

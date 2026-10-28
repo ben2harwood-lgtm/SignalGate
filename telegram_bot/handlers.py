@@ -61,6 +61,16 @@ def _valid_signal_id(value: Any) -> bool:
     )
 
 
+def _safe_registration_license(value: Any) -> bool:
+    """One-time EA keys must be bounded, printable ASCII before any reply."""
+    return value is None or (
+        isinstance(value, str)
+        and len(value) <= 128
+        and value.isascii()
+        and value.isprintable()
+    )
+
+
 # --- backend helpers ------------------------------------------------------
 
 async def _backend_get(path: str, **kwargs) -> Optional[Any]:
@@ -230,13 +240,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             or registration.get("status") != "ACTIVE"
             or not isinstance(registration.get("id"), str)
             or not registration["id"].strip()
-            or (
-                registration.get("license_key") is not None
-                and (
-                    not isinstance(registration["license_key"], str)
-                    or len(registration["license_key"]) > 128
-                )
-            )
+            or not _safe_registration_license(registration.get("license_key"))
         ):
             await update.message.reply_text(
                 "Registration could not be confirmed. Check your account "
@@ -288,6 +292,7 @@ async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         or registration.get("status") != "ACTIVE"
         or not isinstance(registration.get("id"), str)
         or not registration["id"].strip()
+        or not _safe_registration_license(registration.get("license_key"))
     ):
         await update.message.reply_text(
             "I couldn't confirm your SignalGate registration. Nothing was joined."
