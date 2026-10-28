@@ -221,6 +221,19 @@ An unconfirmed response may still have consumed an invite, so subscribers should
 check membership with their provider before retrying. This is verified using
 synthetic offline response fixtures only; no real subscriber or provider was used.
 
+## Subscriber YES/NO decision receipt safety (offline verified only)
+
+A Telegram subscriber's YES/NO callback treats a backend decision POST as
+confirmed only when its response contains a known, string-typed decision
+result and no error-shaped `detail` key. Backend-provided `message`,
+unknown codes and malformed JSON roots are never reflected to subscribers.
+Known provider/feed pause, tenancy, subscription and missing-account refusals
+use fixed, locally controlled wording. An ambiguous POST response may still
+have recorded an approval or rejection: the bot instructs the subscriber
+to check current trade state before retrying rather than claiming no action.
+This is an isolated offline mock test, not an MT5 fill, real Telegram
+delivery or external acceptance receipt.
+
 ## Provider-source connection receipt integrity (offline verified only)
 
 The one-time `/connectprovider` command now requires a well-formed `ACTIVE`

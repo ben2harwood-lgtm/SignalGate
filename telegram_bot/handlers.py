@@ -30,6 +30,12 @@ DECISION_MESSAGES = {
     "USER_NOT_FOUND": "You are not registered. Send /start first.",
     "USER_INACTIVE": "Your account is not active.",
     "SIGNAL_NOT_FOUND": "Signal not found.",
+    "TENANT_INVALID": "Signal provider/feed ownership could not be verified. No command created.",
+    "TENANT_INACTIVE": "Signal provider or feed is inactive. No command created.",
+    "PROVIDER_PAUSED": "Provider paused. No command created.",
+    "FEED_PAUSED": "Feed paused. No command created.",
+    "NOT_SUBSCRIBED": "You are not subscribed to this feed. No command created.",
+    "ACCOUNT_NOT_FOUND": "No active provider trading account found. No command created.",
 }
 
 
@@ -489,16 +495,25 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         json={"telegram_user_id": str(user.id)},
         headers=_registration_headers(),
     )
-    if not isinstance(result, dict) or not result.get("result"):
+    # A response may be malformed even after the backend has committed YES/NO.
+    # Only an allowlisted, typed result is safe for subscriber-facing text;
+    # never reflect backend `message`, unknown codes or error-shaped 200s.
+    code = result.get("result") if isinstance(result, dict) else None
+    if (
+        not isinstance(result, dict)
+        or "detail" in result
+        or not isinstance(code, str)
+        or code not in DECISION_MESSAGES
+    ):
         await query.edit_message_text(
             "Decision could not be confirmed. Check the current trade state "
             "before retrying; the backend may already have processed it."
         )
         return
 
-    code = result.get("result", "")
-    message = DECISION_MESSAGES.get(code, result.get("message", code))
-    await query.edit_message_text(f"{query.message.text}\n\n➡️ {message}")
+    await query.edit_message_text(
+        f"{query.message.text}\n\n➡️ {DECISION_MESSAGES[code]}"
+    )
 
 
 # --- admin commands -------------------------------------------------------

@@ -69,12 +69,14 @@ def check_backend_http_fail_closed() -> None:
 
 
 def check_unconfirmed_decision_does_not_claim_approval() -> None:
-    """Even a malformed nominally successful body must not produce APPROVED UI."""
-    seen = []
-    called = []
-    async def fake_post(path, **kwargs):
+    """No untrusted backend decision code/diagnostics can reach a subscriber."""
+    seen, called = [], []
+    secret = "SYNTHETIC-DECISION-TOKEN-NOT-FOR-TELEGRAM"
+    current_response = None
+
+    async def fake_post(path, **_kwargs):
         called.append(path)
-        return {"detail": "backend error without result"}
+        return current_response
 
     class Query:
         data = "YES:SIG-TEST"
@@ -87,21 +89,68 @@ def check_unconfirmed_decision_does_not_claim_approval() -> None:
         async def edit_message_text(self, message):
             seen.append(message)
 
-    with patch.object(handlers, "_backend_post", fake_post):
-        asyncio.run(handlers.on_decision(SimpleNamespace(callback_query=Query()), None))
-    assert len(seen) == 1 and "could not be confirmed" in seen[0].lower()
-    assert "Approved. Waiting" not in seen[0]
-    assert called == ["/signals/SIG-TEST/approve"]
+    async def exercise(payload, decision="YES"):
+        nonlocal current_response
+        current_response = payload
+        seen.clear()
+        called.clear()
+        query = Query()
+        query.data = f"{decision}:SIG-TEST"
+        await handlers.on_decision(SimpleNamespace(callback_query=query), None)
+        expected_path = (
+            f"/signals/SIG-TEST/{'approve' if decision == 'YES' else 'reject'}"
+        )
+        assert called == [expected_path], "Decision path changed unexpectedly"
+        assert len(seen) == 1, "A callback must produce one private response"
+        assert secret not in seen[0], "Backend diagnostic leaked into Telegram"
+        return seen[0]
 
-    called.clear()
-    seen.clear()
-    class InvalidQuery(Query):
-        data = "UNKNOWN:SIG-TEST"
-
     with patch.object(handlers, "_backend_post", fake_post):
-        asyncio.run(handlers.on_decision(SimpleNamespace(callback_query=InvalidQuery()), None))
-    assert seen == ["Invalid action."]
-    assert not called
+        invalid_responses = (
+            None,
+            ["unexpected", secret],
+            {"detail": secret},
+            {"result": "", "message": secret},
+            {"result": secret, "message": secret},
+            {"result": "NOT_A_REAL_DECISION_CODE", "message": secret},
+            {"result": ["APPROVED"], "message": secret},
+            {"result": {"code": "APPROVED"}, "message": secret},
+            {"result": 1, "message": secret},
+            {"result": "APPROVED", "detail": None, "message": secret},
+            {"result": "APPROVED", "detail": "", "message": secret},
+            {"result": "APPROVED", "detail": {"trace": secret}, "message": secret},
+        )
+        for payload in invalid_responses:
+            for decision in ("YES", "NO"):
+                summary = asyncio.run(exercise(payload, decision))
+                assert "could not be confirmed" in summary.lower(), payload
+                assert "Approved. Waiting" not in summary
+                assert "➡️" not in summary
+
+        # All actual backend result codes (including provider/feed tenancy
+        # refusals) render locally trusted wording, not untrusted 'message'.
+        for code, expected_message in handlers.DECISION_MESSAGES.items():
+            summary = asyncio.run(
+                exercise({"result": code, "message": secret})
+            )
+            assert summary == (
+                f"Synthetic demo trade card\n\n➡️ {expected_message}"
+            ), code
+        assert asyncio.run(exercise(
+            {"result": "REJECTED", "message": secret}, "NO"
+        )).endswith(handlers.DECISION_MESSAGES["REJECTED"])
+
+        called.clear()
+        seen.clear()
+
+        class InvalidQuery(Query):
+            data = "UNKNOWN:SIG-TEST"
+
+        asyncio.run(handlers.on_decision(
+            SimpleNamespace(callback_query=InvalidQuery()), None
+        ))
+        assert seen == ["Invalid action."]
+        assert not called
 
 
 
