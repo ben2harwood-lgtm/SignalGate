@@ -732,7 +732,10 @@ def check_hosted_legacy_provider_status_never_grants_identity() -> None:
 
     async def register(path, **_kwargs):
         calls.append(("POST", path))
-        return {"license_key": None}
+        return {
+            "id": "USER-OFFLINE", "telegram_user_id": "123456",
+            "status": "ACTIVE", "license_key": None,
+        }
 
     async def health(path, **_kwargs):
         calls.append(("GET", path))
@@ -770,6 +773,73 @@ def check_hosted_legacy_provider_status_never_grants_identity() -> None:
     assert "Role: tester" in replies[1]
     assert "Provider Portal" in replies[1]
     assert "Role: screenshot provider" not in replies[1]
+
+
+def check_start_registration_receipt_integrity() -> None:
+    """Untrusted /start registration receipts cannot disclose a licence."""
+    assert config.require_license is True
+    secret = "SYNTHETIC-REGISTRATION-DIAGNOSTIC-NOT-FOR-TELEGRAM"
+    licence = "SYNTHETIC-ONE-TIME-EA-LICENCE"
+    valid = {
+        "id": "USER-OFFLINE", "telegram_user_id": "123456",
+        "status": "ACTIVE", "license_key": licence,
+    }
+
+    async def disconnected(_user_id):
+        return None
+
+    def exercise(response):
+        replies, calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def fake_post(path, **kwargs):
+            calls.append(path)
+            assert path == "/register_user"
+            assert kwargs["json"]["telegram_user_id"] == "123456"
+            assert kwargs["headers"] == handlers._registration_headers()
+            return response
+
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(
+                id=123456, username="offline", first_name="Test"
+            ),
+            message=SimpleNamespace(reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers, "_provider_source_status", disconnected),
+            patch.object(handlers, "_backend_post", fake_post),
+        ):
+            asyncio.run(handlers.start(update, None))
+        assert calls == ["/register_user"]
+        assert len(replies) == 1
+        return replies[0]
+
+    invalid = (
+        None, [], {}, {"detail": secret},
+        {**valid, "detail": None},
+        {**valid, "telegram_user_id": "OTHER-USER"},
+        {**valid, "status": "INACTIVE"},
+        {**valid, "id": None}, {**valid, "id": " "},
+        {**valid, "license_key": [secret]},
+        {**valid, "license_key": {"debug": secret}},
+        {**valid, "license_key": "X" * 129},
+    )
+    for response in invalid:
+        reply = exercise(response)
+        assert "registration could not be confirmed" in reply.lower()
+        assert "demo tester registered" not in reply.lower()
+        assert secret not in reply and licence not in reply
+        assert "one-time EA licence" not in reply
+
+    reply = exercise(valid)
+    assert "demo tester registered" in reply.lower()
+    assert licence in reply and "Demo mode only" in reply
+    assert "/connectprovider TOKEN" in reply
+    reply = exercise({**valid, "license_key": None})
+    assert "demo tester registered" in reply.lower()
+    assert "one-time EA licence" not in reply
 
 
 def check_join_invite_backend_response_integrity() -> None:
@@ -1885,6 +1955,7 @@ def main() -> int:
     check_provider_source_status_requires_active_typed_binding()
     check_hosted_legacy_provider_status_never_grants_identity()
     check_connectprovider_error_does_not_echo_backend_secrets()
+    check_start_registration_receipt_integrity()
     check_join_invite_backend_response_integrity()
     check_connectprovider_success_receipt_integrity()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")

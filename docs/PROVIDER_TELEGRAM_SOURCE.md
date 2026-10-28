@@ -229,6 +229,19 @@ replace deployed log-review or independent security assurance.
 The same offline smoke refuses Python `-O`, `-OO` or `PYTHONOPTIMIZE`,
 which would otherwise disable its assertion-based checks and print a false PASS.
 
+## /start registration receipt privacy (offline verified only)
+
+The hosted bot must not display a newly issued one-time EA licence based only
+on an HTTP 200 from registration. The response must confirm the exact Telegram
+user identity, a nonempty internal user ID and ACTIVE status, with no error
+detail field; a licence value must be a bounded string (or absent). A malformed,
+other-user, inactive or error-shaped response produces generic operator guidance,
+not a false registration receipt or disclosure of backend diagnostics. An
+ambiguous registration may already have issued a one-time key, so the provider
+or operator should inspect the account rather than assume that retrying will
+recover it. Offline synthetic negative and positive cases do not establish
+real Telegram delivery, broker-demo acceptance or external assurance.
+
 ## Subscriber invite-response integrity (offline verified only)
 
 The hosted bot's `/join INVITE_TOKEN` flow checks that registration returns the

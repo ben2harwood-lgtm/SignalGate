@@ -220,9 +220,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             },
             headers=_registration_headers(),
         )
-        if registration is None:
+        # /start can issue a one-time EA licence. Never show one on an HTTP
+        # 200 response unless the backend confirms this exact active user.
+        # A failed/ambiguous registration may still have consumed the key.
+        if (
+            not isinstance(registration, dict)
+            or "detail" in registration
+            or registration.get("telegram_user_id") != str(user.id)
+            or registration.get("status") != "ACTIVE"
+            or not isinstance(registration.get("id"), str)
+            or not registration["id"].strip()
+            or (
+                registration.get("license_key") is not None
+                and (
+                    not isinstance(registration["license_key"], str)
+                    or len(registration["license_key"]) > 128
+                )
+            )
+        ):
             await update.message.reply_text(
-                "SignalGate backend is unreachable. Registration was not confirmed."
+                "Registration could not be confirmed. Check your account "
+                "with the SignalGate operator before trying again."
             )
             return
         license_key = registration.get("license_key")
