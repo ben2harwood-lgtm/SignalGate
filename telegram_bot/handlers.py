@@ -99,7 +99,21 @@ async def _provider_source_status(
         params={"telegram_user_id": str(telegram_user_id)},
         headers=_registration_headers(),
     )
-    if not data or data.get("detail"):
+    # A successful HTTP status alone is not provider authority. The backend
+    # lookup must return an active, typed Telegram binding for this identity.
+    # Treat malformed arrays, error-shaped 200s and revoked/incomplete bindings
+    # as disconnected; never fall back to local identity in hosted mode.
+    if not isinstance(data, dict) or "detail" in data:
+        return None
+    if data.get("status") != "ACTIVE" or data.get("source_type") != "TELEGRAM":
+        return None
+    required_fields = (
+        "binding_id", "provider_id", "provider_name", "feed_id", "feed_name",
+    )
+    if any(
+        not isinstance(data.get(field), str) or not data[field].strip()
+        for field in required_fields
+    ):
         return None
     return data
 
