@@ -127,18 +127,26 @@ def check_unconfirmed_decision_does_not_claim_approval() -> None:
                 assert "Approved. Waiting" not in summary
                 assert "➡️" not in summary
 
-        # All actual backend result codes (including provider/feed tenancy
-        # refusals) render locally trusted wording, not untrusted 'message'.
+        # Even a recognised code is unsafe when it contradicts the called
+        # endpoint. NO can report ALREADY_APPROVED (first decision wins), but
+        # never a newly APPROVED trade; YES cannot report a newly REJECTED NO.
+        # Check every known backend code against BOTH real decision routes.
         for code, expected_message in handlers.DECISION_MESSAGES.items():
-            summary = asyncio.run(
-                exercise({"result": code, "message": secret})
-            )
-            assert summary == (
-                f"Synthetic demo trade card\n\n➡️ {expected_message}"
-            ), code
-        assert asyncio.run(exercise(
-            {"result": "REJECTED", "message": secret}, "NO"
-        )).endswith(handlers.DECISION_MESSAGES["REJECTED"])
+            for decision in ("YES", "NO"):
+                summary = asyncio.run(
+                    exercise({"result": code, "message": secret}, decision)
+                )
+                if code in handlers.DECISION_ALLOWED_BY_ACTION[decision]:
+                    assert summary == (
+                        f"Synthetic demo trade card\n\n➡️ {expected_message}"
+                    ), (decision, code)
+                else:
+                    assert "could not be confirmed" in summary.lower(), (decision, code)
+                    assert "➡️" not in summary, (decision, code)
+                assert secret not in summary
+        assert "REJECTED" not in handlers.DECISION_ALLOWED_BY_ACTION["YES"]
+        assert "APPROVED" not in handlers.DECISION_ALLOWED_BY_ACTION["NO"]
+        assert "ALREADY_APPROVED" in handlers.DECISION_ALLOWED_BY_ACTION["NO"]
 
         called.clear()
         seen.clear()
