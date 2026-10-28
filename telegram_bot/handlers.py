@@ -534,11 +534,9 @@ async def _create_and_broadcast(
             )
             sent += 1
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "send card to %s failed: %s",
-                recipient_chat_id,
-                exc,
-            )
+            # Telegram transport exceptions can contain bot-token URLs and
+            # recipient chat IDs. Log only the safe exception class.
+            logger.warning("send card failed: %s", type(exc).__name__)
     return f"Signal {signal['id']} created and card sent to {sent} subscriber(s)."
 
 

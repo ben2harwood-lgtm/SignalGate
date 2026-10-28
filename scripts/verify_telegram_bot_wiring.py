@@ -936,6 +936,66 @@ def check_overlapping_screenshot_attempts_fail_closed() -> None:
     asyncio.run(exercise_delayed_extraction())
 
 
+
+def check_broadcast_failure_logs_are_private() -> None:
+    """Synthetic Telegram send failures do not leak recipients or token-bearing errors."""
+    failed_chat = "900000000001"
+    good_chat = "900000000002"
+    secret = "OFFLINE-TELEGRAM-BOT-TOKEN-NOT-FOR-LOGS"
+    warnings = []
+    sends = []
+
+    async def source_status(_user_id):
+        return {"feed_id": "FEED-OFFLINE", "expiry_minutes": 5}
+
+    async def backend_post(path, **kwargs):
+        assert path == "/provider-sources/telegram/signals"
+        assert kwargs["json"]["raw_text"] == "XAUUSD BUY SL 1 TP1 2"
+        return {"id": "SIG-OFFLINE", "parser_status": "VALID"}
+
+    async def recipients(_update, source):
+        assert source["feed_id"] == "FEED-OFFLINE"
+        return [failed_chat, good_chat]
+
+    class OfflineBot:
+        async def send_message(self, **kwargs):
+            sends.append(kwargs["chat_id"])
+            if kwargs["chat_id"] == failed_chat:
+                raise RuntimeError(
+                    f"https://api.telegram.org/bot{secret}/sendMessage?"
+                    f"chat_id={failed_chat}"
+                )
+
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123456),
+        effective_chat=SimpleNamespace(id=123456),
+        effective_message=SimpleNamespace(message_id=99),
+    )
+    context = SimpleNamespace(bot=OfflineBot())
+    with (
+        patch.object(handlers, "_provider_source_status", source_status),
+        patch.object(handlers, "_backend_post", backend_post),
+        patch.object(handlers, "_active_recipients", recipients),
+        patch.object(
+            handlers.logger,
+            "warning",
+            lambda fmt, *args: warnings.append(fmt % args),
+        ),
+        patch("keyboards.format_trade_card", lambda *_args: "OFFLINE-TRADE-CARD"),
+        patch("keyboards.trade_card_keyboard", lambda *_args: "OFFLINE-BUTTONS"),
+    ):
+        summary = asyncio.run(
+            handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+        )
+
+    assert sends == [failed_chat, good_chat], "One failed send stopped the next recipient"
+    assert summary == "Signal SIG-OFFLINE created and card sent to 1 subscriber(s)."
+    assert warnings == ["send card failed: RuntimeError"], (
+        "A transport error leaked Telegram recipient or exception details"
+    )
+    assert all(secret not in item for item in warnings)
+    assert all(failed_chat not in item and good_chat not in item for item in warnings)
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -974,6 +1034,7 @@ def main() -> int:
         "Screenshot/photo/text handler routing incomplete"
     )
     check_telegram_httpx_token_log_privacy()
+    check_broadcast_failure_logs_are_private()
     check_backend_http_fail_closed()
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()

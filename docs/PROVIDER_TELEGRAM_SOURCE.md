@@ -121,6 +121,15 @@ an **in-memory preview integrity guard**, not an authentication credential, a
 persistent queue or broker execution acceptance evidence. Restarting the bot
 invalidates old preview buttons; providers must send a new screenshot.
 
+A failed outgoing subscriber-card delivery logs **only the exception class**,
+not the recipient's Telegram chat ID or arbitrary Telegram exception text
+(which could contain a bot-token URL). Delivery attempts continue for other
+recipients and the provider is shown only the aggregate sent count. The offline
+bot smoke injects a synthetic token-bearing transport failure, asserts no
+identifier or exception text reaches operator warnings, and verifies that
+other recipients still get an attempted delivery. It is not a real Telegram
+delivery or external acceptance receipt.
+
 Bot transport logging is intentionally restricted to WARNING and above for
 `httpx` and `httpcore`: HTTPX INFO request diagnostics include Telegram Bot API
 URLs containing the bot token. Never enable transport DEBUG/INFO with real bot
