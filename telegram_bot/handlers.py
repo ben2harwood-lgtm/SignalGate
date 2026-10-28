@@ -584,11 +584,33 @@ async def _create_and_broadcast(
     if not isinstance(signal.get("id"), str) or not signal["id"].strip():
         return uncertain
 
+    # The original source binding and the persisted signal must describe the
+    # same provider/feed. A rebind during signal creation cannot turn an older
+    # source lookup into authority to broadcast a newer feed's signal.
+    if source:
+        expected_source = (
+            f"FEED:{source['feed_id']}:TELEGRAM_BINDING:{source['binding_id']}"
+        )
+        if (
+            signal.get("provider_id") != source["provider_id"]
+            or signal.get("feed_id") != source["feed_id"]
+            or signal.get("source") != expected_source
+        ):
+            return (
+                "Signal creation was confirmed but its provider/feed binding "
+                "changed. No subscriber card was sent; check provider history."
+            )
+
     from keyboards import format_trade_card, trade_card_keyboard
 
     card = format_trade_card(signal, expiry)
     keyboard = trade_card_keyboard(signal["id"])
-    recipients = await _active_recipients(update, source)
+    recipients = await _active_recipients(update, source, signal=signal)
+    if recipients is None:
+        return (
+            "Signal was created but subscriber feed ownership could not be "
+            "confirmed. No subscriber card was sent; check provider history."
+        )
     sent = 0
     for recipient_chat_id in recipients:
         try:
@@ -1064,28 +1086,55 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _active_recipients(
     update: Update,
     source: Optional[Dict[str, Any]] = None,
-) -> List[str]:
-    """Return only eligible recipients for the provider source/feed."""
+    signal: Optional[Dict[str, Any]] = None,
+) -> Optional[List[str]]:
+    """Fail closed if recipient ownership differs from the persisted signal."""
     if source:
+        if not isinstance(signal, dict) or any(
+            signal.get(field) != source.get(field)
+            for field in ("provider_id", "feed_id")
+        ):
+            return None
         data = await _backend_get(
             "/provider-sources/telegram/recipients",
             params={"telegram_user_id": str(update.effective_user.id)},
             headers=_registration_headers(),
         )
+        if not isinstance(data, dict) or any(
+            data.get(field) != source.get(field)
+            for field in ("binding_id", "provider_id", "feed_id")
+        ):
+            # The Telegram identity may have been rebound to another tenant or
+            # feed between signal creation and recipient enumeration.
+            return None
         recipients: set[str] = set()
     else:
-        # Legacy local-demo behaviour includes the submitting provider chat.
+        # Local-demo compatibility only; hosted sources use the scoped receipt.
         data = await _backend_get(
             "/signals/recipients",
             headers=_signal_provider_headers(update.effective_user.id),
         )
         recipients = {str(update.effective_chat.id)}
+        if data is None:
+            return list(recipients)
 
-    if data and data.get("recipients"):
-        for recipient in data["recipients"]:
-            telegram_id = recipient.get("telegram_user_id")
-            if telegram_id:
-                recipients.add(str(telegram_id))
+    if not isinstance(data, dict) or not isinstance(data.get("recipients"), list):
+        return None
+    for recipient in data["recipients"]:
+        if not isinstance(recipient, dict):
+            return None
+        telegram_id = recipient.get("telegram_user_id")
+        if (
+            not isinstance(telegram_id, str)
+            or not telegram_id.isascii()
+            or not (
+                telegram_id.isdigit()
+                or (telegram_id.startswith("-") and telegram_id[1:].isdigit())
+            )
+        ):
+            # Malformed API data must never turn into a different chat target.
+            return None
+        recipients.add(telegram_id)
     return list(recipients)
 
 

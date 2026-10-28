@@ -25,6 +25,18 @@ Telegram screenshot -> bot -> tenant-bound extraction preview -> provider human 
 
 The backend source identity is the internal binding id, not a shared provider secret or raw Telegram id.
 
+## Broadcast recipient ownership and source rebinds (offline guard)
+
+Signal creation returns a persisted provider/feed/source identity. Before
+broadcasting subscriber cards, the bot checks that identity against the
+original Telegram binding; the separately queried recipient list must carry
+matching binding/provider/feed identifiers. If that identity was rebound
+between creation and enumeration, or if any recipient identifier is malformed,
+the bot **sends no cards** and tells the provider to inspect history. This
+prevents a prior feed's signal being broadcast to a later feed's subscribers.
+This is an offline-tested cross-tenant guard, **not** a guarantee of atomic
+revocation during Telegram delivery and not actual Telegram/MT5 acceptance.
+
 ## Revocation
 
 The Provider Portal lists active source bindings. Revoking a binding immediately prevents that Telegram identity from:

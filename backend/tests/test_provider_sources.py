@@ -113,6 +113,17 @@ def test_rebinding_requires_a_new_provider_owned_token_and_is_audited(client, db
     assert a.json()["binding_id"] == b.json()["binding_id"]
     assert b.json()["provider_id"] == p2.id
     assert b.json()["feed_id"] == f2.id
+    # A recipient lookup after rebind must identify the NEW tenant/feed,
+    # never silently return that list as if it belonged to the old source.
+    scoped = client.get(
+        "/provider-sources/telegram/recipients",
+        params={"telegram_user_id": "9202"},
+    )
+    assert scoped.status_code == 200
+    assert scoped.json()["binding_id"] == b.json()["binding_id"]
+    assert scoped.json()["provider_id"] == p2.id
+    assert scoped.json()["feed_id"] == f2.id
+    assert scoped.json()["provider_id"] != p1.id
 
     db.expire_all()
     binding = db.get(models.ProviderSourceBinding, b.json()["binding_id"])
@@ -247,6 +258,8 @@ def test_bound_source_recipients_are_only_that_feeds_consented_subscribers(clien
         params={"telegram_user_id": "9207"},
     )
     assert response.status_code == 200
+    assert response.json()["provider_id"] == p1.id
+    assert response.json()["feed_id"] == f1.id
     ids = {x["telegram_user_id"] for x in response.json()["recipients"]}
     assert ids == {"9205"}
 

@@ -1295,6 +1295,106 @@ def check_overlapping_screenshot_attempts_fail_closed() -> None:
 
 
 
+
+def check_broadcast_recipient_feed_binding() -> None:
+    """A source rebind cannot send feed A's signal to feed B's recipients."""
+    source = {
+        "binding_id": "BINDING-A",
+        "provider_id": "PROVIDER-A",
+        "feed_id": "FEED-A",
+        "expiry_minutes": 5,
+    }
+    signal = {
+        "id": "SIGNAL-A",
+        "parser_status": "VALID",
+        "provider_id": "PROVIDER-A",
+        "feed_id": "FEED-A",
+        "source": "FEED:FEED-A:TELEGRAM_BINDING:BINDING-A",
+    }
+    valid = {
+        "binding_id": "BINDING-A",
+        "provider_id": "PROVIDER-A",
+        "feed_id": "FEED-A",
+        "recipients": [{"telegram_user_id": "900000000011"}],
+    }
+    sent = []
+    lookups = []
+
+    async def source_status(_user_id):
+        return source
+
+    async def post(_path, **_kwargs):
+        return response_signal
+
+    async def get(path, **_kwargs):
+        assert path == "/provider-sources/telegram/recipients"
+        lookups.append(path)
+        return response_recipients
+
+    class OfflineBot:
+        async def send_message(self, **kwargs):
+            sent.append(kwargs["chat_id"])
+
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123456),
+        effective_chat=SimpleNamespace(id=123456),
+        effective_message=SimpleNamespace(message_id=97),
+    )
+    context = SimpleNamespace(bot=OfflineBot())
+    bad = (
+        dict(valid, binding_id="BINDING-B"),
+        dict(valid, provider_id="PROVIDER-B"),
+        dict(valid, feed_id="FEED-B"),
+        {"recipients": valid["recipients"]},
+        {"detail": "backend error", **{"recipients": valid["recipients"]}},
+        {"binding_id": "BINDING-A", "provider_id": "PROVIDER-A",
+         "feed_id": "FEED-A", "recipients": ["900000000011"]},
+        dict(valid, recipients=[{"telegram_user_id": "900000000011"},
+                                {"telegram_user_id": "not-a-chat-id"}]),
+        ["malformed", "body"],
+        None,
+    )
+    with (
+        patch.object(handlers, "_provider_source_status", source_status),
+        patch.object(handlers, "_backend_post", post),
+        patch.object(handlers, "_backend_get", get),
+        patch("keyboards.format_trade_card", lambda *_args: "OFFLINE-TRADE-CARD"),
+        patch("keyboards.trade_card_keyboard", lambda *_args: "OFFLINE-BUTTONS"),
+    ):
+        response_signal = signal
+        response_recipients = valid
+        result = asyncio.run(
+            handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+        )
+        assert "sent to 1 subscriber" in result.lower()
+        assert sent == ["900000000011"]
+        for payload in bad:
+            sent.clear()
+            response_recipients = payload
+            result = asyncio.run(
+                handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+            )
+            assert not sent, "Mismatched/malformed feed receipt sent a card"
+            assert "no subscriber card was sent" in result.lower()
+        # A rebind between initial provider status and signal creation must
+        # also refuse before ANY recipient lookup.
+        sent.clear()
+        before = len(lookups)
+        response_signal = dict(signal, provider_id="PROVIDER-B")
+        response_recipients = valid
+        result = asyncio.run(
+            handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+        )
+        assert not sent and len(lookups) == before
+        assert "no subscriber card was sent" in result.lower()
+        response_signal = dict(signal, source="FEED:FEED-B:TELEGRAM_BINDING:BINDING-A")
+        result = asyncio.run(
+            handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+        )
+        assert not sent and len(lookups) == before
+        assert "no subscriber card was sent" in result.lower()
+
+
 def check_broadcast_failure_logs_are_private() -> None:
     """Synthetic Telegram send failures do not leak recipients or token-bearing errors."""
     failed_chat = "900000000001"
@@ -1304,15 +1404,27 @@ def check_broadcast_failure_logs_are_private() -> None:
     sends = []
 
     async def source_status(_user_id):
-        return {"feed_id": "FEED-OFFLINE", "expiry_minutes": 5}
+        return {
+            "binding_id": "BINDING-OFFLINE",
+            "provider_id": "PROVIDER-OFFLINE",
+            "feed_id": "FEED-OFFLINE",
+            "expiry_minutes": 5,
+        }
 
     async def backend_post(path, **kwargs):
         assert path == "/provider-sources/telegram/signals"
         assert kwargs["json"]["raw_text"] == "XAUUSD BUY SL 1 TP1 2"
-        return {"id": "SIG-OFFLINE", "parser_status": "VALID"}
+        return {
+            "id": "SIG-OFFLINE",
+            "parser_status": "VALID",
+            "provider_id": "PROVIDER-OFFLINE",
+            "feed_id": "FEED-OFFLINE",
+            "source": "FEED:FEED-OFFLINE:TELEGRAM_BINDING:BINDING-OFFLINE",
+        }
 
-    async def recipients(_update, source):
+    async def recipients(_update, source, signal=None):
         assert source["feed_id"] == "FEED-OFFLINE"
+        assert signal["feed_id"] == "FEED-OFFLINE"
         return [failed_chat, good_chat]
 
     class OfflineBot:
@@ -1447,6 +1559,7 @@ def main() -> int:
     )
     check_telegram_httpx_token_log_privacy()
     check_broadcast_failure_logs_are_private()
+    check_broadcast_recipient_feed_binding()
     check_signal_create_backend_errors_remain_private()
     check_backend_http_fail_closed()
     check_unconfirmed_decision_does_not_claim_approval()

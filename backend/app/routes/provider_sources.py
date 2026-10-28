@@ -353,9 +353,14 @@ def telegram_provider_source_recipients(
     resolved = crud.get_telegram_provider_source(db, telegram_user_id)
     if resolved is None:
         raise HTTPException(status_code=403, detail="Telegram provider source not connected")
-    _binding, provider, feed = resolved
+    binding, provider, feed = resolved
     users = crud.list_active_users_for_feed(db, provider.id, feed.id)
     return {
+        # Bind this receipt to the exact current Telegram source and feed.
+        # The bot compares it to the previously persisted signal before send.
+        "binding_id": binding.id,
+        "provider_id": provider.id,
+        "feed_id": feed.id,
         "recipients": [
             {
                 "user_id": user.id,
