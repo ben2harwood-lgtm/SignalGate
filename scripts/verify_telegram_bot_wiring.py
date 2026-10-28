@@ -1626,8 +1626,8 @@ def check_signal_create_backend_errors_remain_private() -> None:
         ({"parser_status": "REJECTED", "parser_error": secret}, "did not accept"),
         (None, "could not be confirmed"),
         (["unexpected", secret], "could not be confirmed"),
-        ({"parser_status": "VALID"}, "could not be confirmed"),
-        ({"parser_status": "VALID", "id": [secret]}, "could not be confirmed"),
+        ({"parser_status": "VALID", "status": "VALID"}, "could not be confirmed"),
+        ({"parser_status": "VALID", "status": "VALID", "id": [secret]}, "could not be confirmed"),
     )
 
     async def fake_post(path, **kwargs):
