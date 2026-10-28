@@ -885,6 +885,13 @@ async def _download_telegram_screenshot(
 
 
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Shared chats must not trigger provider lookup, image download or preview.
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Send provider screenshots in a private chat with SignalGate. "
+            "Nothing was downloaded or previewed here."
+        )
+        return
     attempt_token = _begin_screenshot_attempt(context)
     authorised = await _can_submit_provider_signal(update)
     if not _is_current_screenshot_attempt(context, attempt_token):
@@ -919,6 +926,13 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Shared chats must not trigger provider lookup, image download or preview.
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Send provider screenshots in a private chat with SignalGate. "
+            "Nothing was downloaded or previewed here."
+        )
+        return
     attempt_token = _begin_screenshot_attempt(context)
     authorised = await _can_submit_provider_signal(update)
     if not _is_current_screenshot_attempt(context, attempt_token):
