@@ -1,6 +1,7 @@
 """Tenant-bound Telegram provider source tests."""
 from __future__ import annotations
 
+import datetime as dt
 import io
 import os
 from pathlib import Path
@@ -236,6 +237,57 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
         },
     )
     assert conflict.status_code == 409
+
+
+
+def test_bound_source_duplicate_replay_expires_stale_signal_once(client, db):
+    """A replay must not renew or expose a VALID-looking expired ledger row."""
+    provider, feed, key = _provider(db, "source-expiry-replay")
+    crud.update_feed_policy(
+        db, feed, {"allowed_symbols": ["EURUSD"], "expiry_minutes": 11}
+    )
+    db.commit()
+    invite = _source_invite(client, provider, feed, key)
+    connected = _connect(client, invite, "9360")
+    assert connected.status_code == 200, connected.text
+    payload = {
+        "telegram_user_id": "9360",
+        "raw_text": EUR_BUY,
+        "source_message_id": "9360:replay",
+    }
+    first = client.post("/provider-sources/telegram/signals", json=payload)
+    assert first.status_code == 200, first.text
+    signal_id = first.json()["id"]
+    source = first.json()["source"]
+    assert first.json()["status"] == "VALID"
+
+    # The deadline can elapse before any other route has refreshed the row.
+    signal = db.get(models.Signal, signal_id)
+    expired_at = crud.utcnow() - dt.timedelta(minutes=2)
+    signal.expires_at = expired_at
+    db.commit()
+    assert signal.status == "VALID"
+
+    for _ in range(2):
+        replay = client.post("/provider-sources/telegram/signals", json=payload)
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["id"] == signal_id
+        assert replay.json()["source"] == source
+        assert replay.json()["parser_status"] == "VALID"
+        assert replay.json()["status"] == "EXPIRED"
+
+    db.expire_all()
+    stored = db.get(models.Signal, signal_id)
+    assert stored.status == "EXPIRED"
+    assert stored.expires_at == expired_at  # replay must not renew expiry
+    assert db.query(models.Signal).filter(
+        models.Signal.source == source,
+        models.Signal.source_message_id == payload["source_message_id"],
+    ).count() == 1
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "SIGNAL_EXPIRED",
+        models.AuditLog.entity_id == signal_id,
+    ).count() == 1
 
 
 def test_bound_source_recipients_are_only_that_feeds_consented_subscribers(client, db):
