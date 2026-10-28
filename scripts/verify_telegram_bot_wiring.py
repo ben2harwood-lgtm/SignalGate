@@ -1477,7 +1477,8 @@ def check_signal_create_backend_errors_remain_private() -> None:
     received = []
 
     async def source_status(_user_id):
-        return {"feed_id": "FEED-OFFLINE", "expiry_minutes": 5}
+        return {"binding_id": "BINDING-OFFLINE", "provider_id": "PROVIDER-OFFLINE",
+                "feed_id": "FEED-OFFLINE", "expiry_minutes": 5}
 
     async def forbidden_recipients(_update, _source):
         raise AssertionError("Malformed creation reached recipient lookup")
@@ -1492,7 +1493,17 @@ def check_signal_create_backend_errors_remain_private() -> None:
         effective_message=SimpleNamespace(message_id=98),
     )
     context = SimpleNamespace(bot=OfflineBot())
+    # An HTTP 200 with a valid-looking signal and even a falsy `detail`
+    # field is an ambiguous/error-shaped response, never card authority.
+    valid_signal = {
+        "id": "SIG-OFFLINE", "parser_status": "VALID",
+        "provider_id": "PROVIDER-OFFLINE", "feed_id": "FEED-OFFLINE",
+        "source": "FEED:FEED-OFFLINE:TELEGRAM_BINDING:BINDING-OFFLINE",
+    }
     cases = (
+        ({**valid_signal, "detail": None}, "could not be confirmed"),
+        ({**valid_signal, "detail": ""}, "could not be confirmed"),
+        ({**valid_signal, "detail": []}, "could not be confirmed"),
         ({"detail": f"internal token={secret}"}, "could not be confirmed"),
         ({"detail": {"trace": secret}}, "could not be confirmed"),
         ({"parser_status": "REJECTED", "parser_error": secret}, "did not accept"),
