@@ -1222,6 +1222,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Free-text handler. Only acts when the admin is editing an extracted signal."""
     if not context.user_data.get("awaiting_edit"):
         return  # ignore ordinary chatter
+    # Telegram user_data persists across chats. Do not let a shared-chat text
+    # consume or overwrite a private screenshot's pending correction.
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Screenshot corrections require a private chat with SignalGate. "
+            "Nothing was sent."
+        )
+        return
     # Bind corrected text to its exact preview and source across the async
     # permission check. A newer screenshot/rebind/Cancel cannot reuse it.
     edit_token = context.user_data.get("pending_preview_token")
