@@ -158,8 +158,12 @@ including after the asynchronous permission check; hosted pre-upgrade previews
 without a snapshot are refused. The signal-creation path independently
 rechecks the original scope immediately before the create POST, so a provider
 rebound from feed A to feed B cannot knowingly submit A's preview using B's
-binding. Revocation/rebinding invalidates the pending preview; providers must
-capture a new screenshot. Offline interleaving tests cover A-preview → B-rebind
+binding. A different current provider/feed refuses the pending preview;
+providers must capture a new screenshot. The existing backend reuses a binding
+ID on rebind. An A→B→A round-trip or revocation followed by same-feed reconnect
+can restore the same three identifiers and escape this client-only comparison;
+a connection-generation/transactional backend check remains unimplemented.
+Offline interleaving tests cover A-preview → B-rebind
 → Confirm/Edit, rebind between the two pre-create checks, and a matching
 unchanged-source positive path. No genuine Telegram traffic was used.
 
