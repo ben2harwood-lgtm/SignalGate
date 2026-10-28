@@ -192,6 +192,9 @@ delivery or external acceptance receipt.
 Backend signal-creation results are also untrusted. The bot does not echo
 arbitrary `detail` or `parser_error` strings into provider Telegram replies
 and does not broadcast a card for malformed or missing signal identifiers.
+A contradictory HTTP 200 response containing a `detail` field is also refused
+**even when its value is `null`, empty text or an empty list**, and even if
+other signal fields appear valid; no recipient lookup or card is authorised.
 Because a POST may persist a signal despite a failed response, providers
 must check their feed history before retrying an unconfirmed creation.
 Offline synthetic negative tests cover secret-bearing and malformed responses;
