@@ -62,12 +62,46 @@ A failed `/connectprovider` request produces a generic token-reissue message,
 not an arbitrary backend `detail` string. The bot never reflects one-time
 token text or server diagnostics from that failure into Telegram.
 
+## Provider-source status receipt boundary (offline verified only)
+
+Hosted screenshot eligibility now requires a well-formed `ACTIVE` / `TELEGRAM`
+provider-source status response with nonempty binding, provider and feed
+identifiers and names. An HTTP 200 with an array, error detail, revoked binding,
+other source type or incomplete fields is **not** authority to submit a
+screenshot; an existing confirmable preview is invalidated instead. A stale
+local-demo provider ID cannot override this hosted refusal. The backend's
+authenticated, tenant-bound lookup is still authoritative, and the bot never
+treats an identifier/header alone as authentication. Synthetic offline tests
+exercise the malformed, revoked and valid cases without Telegram or broker
+traffic. This does not establish external provider or MT5 demo acceptance.
+
 ## Screenshot extraction failures
 
-Each new screenshot attempt invalidates any earlier unconfirmed preview. Hosted mode
-rechecks the persisted provider/feed binding immediately before extraction; if it
-has been revoked or cannot be verified, extraction stops without falling back to
-the local-demo endpoint. Backend error bodies and exception messages are not
+The Telegram bot refuses screenshot photos/documents whose reported size exceeds
+**5 MiB** *before downloading them*. After resolving the Telegram File, the bot
+checks its separately reported size before allocating download bytes, then counts
+the downloaded bytearray *before* copying it into an upload. Missing metadata
+at either stage never bypasses the actual-byte check; malformed sizes fail closed.
+An oversized/invalid attempt clears the previous pending confirmation/edit token. Telegram File resolution/download failures are contained at the bot boundary:
+only the safe exception class is logged, not transport exception text that may
+contain a bot-token URL. Failed uploads clear their own confirmation state and
+show a generic error; a delayed failure from an older attempt cannot erase a
+newer's preview. Offline photo/document tests cover both error stages and
+overlapping requests. No external Telegram or broker call is used.
+Both backend extraction endpoints also
+apply the same 5 MiB limit. These are offline-only resource and stale-preview
+boundaries, not Telegram-delivery or broker-demo acceptance.
+
+Each new screenshot attempt invalidates any earlier unconfirmed preview.
+An attempt-specific nonce also makes an older async authorisation, Telegram
+download or backend extraction result inert when a newer screenshot starts; a
+late response cannot replace the newer candidate or restore an old confirm
+button. The offline concurrency regressions deliberately overlap photo and
+document downloads and extractor responses. They do not establish actual
+Telegram delivery or broker-demo acceptance.
+Hosted mode rechecks the persisted provider/feed binding immediately before
+extraction; if it has been revoked or cannot be verified, extraction stops
+without falling back to the local-demo endpoint. Backend error bodies and exception messages are not
 forwarded into Telegram or operator logs; users receive generic failure text and
 logs retain only HTTP status or exception class. Even a backend HTTP 200 is
 untrusted: malformed JSON roots, non-string extracted text, invalid preview fields,
@@ -94,11 +128,34 @@ newer screenshot arriving during the lookup cannot be confirmed, edited or
 cancelled by the earlier button. Revoked sources clear the matching outstanding
 preview rather than forwarding it; a superseded preview is never cleared by
 the older request.
+Edited signal text is also tied to its original preview identifier:
+after an asynchronous provider permission check, stale corrections cannot act
+if a newer screenshot, Cancel or competing correction invalidated that preview.
+A revoked source clears only its still-current edit state. Offline interleaving
+tests verify this in memory, not actual Telegram delivery.
+
 The source's backend remains responsible for identity, tenant policy,
 subscriber consent and idempotent signal processing. The binding here is
 an **in-memory preview integrity guard**, not an authentication credential, a
 persistent queue or broker execution acceptance evidence. Restarting the bot
 invalidates old preview buttons; providers must send a new screenshot.
+
+A failed outgoing subscriber-card delivery logs **only the exception class**,
+not the recipient's Telegram chat ID or arbitrary Telegram exception text
+(which could contain a bot-token URL). Delivery attempts continue for other
+recipients and the provider is shown only the aggregate sent count. The offline
+bot smoke injects a synthetic token-bearing transport failure, asserts no
+identifier or exception text reaches operator warnings, and verifies that
+other recipients still get an attempted delivery. It is not a real Telegram
+delivery or external acceptance receipt.
+
+Backend signal-creation results are also untrusted. The bot does not echo
+arbitrary `detail` or `parser_error` strings into provider Telegram replies
+and does not broadcast a card for malformed or missing signal identifiers.
+Because a POST may persist a signal despite a failed response, providers
+must check their feed history before retrying an unconfirmed creation.
+Offline synthetic negative tests cover secret-bearing and malformed responses;
+they do not prove Telegram delivery or broker-demo acceptance.
 
 Bot transport logging is intentionally restricted to WARNING and above for
 `httpx` and `httpcore`: HTTPX INFO request diagnostics include Telegram Bot API
@@ -108,6 +165,29 @@ a synthetic marker (including a negative control). This safeguard does **not**
 replace deployed log-review or independent security assurance.
 The same offline smoke refuses Python `-O`, `-OO` or `PYTHONOPTIMIZE`,
 which would otherwise disable its assertion-based checks and print a false PASS.
+
+## Subscriber invite-response integrity (offline verified only)
+
+The hosted bot's `/join INVITE_TOKEN` flow checks that registration returns the
+same active Telegram user before attempting the one-time subscription invite.
+An acceptance response counts as confirmed only when the backend returns an
+active subscription with nonempty subscription/account/provider/feed identifiers
+and names. Malformed or error-shaped HTTP 200 responses never produce a
+"Joined" receipt or disclose arbitrary backend `detail` text or invite tokens.
+An unconfirmed response may still have consumed an invite, so subscribers should
+check membership with their provider before retrying. This is verified using
+synthetic offline response fixtures only; no real subscriber or provider was used.
+
+## Provider-source connection receipt integrity (offline verified only)
+
+The one-time `/connectprovider` command now requires a well-formed `ACTIVE`
+`TELEGRAM` binding receipt with nonempty binding/provider/feed identifiers and
+names before telling the provider the source is connected. Unknown, malformed
+or error-shaped HTTP 200 results are not reported as success; arbitrary backend
+`detail` text and credentials are never echoed. A connection POST can succeed
+even if its response is lost, so an unconfirmed connection must be checked in
+the Provider Portal before another token is requested. These are synthetic
+bot-handler tests, not evidence of real Telegram delivery or provider acceptance.
 
 ## Security properties
 

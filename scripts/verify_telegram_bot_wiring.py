@@ -407,6 +407,241 @@ def check_preview_callback_identity_and_single_use() -> None:
     assert calls == ["B-SIGNAL"]
 
 
+def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
+    """Late edit-text requests cannot use or clear a newer preview."""
+    async def superseded(allowed: bool, cancelled: bool) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls, replies = [], []
+        state = {
+            "awaiting_edit": True,
+            "pending_signal_text": "OLD",
+            "pending_preview_token": "a" * 16,
+        }
+        context = SimpleNamespace(user_data=state)
+
+        async def reply_text(text, **_kwargs):
+            replies.append(text)
+
+        update = SimpleNamespace(message=SimpleNamespace(
+            text="OLD BUY SL 1 TP1 2", reply_text=reply_text
+        ))
+
+        async def source(_update):
+            entered.set()
+            await release.wait()
+            return allowed
+
+        async def create(_update, _context, raw_text):
+            calls.append(raw_text)
+            return "synthetic-only"
+
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", source),
+            patch.object(handlers, "_create_and_broadcast", create),
+        ):
+            older = asyncio.create_task(handlers.on_text(update, context))
+            await asyncio.wait_for(entered.wait(), 1)
+            # The first text is suspended; screenshot B or Cancel supersedes it.
+            state.clear()
+            if not cancelled:
+                state.update({
+                    "pending_signal_text": "NEW",
+                    "pending_preview_token": "b" * 16,
+                })
+            expected = dict(state)
+            release.set()
+            await asyncio.wait_for(older, 1)
+        assert not calls, "Obsolete edit reached signal creation"
+        assert state == expected, "Old edit modified a newer/cancelled preview"
+        assert not replies
+
+    async def two_edit_messages() -> None:
+        both_entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+        entered = 0
+        state = {
+            "awaiting_edit": True,
+            "pending_signal_text": "OLD",
+            "pending_preview_token": "a" * 16,
+        }
+        context = SimpleNamespace(user_data=state)
+
+        async def reply_text(_text, **_kwargs):
+            return None
+
+        update = SimpleNamespace(message=SimpleNamespace(
+            text="EDITED BUY SL 1 TP1 2", reply_text=reply_text
+        ))
+
+        async def source(_update):
+            nonlocal entered
+            entered += 1
+            if entered == 2:
+                both_entered.set()
+            await release.wait()
+            return True
+
+        async def create(_update, _context, raw_text):
+            calls.append(raw_text)
+            return "synthetic-only"
+
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", source),
+            patch.object(handlers, "_create_and_broadcast", create),
+        ):
+            first = asyncio.create_task(handlers.on_text(update, context))
+            second = asyncio.create_task(handlers.on_text(update, context))
+            await asyncio.wait_for(both_entered.wait(), 1)
+            release.set()
+            await asyncio.wait_for(asyncio.gather(first, second), 1)
+        assert calls == ["EDITED BUY SL 1 TP1 2"], (
+            "Two edits of one preview created duplicate signals"
+        )
+        assert state == {}, "Completed edit left reusable preview state"
+
+    async def revoked_then_valid() -> None:
+        calls, replies = [], []
+        state = {
+            "awaiting_edit": True,
+            "pending_signal_text": "OLD",
+            "pending_preview_token": "a" * 16,
+        }
+        context = SimpleNamespace(user_data=state)
+
+        async def reply_text(text, **_kwargs):
+            replies.append(text)
+
+        update = SimpleNamespace(message=SimpleNamespace(
+            text="VALID BUY SL 1 TP1 2", reply_text=reply_text
+        ))
+
+        async def create(_update, _context, raw_text):
+            calls.append(raw_text)
+            return "synthetic-only"
+
+        async def refused(_update):
+            return False
+
+        async def allowed(_update):
+            return True
+
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", refused),
+            patch.object(handlers, "_create_and_broadcast", create),
+        ):
+            await handlers.on_text(update, context)
+        assert state == {}, "Revocation retained an old edit authorization"
+        assert not calls
+
+        state.update({
+            "awaiting_edit": True,
+            "pending_signal_text": "OLD",
+            "pending_preview_token": "a" * 16,
+        })
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", allowed),
+            patch.object(handlers, "_create_and_broadcast", create),
+        ):
+            await handlers.on_text(update, context)
+            await handlers.on_text(update, context)
+        assert calls == ["VALID BUY SL 1 TP1 2"]
+        assert replies == ["synthetic-only"]
+        assert state == {}
+
+        state.update({
+            "awaiting_edit": True,
+            "pending_signal_text": "OLD",
+            "pending_preview_token": "\u2603" * 16,
+        })
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", allowed),
+            patch.object(handlers, "_create_and_broadcast", create),
+        ):
+            await handlers.on_text(update, context)
+        assert calls == ["VALID BUY SL 1 TP1 2"]
+        assert not state.get("awaiting_edit"), "Invalid preview token allowed editing"
+
+    asyncio.run(superseded(True, False))
+    asyncio.run(superseded(False, False))
+    asyncio.run(superseded(True, True))
+    asyncio.run(two_edit_messages())
+    asyncio.run(revoked_then_valid())
+
+
+def check_provider_source_status_requires_active_typed_binding() -> None:
+    """Malformed or revoked status receipts cannot grant hosted screenshot access."""
+    assert config.require_license is True
+    secret = "OFFLINE-STATUS-PRIVATE-DIAGNOSTIC"
+    valid = {
+        "binding_id": "BIND-OFFLINE",
+        "provider_id": "PROVIDER-OFFLINE",
+        "provider_name": "Provider Offline",
+        "feed_id": "FEED-OFFLINE",
+        "feed_name": "Feed Offline",
+        "source_type": "TELEGRAM",
+        "status": "ACTIVE",
+    }
+    invalid = (
+        None, [], [{}], {}, {"detail": secret},
+        {**valid, "detail": ""},
+        {**valid, "status": "REVOKED"},
+        {**valid, "source_type": "OTHER"},
+        {**valid, "binding_id": None},
+        {**valid, "provider_id": 123},
+        {**valid, "provider_name": {"debug": secret}},
+        {**valid, "feed_name": ""},
+    )
+    user = SimpleNamespace(id=123456)
+    replies = []
+
+    async def reply_text(message, **_kwargs):
+        replies.append(message)
+
+    update = SimpleNamespace(
+        effective_user=user,
+        message=SimpleNamespace(reply_text=reply_text),
+    )
+
+    def exercise(response, expected):
+        requests = []
+
+        async def status_reply(path, **kwargs):
+            requests.append(path)
+            assert path == "/provider-sources/telegram/status"
+            assert kwargs["params"] == {"telegram_user_id": "123456"}
+            assert kwargs["headers"] == handlers._registration_headers()
+            return response
+
+        # A stale local provider flag must never rescue bad hosted status.
+        with (
+            patch.object(handlers, "_backend_get", status_reply),
+            patch.object(config, "is_signal_provider", lambda _id: True),
+        ):
+            receipt = asyncio.run(handlers._provider_source_status(user.id))
+            permitted = asyncio.run(handlers._can_submit_provider_signal(update))
+            assert bool(receipt) is expected
+            assert permitted is expected
+
+            if not expected:
+                # The photo path must stop before resolving/download/upload and
+                # must also discard an old confirmable screenshot.
+                state = {
+                    "pending_signal_text": "OLD",
+                    "pending_preview_token": "a" * 16,
+                    "awaiting_edit": True,
+                }
+                context = SimpleNamespace(user_data=state, bot=SimpleNamespace())
+                asyncio.run(handlers.on_photo(update, context))
+                assert state == {}, "Invalid binding preserved old preview"
+                assert "Connect this Telegram account" in replies[-1]
+                assert secret not in replies[-1]
+        assert len(requests) == (2 if expected else 3), requests
+
+    for response in invalid:
+        exercise(response, False)
+    exercise(valid, True)
+
+
 def check_hosted_legacy_provider_status_never_grants_identity() -> None:
     """Even a stale local-provider flag cannot claim hosted provider authority."""
     assert config.require_license is True
@@ -458,6 +693,93 @@ def check_hosted_legacy_provider_status_never_grants_identity() -> None:
     assert "Role: screenshot provider" not in replies[1]
 
 
+def check_join_invite_backend_response_integrity() -> None:
+    """Hosted invite joins require matching identity and active membership receipts."""
+    secret = "OFFLINE-SERVER-DETAIL-NOT-FOR-TELEGRAM"
+    invite = "OFFLINE-ONE-TIME-INVITE-TOKEN"
+    licence = "OFFLINE-ONE-TIME-LICENCE"
+    registration = {
+        "id": "USER-OFFLINE", "telegram_user_id": "123456",
+        "status": "ACTIVE", "license_key": licence,
+    }
+    acceptance = {
+        "subscription_id": "SUB-OFFLINE", "account_id": "ACC-OFFLINE",
+        "provider_id": "PROVIDER-OFFLINE", "provider_name": "Test Provider",
+        "provider_display_name": None, "feed_id": "FEED-OFFLINE",
+        "feed_name": "Test Feed", "status": "ACTIVE",
+    }
+
+    def exercise(register_body, accept_body):
+        replies, calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def fake_post(path, **kwargs):
+            calls.append(path)
+            if path == "/register_user":
+                assert kwargs["json"]["telegram_user_id"] == "123456"
+                return register_body
+            assert path == "/subscriptions/accept"
+            assert kwargs["json"] == {
+                "invite_token": invite, "telegram_user_id": "123456",
+            }
+            return accept_body
+
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(
+                id=123456, username="offline", first_name="Test"
+            ),
+            message=SimpleNamespace(reply_text=reply_text),
+        )
+        with patch.object(handlers, "_backend_post", fake_post):
+            asyncio.run(handlers.join_feed(update, SimpleNamespace(args=[invite])))
+        assert len(replies) == 1
+        return replies[0], calls
+
+    invalid_registrations = (
+        None, [], {"detail": {"internal": secret}}, {},
+        {**registration, "telegram_user_id": "OTHER-USER"},
+        {**registration, "status": "INACTIVE"},
+        {**registration, "detail": ""},
+        {**registration, "id": None},
+    )
+    for body in invalid_registrations:
+        reply, calls = exercise(body, acceptance)
+        assert calls == ["/register_user"], "Bad identity consumed a feed invite"
+        assert "nothing was joined" in reply.lower()
+        assert secret not in reply and invite not in reply and licence not in reply
+
+    invalid_acceptances = (
+        None, [], {"detail": f"token={invite}; {secret}"},
+        {"detail": {"trace": secret}}, {},
+        {**acceptance, "detail": ""},
+        {**acceptance, "status": "PENDING"},
+        {**acceptance, "subscription_id": None},
+        {**acceptance, "feed_id": []},
+        {**acceptance, "feed_name": ""},
+    )
+    for body in invalid_acceptances:
+        reply, calls = exercise(registration, body)
+        assert calls == ["/register_user", "/subscriptions/accept"]
+        assert not reply.startswith("Joined "), "Unconfirmed join claimed success"
+        assert secret not in reply and invite not in reply and licence not in reply
+        assert "check feed membership" in reply.lower() or "not confirmed" in reply.lower()
+
+    reply, calls = exercise(registration, acceptance)
+    assert calls == ["/register_user", "/subscriptions/accept"]
+    assert "Joined Test Provider — Test Feed." in reply
+    assert licence in reply and "Demo mode only" in reply
+    assert invite not in reply
+
+    reply, _ = exercise(
+        {**registration, "license_key": [secret]},
+        {**acceptance, "provider_display_name": {"malformed": secret}},
+    )
+    assert reply.startswith("Joined Test Provider — Test Feed.")
+    assert secret not in reply and "one-time EA licence" not in reply
+
+
 def check_connectprovider_error_does_not_echo_backend_secrets() -> None:
     """Backend error detail is untrusted and cannot enter Telegram replies."""
     secret = "SYNTHETIC_BACKEND_SECRET_DO_NOT_ECHO"
@@ -482,10 +804,71 @@ def check_connectprovider_error_does_not_echo_backend_secrets() -> None:
         ("/provider-sources/telegram/connect", "SYNTHETIC-ONE-TIME-TOKEN")
     ]
     assert len(replies) == 1
-    assert "not connected" in replies[0].lower()
+    assert "connection could not be confirmed" in replies[0].lower()
     assert "Provider Portal" in replies[0]
     assert secret not in replies[0]
     assert "SYNTHETIC-ONE-TIME-TOKEN" not in replies[0]
+
+def check_connectprovider_success_receipt_integrity() -> None:
+    """Connection claims require a typed, ACTIVE Telegram binding response."""
+    secret = "OFFLINE-SOURCE-CONNECTION-PRIVATE-DIAGNOSTIC"
+    token = "OFFLINE-ONE-TIME-SOURCE-TOKEN"
+    valid = {
+        "binding_id": "BIND-OFFLINE", "provider_id": "PROVIDER-OFFLINE",
+        "provider_name": "Provider Offline", "provider_display_name": None,
+        "feed_id": "FEED-OFFLINE", "feed_name": "Feed Offline",
+        "source_type": "TELEGRAM", "status": "ACTIVE",
+    }
+
+    def exercise(response):
+        replies, paths = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def fake_post(path, **kwargs):
+            paths.append(path)
+            assert kwargs["json"] == {
+                "connection_token": token, "telegram_user_id": "123456",
+            }
+            return response
+
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(reply_text=reply_text),
+        )
+        with patch.object(handlers, "_backend_post", fake_post):
+            asyncio.run(
+                handlers.connect_provider_source(
+                    update, SimpleNamespace(args=[token])
+                )
+            )
+        assert paths == ["/provider-sources/telegram/connect"]
+        assert len(replies) == 1
+        return replies[0]
+
+    negatives = (
+        None, [], {}, {"detail": {"error": secret}},
+        {**valid, "detail": ""}, {**valid, "status": "REVOKED"},
+        {**valid, "source_type": "UNKNOWN"},
+        {**valid, "binding_id": None}, {**valid, "feed_id": ""},
+        {**valid, "provider_name": 45},
+    )
+    for value in negatives:
+        reply = exercise(value)
+        assert "connection could not be confirmed" in reply.lower()
+        assert "source connected to" not in reply.lower()
+        assert secret not in reply and token not in reply
+        assert "Provider Portal" in reply
+
+    reply = exercise(valid)
+    assert "Provider source connected to Provider Offline — Feed Offline." in reply
+    assert "Demo mode only" in reply
+    assert token not in reply
+    reply = exercise({**valid, "provider_display_name": { "detail": secret }})
+    assert "Provider source connected to Provider Offline — Feed Offline." in reply
+    assert secret not in reply
+
 
 def check_telegram_httpx_token_log_privacy() -> None:
     """Synthetic Bot API URLs must not reach HTTPX INFO transport logs."""
@@ -531,6 +914,500 @@ def check_telegram_httpx_token_log_privacy() -> None:
         transport_logger.setLevel(original_level)
 
 
+def check_screenshot_upload_size_guard() -> None:
+    """Telegram image metadata and actual bytes cannot bypass the backend limit."""
+    assert handlers.MAX_SIGNAL_IMAGE_BYTES == 5 * 1024 * 1024
+
+    async def permitted(_update):
+        return True
+
+    async def exercise(kind, size, contents, resolved_file_size=None):
+        requests, previews, replies = [], [], []
+        state = {
+            "pending_signal_text": "OLD-PREVIEW",
+            "pending_preview_token": "a" * 16,
+            "awaiting_edit": True,
+        }
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def download_as_bytearray():
+            requests.append("download")
+            return bytearray(contents)
+
+        class OfflineBot:
+            async def get_file(self, _file_id):
+                requests.append("get_file")
+                return SimpleNamespace(
+                    file_size=resolved_file_size,
+                    download_as_bytearray=download_as_bytearray,
+                )
+
+        async def preview(**kwargs):
+            assert handlers._is_current_screenshot_attempt(
+                kwargs["context"], kwargs["attempt_token"]
+            ), "Photo/document preview has lost its attempt identity"
+            # Mirror the real preview's transition to a confirmable callback.
+            kwargs["context"].user_data.pop("active_screenshot_attempt", None)
+            previews.append((kwargs["image_bytes"], kwargs["mime"]))
+
+        asset = SimpleNamespace(file_id="OFFLINE", file_size=size, mime_type="image/png")
+        message = SimpleNamespace(
+            reply_text=reply_text,
+            photo=[asset],
+            document=asset,
+        )
+        update = SimpleNamespace(message=message, effective_user=SimpleNamespace(id=123))
+        context = SimpleNamespace(user_data=state, bot=OfflineBot())
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", permitted),
+            patch.object(handlers, "_preview_screenshot", preview),
+            patch.object(handlers, "MAX_SIGNAL_IMAGE_BYTES", 4),
+        ):
+            await (handlers.on_photo if kind == "photo" else handlers.on_document)(
+                update, context
+            )
+        return requests, previews, replies, state
+
+    for kind in ("photo", "document"):
+        # Oversized or invalid Telegram metadata must stop BEFORE get_file.
+        for reported_size in (5, -1, "5", True):
+            requests, previews, replies, state = asyncio.run(
+                exercise(kind, reported_size, b"abc")
+            )
+            assert not requests and not previews, (kind, reported_size)
+            assert "no preview" in replies[-1].lower()
+            assert state == {}, "Old confirmable screenshot survived rejection"
+
+        # A second oversized/invalid File metadata claim must stop the
+        # download even if the original message reports an allowed size.
+        for reported_size in (None, 3):
+            for resolved_size in (5, -1, "5", True):
+                requests, previews, replies, state = asyncio.run(
+                    exercise(kind, reported_size, b"abc", resolved_size)
+                )
+                assert requests == ["get_file"], (kind, reported_size, resolved_size)
+                assert not previews
+                assert "no preview" in replies[-1].lower()
+                assert state == {}
+
+        # Actual oversized bytes remain authoritative despite two small claims.
+        requests, previews, replies, state = asyncio.run(
+            exercise(kind, 3, b"abcde", 3)
+        )
+        assert requests == ["get_file", "download"]
+        assert not previews and state == {}
+        assert "no preview" in replies[-1].lower()
+
+        # A missing/small claimed size cannot authorize an oversized download.
+        for reported_size in (None, 3):
+            requests, previews, replies, state = asyncio.run(
+                exercise(kind, reported_size, b"abcde")
+            )
+            assert requests == ["get_file", "download"], (kind, reported_size)
+            assert not previews
+            assert "no preview" in replies[-1].lower()
+            assert state == {}
+
+        # Exact-limit images still reach preview, but no external call occurs.
+        requests, previews, replies, state = asyncio.run(
+            exercise(kind, 4, b"abcd", 4)
+        )
+        assert requests == ["get_file", "download"]
+        assert previews == [(b"abcd", "image/jpeg" if kind == "photo" else "image/png")]
+        assert not state, "New screenshot must invalidate prior pending tokens"
+
+        # Even with both size metadata sources absent, the byte boundary holds.
+        requests, previews, replies, state = asyncio.run(
+            exercise(kind, None, b"abcd", None)
+        )
+        assert requests == ["get_file", "download"]
+        assert previews == [(b"abcd", "image/jpeg" if kind == "photo" else "image/png")]
+        assert not state
+
+
+def check_telegram_download_transport_failures_fail_closed() -> None:
+    """No token-bearing exception escapes; older failed uploads cannot erase newer previews."""
+    secret = "OFFLINE-TELEGRAM-TOKEN-NOT-FOR-LOGS"
+
+    async def permitted(_update):
+        return True
+
+    async def failure(kind: str, stage: str) -> None:
+        warnings, replies, previews = [], [], []
+        state = {
+            "pending_signal_text": "PREVIOUS",
+            "pending_preview_token": "a" * 16,
+            "awaiting_edit": True,
+        }
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        class Bot:
+            async def get_file(self, _file_id):
+                if stage == "get_file":
+                    raise RuntimeError(
+                        f"https://api.telegram.org/bot{secret}/getFile"
+                    )
+
+                async def download_as_bytearray():
+                    raise ValueError(
+                        f"https://api.telegram.org/bot{secret}/download"
+                    )
+
+                return SimpleNamespace(
+                    file_size=3, download_as_bytearray=download_as_bytearray
+                )
+
+        async def preview(**_kwargs):
+            previews.append("SHOULD-NOT-HAPPEN")
+
+        asset = SimpleNamespace(file_id="FAKE", file_size=3, mime_type="image/png")
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=12345),
+            message=SimpleNamespace(
+                photo=[asset], document=asset, reply_text=reply_text,
+            ),
+        )
+        context = SimpleNamespace(user_data=state, bot=Bot())
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", permitted),
+            patch.object(handlers, "_preview_screenshot", preview),
+            patch.object(
+                handlers.logger, "warning",
+                lambda fmt, *args: warnings.append(fmt % args),
+            ),
+        ):
+            await (handlers.on_photo if kind == "photo" else handlers.on_document)(
+                update, context
+            )
+        expected_type = "RuntimeError" if stage == "get_file" else "ValueError"
+        assert warnings == [
+            f"Telegram screenshot download failed: {expected_type}"
+        ], (kind, stage, warnings)
+        assert not previews and state == {}, "Failed upload retained confirmation state"
+        assert any("couldn't be retrieved" in text for text in replies), replies
+        assert all(secret not in text for text in replies + warnings)
+
+    async def stale_failure(kind: str) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        warnings, replies, previews = [], [], []
+        state = {}
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        class Bot:
+            async def get_file(self, file_id):
+                if file_id == "OLD":
+                    entered.set()
+                    await release.wait()
+                    raise RuntimeError(secret)
+
+                async def download_as_bytearray():
+                    return bytearray(b"NEW")
+
+                return SimpleNamespace(
+                    file_size=3, download_as_bytearray=download_as_bytearray
+                )
+
+        async def preview(**kwargs):
+            previews.append(kwargs["image_bytes"])
+            assert handlers._is_current_screenshot_attempt(
+                kwargs["context"], kwargs["attempt_token"]
+            )
+            state.pop("active_screenshot_attempt", None)
+            state["pending_signal_text"] = "NEW"
+            state["pending_preview_token"] = "b" * 16
+
+        def make_update(file_id):
+            asset = SimpleNamespace(
+                file_id=file_id, file_size=3, mime_type="image/png"
+            )
+            return SimpleNamespace(
+                effective_user=SimpleNamespace(id=12345),
+                message=SimpleNamespace(
+                    photo=[asset], document=asset, reply_text=reply_text,
+                ),
+            )
+
+        context = SimpleNamespace(user_data=state, bot=Bot())
+        handler = handlers.on_photo if kind == "photo" else handlers.on_document
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", permitted),
+            patch.object(handlers, "_preview_screenshot", preview),
+            patch.object(
+                handlers.logger, "warning",
+                lambda fmt, *args: warnings.append(fmt % args),
+            ),
+        ):
+            older = asyncio.create_task(handler(make_update("OLD"), context))
+            await asyncio.wait_for(entered.wait(), 1)
+            await handler(make_update("NEW"), context)
+            release.set()
+            await asyncio.wait_for(older, 1)
+
+        assert previews == [b"NEW"]
+        assert state == {
+            "pending_signal_text": "NEW", "pending_preview_token": "b" * 16
+        }, "Late download failure erased newer preview"
+        assert not warnings, "A stale failed upload emitted sensitive logs"
+        assert all(secret not in text for text in replies)
+
+    for kind in ("photo", "document"):
+        for stage in ("get_file", "download"):
+            asyncio.run(failure(kind, stage))
+        asyncio.run(stale_failure(kind))
+
+
+
+def check_overlapping_screenshot_attempts_fail_closed() -> None:
+    """A delayed older screenshot cannot overwrite a newer preview."""
+    async def permitted(_update):
+        return True
+
+    async def exercise_delayed_get_file(kind: str):
+        requests, previews, replies = [], [], []
+        entered, release = asyncio.Event(), asyncio.Event()
+        state = {"pending_signal_text": "OLD", "pending_preview_token": "0" * 16}
+
+        async def reply_text(text, **_kwargs):
+            replies.append(text)
+
+        class Bot:
+            async def get_file(self, file_id):
+                requests.append(("get_file", file_id))
+                if file_id == "OLDER":
+                    entered.set()
+                    await release.wait()
+
+                async def download():
+                    requests.append(("download", file_id))
+                    return bytearray(b"BBB" if file_id == "NEWER" else b"AAA")
+
+                return SimpleNamespace(file_size=3, download_as_bytearray=download)
+
+        def make_update(file_id):
+            asset = SimpleNamespace(
+                file_id=file_id, file_size=3, mime_type="image/png"
+            )
+            return SimpleNamespace(
+                effective_user=SimpleNamespace(id=12345),
+                message=SimpleNamespace(
+                    photo=[asset], document=asset, reply_text=reply_text,
+                ),
+            )
+
+        async def preview(**kwargs):
+            assert handlers._is_current_screenshot_attempt(
+                kwargs["context"], kwargs["attempt_token"]
+            ), "Stale file created a preview"
+            previews.append(kwargs["image_bytes"])
+            state["pending_signal_text"] = kwargs["image_bytes"].decode()
+            state["pending_preview_token"] = "b" * 16
+            state.pop("active_screenshot_attempt", None)
+
+        context = SimpleNamespace(user_data=state, bot=Bot())
+        handler = handlers.on_photo if kind == "photo" else handlers.on_document
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", permitted),
+            patch.object(handlers, "_preview_screenshot", preview),
+        ):
+            older = asyncio.create_task(handler(make_update("OLDER"), context))
+            await asyncio.wait_for(entered.wait(), 1)
+            await handler(make_update("NEWER"), context)
+            assert previews == [b"BBB"], (kind, previews)
+            assert state["pending_signal_text"] == "BBB"
+            release.set()
+            await asyncio.wait_for(older, 1)
+        assert previews == [b"BBB"], "Late older file reached preview"
+        assert ("download", "OLDER") not in requests, "Late file was downloaded"
+        assert state["pending_preview_token"] == "b" * 16
+        assert state["pending_signal_text"] == "BBB"
+
+    async def exercise_delayed_extraction():
+        entered, release = asyncio.Event(), asyncio.Event()
+        requests, replies = [], []
+        state = {}
+        context = SimpleNamespace(user_data=state)
+
+        async def source(_user_id):
+            if asyncio.current_task().get_name() == "old-extraction":
+                entered.set()
+                await release.wait()
+            return {"feed_id": "OFFLINE"}
+
+        async def reply_text(text, **_kwargs):
+            replies.append(text)
+
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=12345),
+            message=SimpleNamespace(reply_text=reply_text),
+        )
+        original_client = httpx.AsyncClient
+
+        def respond(request):
+            requests.append(request.url.path)
+            return httpx.Response(
+                200, json={
+                    "parser_status": "VALID",
+                    "extracted_text": "NEWER BUY SL 1 TP1 2",
+                },
+            )
+
+        transport = httpx.MockTransport(respond)
+        with (
+            patch.object(handlers, "_provider_source_status", source),
+            patch.object(
+                handlers.httpx,
+                "AsyncClient",
+                lambda *args, **kwargs: original_client(
+                    *args, transport=transport, **kwargs
+                ),
+            ),
+        ):
+            old_token = handlers._begin_screenshot_attempt(context)
+            older = asyncio.create_task(
+                handlers._preview_screenshot(
+                    update, context, b"OLDER", "image/jpeg", old_token
+                ),
+                name="old-extraction",
+            )
+            await asyncio.wait_for(entered.wait(), 1)
+            new_token = handlers._begin_screenshot_attempt(context)
+            await handlers._preview_screenshot(
+                update, context, b"NEWER", "image/jpeg", new_token
+            )
+            assert state["pending_signal_text"] == "NEWER BUY SL 1 TP1 2"
+            preview_nonce = state["pending_preview_token"]
+            release.set()
+            await asyncio.wait_for(older, 1)
+        assert requests == ["/provider-sources/telegram/extract"]
+        assert state["pending_signal_text"] == "NEWER BUY SL 1 TP1 2"
+        assert state["pending_preview_token"] == preview_nonce
+        assert len(replies) == 1 and "Read from your screenshot" in replies[0]
+
+    for kind in ("photo", "document"):
+        asyncio.run(exercise_delayed_get_file(kind))
+    asyncio.run(exercise_delayed_extraction())
+
+
+
+def check_broadcast_failure_logs_are_private() -> None:
+    """Synthetic Telegram send failures do not leak recipients or token-bearing errors."""
+    failed_chat = "900000000001"
+    good_chat = "900000000002"
+    secret = "OFFLINE-TELEGRAM-BOT-TOKEN-NOT-FOR-LOGS"
+    warnings = []
+    sends = []
+
+    async def source_status(_user_id):
+        return {"feed_id": "FEED-OFFLINE", "expiry_minutes": 5}
+
+    async def backend_post(path, **kwargs):
+        assert path == "/provider-sources/telegram/signals"
+        assert kwargs["json"]["raw_text"] == "XAUUSD BUY SL 1 TP1 2"
+        return {"id": "SIG-OFFLINE", "parser_status": "VALID"}
+
+    async def recipients(_update, source):
+        assert source["feed_id"] == "FEED-OFFLINE"
+        return [failed_chat, good_chat]
+
+    class OfflineBot:
+        async def send_message(self, **kwargs):
+            sends.append(kwargs["chat_id"])
+            if kwargs["chat_id"] == failed_chat:
+                raise RuntimeError(
+                    f"https://api.telegram.org/bot{secret}/sendMessage?"
+                    f"chat_id={failed_chat}"
+                )
+
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123456),
+        effective_chat=SimpleNamespace(id=123456),
+        effective_message=SimpleNamespace(message_id=99),
+    )
+    context = SimpleNamespace(bot=OfflineBot())
+    with (
+        patch.object(handlers, "_provider_source_status", source_status),
+        patch.object(handlers, "_backend_post", backend_post),
+        patch.object(handlers, "_active_recipients", recipients),
+        patch.object(
+            handlers.logger,
+            "warning",
+            lambda fmt, *args: warnings.append(fmt % args),
+        ),
+        patch("keyboards.format_trade_card", lambda *_args: "OFFLINE-TRADE-CARD"),
+        patch("keyboards.trade_card_keyboard", lambda *_args: "OFFLINE-BUTTONS"),
+    ):
+        summary = asyncio.run(
+            handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+        )
+
+    assert sends == [failed_chat, good_chat], "One failed send stopped the next recipient"
+    assert summary == "Signal SIG-OFFLINE created and card sent to 1 subscriber(s)."
+    assert warnings == ["send card failed: RuntimeError"], (
+        "A transport error leaked Telegram recipient or exception details"
+    )
+    assert all(secret not in item for item in warnings)
+    assert all(failed_chat not in item and good_chat not in item for item in warnings)
+
+
+def check_signal_create_backend_errors_remain_private() -> None:
+    """Provider creation failures must not echo backend secrets or send cards."""
+    secret = "SYNTHETIC-CREATE-RESPONSE-SECRET-NOT-FOR-TELEGRAM"
+    received = []
+
+    async def source_status(_user_id):
+        return {"feed_id": "FEED-OFFLINE", "expiry_minutes": 5}
+
+    async def forbidden_recipients(_update, _source):
+        raise AssertionError("Malformed creation reached recipient lookup")
+
+    class OfflineBot:
+        async def send_message(self, **_kwargs):
+            raise AssertionError("Malformed creation broadcast a card")
+
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123456),
+        effective_chat=SimpleNamespace(id=123456),
+        effective_message=SimpleNamespace(message_id=98),
+    )
+    context = SimpleNamespace(bot=OfflineBot())
+    cases = (
+        ({"detail": f"internal token={secret}"}, "could not be confirmed"),
+        ({"detail": {"trace": secret}}, "could not be confirmed"),
+        ({"parser_status": "REJECTED", "parser_error": secret}, "did not accept"),
+        (None, "could not be confirmed"),
+        (["unexpected", secret], "could not be confirmed"),
+        ({"parser_status": "VALID"}, "could not be confirmed"),
+        ({"parser_status": "VALID", "id": [secret]}, "could not be confirmed"),
+    )
+
+    async def fake_post(path, **kwargs):
+        assert path == "/provider-sources/telegram/signals"
+        assert kwargs["json"]["raw_text"] == "XAUUSD BUY SL 1 TP1 2"
+        received.append(path)
+        return current_response
+
+    with (
+        patch.object(handlers, "_provider_source_status", source_status),
+        patch.object(handlers, "_backend_post", fake_post),
+        patch.object(handlers, "_active_recipients", forbidden_recipients),
+    ):
+        for current_response, expected in cases:
+            summary = asyncio.run(
+                handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+            )
+            assert expected in summary.lower(), "Creation response was not safely rejected"
+            assert "no subscriber card was sent" in summary.lower()
+            assert secret not in summary, "Untrusted error leaked into Telegram reply"
+            assert "created and card sent" not in summary.lower()
+    assert received == ["/provider-sources/telegram/signals"] * len(cases)
+
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -569,14 +1446,23 @@ def main() -> int:
         "Screenshot/photo/text handler routing incomplete"
     )
     check_telegram_httpx_token_log_privacy()
+    check_broadcast_failure_logs_are_private()
+    check_signal_create_backend_errors_remain_private()
     check_backend_http_fail_closed()
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()
+    check_screenshot_upload_size_guard()
+    check_telegram_download_transport_failures_fail_closed()
+    check_overlapping_screenshot_attempts_fail_closed()
     check_malformed_pending_confirmation_fails_closed()
     check_preview_keyboard_token_contract()
     check_preview_callback_identity_and_single_use()
+    check_edit_text_bound_to_preview_across_authorisation_await()
+    check_provider_source_status_requires_active_typed_binding()
     check_hosted_legacy_provider_status_never_grants_identity()
     check_connectprovider_error_does_not_echo_backend_secrets()
+    check_join_invite_backend_response_integrity()
+    check_connectprovider_success_receipt_integrity()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")
     return 0
 

@@ -99,7 +99,21 @@ async def _provider_source_status(
         params={"telegram_user_id": str(telegram_user_id)},
         headers=_registration_headers(),
     )
-    if not data or data.get("detail"):
+    # A successful HTTP status alone is not provider authority. The backend
+    # lookup must return an active, typed Telegram binding for this identity.
+    # Treat malformed arrays, error-shaped 200s and revoked/incomplete bindings
+    # as disconnected; never fall back to local identity in hosted mode.
+    if not isinstance(data, dict) or "detail" in data:
+        return None
+    if data.get("status") != "ACTIVE" or data.get("source_type") != "TELEGRAM":
+        return None
+    required_fields = (
+        "binding_id", "provider_id", "provider_name", "feed_id", "feed_name",
+    )
+    if any(
+        not isinstance(data.get(field), str) or not data[field].strip()
+        for field in required_fields
+    ):
         return None
     return data
 
@@ -191,7 +205,15 @@ async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         },
         headers=_registration_headers(),
     )
-    if registration is None or registration.get("detail"):
+    # Malformed/other-user registration is not authority to use an invite.
+    if (
+        not isinstance(registration, dict)
+        or "detail" in registration
+        or registration.get("telegram_user_id") != str(user.id)
+        or registration.get("status") != "ACTIVE"
+        or not isinstance(registration.get("id"), str)
+        or not registration["id"].strip()
+    ):
         await update.message.reply_text(
             "I couldn't confirm your SignalGate registration. Nothing was joined."
         )
@@ -206,20 +228,41 @@ async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         headers=_registration_headers(),
     )
     if result is None:
+        # A non-2xx or transport error is not proof the one-use POST was undone.
         await update.message.reply_text(
-            "SignalGate backend is unreachable. The invite was not confirmed."
+            "Invite acceptance could not be confirmed. Check feed membership "
+            "with your provider before retrying this one-time token."
         )
         return
-    if result.get("detail"):
+    if not isinstance(result, dict) or "detail" in result:
+        # Do not disclose backend diagnostic/token text in a Telegram reply.
+        # An unconfirmed POST may still have consumed the one-time invite.
         await update.message.reply_text(
-            f"Invite not accepted: {result.get('detail')}"
+            "Invite acceptance could not be confirmed. Check feed membership "
+            "with your provider before retrying this one-time token."
         )
         return
 
+    required_fields = (
+        "subscription_id", "account_id", "provider_id", "provider_name",
+        "feed_id", "feed_name",
+    )
+    if result.get("status") != "ACTIVE" or any(
+        not isinstance(result.get(field), str) or not result[field].strip()
+        for field in required_fields
+    ):
+        # A malformed HTTP 200 must not produce a false Joined receipt.
+        await update.message.reply_text(
+            "Invite acceptance could not be confirmed. Check feed membership "
+            "with your provider before retrying this one-time token."
+        )
+        return
+
+    display_name = result.get("provider_display_name")
     provider_name = (
-        result.get("provider_display_name")
-        or result.get("provider_name")
-        or "the provider"
+        display_name
+        if isinstance(display_name, str) and display_name.strip()
+        else result["provider_name"]
     )
     message = (
         f"Joined {provider_name} — {result.get('feed_name', 'feed')}.\n"
@@ -227,7 +270,7 @@ async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Demo mode only. No live trades."
     )
     license_key = registration.get("license_key")
-    if license_key:
+    if isinstance(license_key, str) and license_key:
         message += (
             "\n\nYour one-time EA licence is:\n"
             f"{license_key}\n"
@@ -290,23 +333,35 @@ async def connect_provider_source(
         },
         headers=_registration_headers(),
     )
-    if result is None:
+    if result is None or not isinstance(result, dict) or "detail" in result:
+        # The POST may have connected the source despite an ambiguous reply.
+        # Never echo backend details or advise blind re-use of a one-time token.
         await update.message.reply_text(
-            "SignalGate backend is unreachable. Provider source was not connected."
+            "Provider source connection could not be confirmed. Check its status "
+            "in the Provider Portal before requesting another one-time token."
         )
         return
-    if result.get("detail"):
-        # Backend diagnostics can contain token text or server internals.
-        # Never echo an arbitrary error detail to a Telegram conversation.
+    required_fields = (
+        "binding_id", "provider_id", "provider_name", "feed_id", "feed_name",
+    )
+    if (
+        result.get("status") != "ACTIVE"
+        or result.get("source_type") != "TELEGRAM"
+        or any(
+            not isinstance(result.get(field), str) or not result[field].strip()
+            for field in required_fields
+        )
+    ):
         await update.message.reply_text(
-            "Provider source not connected. The token may be invalid, expired, "
-            "or already used. Generate a new feed-bound token in the Provider Portal."
+            "Provider source connection could not be confirmed. Check its status "
+            "in the Provider Portal before requesting another one-time token."
         )
         return
+    display_name = result.get("provider_display_name")
     provider_name = (
-        result.get("provider_display_name")
-        or result.get("provider_name")
-        or "provider"
+        display_name
+        if isinstance(display_name, str) and display_name.strip()
+        else result["provider_name"]
     )
     await update.message.reply_text(
         f"Provider source connected to {provider_name} — "
@@ -512,12 +567,22 @@ async def _create_and_broadcast(
                 except (TypeError, ValueError):
                     expiry = 5
 
-    if signal is None:
-        return "Backend unreachable."
-    if signal.get("detail"):
-        return f"Signal not created: {signal.get('detail')}"
+    # A POST can have persisted a signal despite a malformed/failed response.
+    # Never echo untrusted backend detail or parser_error (possibly credentials)
+    # into Telegram; tell the provider to inspect history before retrying.
+    uncertain = (
+        "Signal submission could not be confirmed. Check provider history "
+        "before retrying; no subscriber card was sent."
+    )
+    if not isinstance(signal, dict) or signal.get("detail"):
+        return uncertain
     if signal.get("parser_status") != "VALID":
-        return f"Parser rejected signal: {signal.get('parser_error')}"
+        return (
+            "Parser did not accept this signal. Review the text and feed policy; "
+            "no subscriber card was sent."
+        )
+    if not isinstance(signal.get("id"), str) or not signal["id"].strip():
+        return uncertain
 
     from keyboards import format_trade_card, trade_card_keyboard
 
@@ -534,11 +599,9 @@ async def _create_and_broadcast(
             )
             sent += 1
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "send card to %s failed: %s",
-                recipient_chat_id,
-                exc,
-            )
+            # Telegram transport exceptions can contain bot-token URLs and
+            # recipient chat IDs. Log only the safe exception class.
+            logger.warning("send card failed: %s", type(exc).__name__)
     return f"Signal {signal['id']} created and card sent to {sent} subscriber(s)."
 
 
@@ -563,31 +626,134 @@ async def testsignal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # parser. We PREVIEW the result and only broadcast after the provider taps
 # Confirm. Nothing about extraction bypasses the parser or the human check.
 
+# Match the backend's 5 MiB signal-image limit before requesting a Telegram
+# download. Backend validates again; Telegram metadata alone is not authority.
+MAX_SIGNAL_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def _clear_pending_screenshot_preview(context: ContextTypes.DEFAULT_TYPE) -> None:
+    for key in (
+        "pending_signal_text", "awaiting_edit", "pending_preview_token",
+        "active_screenshot_attempt",
+    ):
+        context.user_data.pop(key, None)
+
+
+def _begin_screenshot_attempt(context: ContextTypes.DEFAULT_TYPE) -> str:
+    # A later screenshot supersedes every earlier in-flight download/extraction.
+    _clear_pending_screenshot_preview(context)
+    attempt_token = secrets.token_hex(16)
+    context.user_data["active_screenshot_attempt"] = attempt_token
+    return attempt_token
+
+
+def _is_current_screenshot_attempt(
+    context: ContextTypes.DEFAULT_TYPE, attempt_token: str
+) -> bool:
+    current = context.user_data.get("active_screenshot_attempt")
+    return (
+        isinstance(current, str)
+        and secrets.compare_digest(attempt_token, current)
+    )
+
+
+async def _reject_screenshot_size(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    size: int | None,
+    attempt_token: str,
+) -> bool:
+    # A delayed older request must never clear or upload a newer screenshot.
+    if not _is_current_screenshot_attempt(context, attempt_token):
+        return True
+    # Missing Telegram metadata is allowed only until the actual download size
+    # is checked; malformed or oversized reported sizes fail closed immediately.
+    if size is None:
+        return False
+    if type(size) is int and 0 <= size <= MAX_SIGNAL_IMAGE_BYTES:
+        return False
+    _clear_pending_screenshot_preview(context)
+    await update.message.reply_text(
+        "Screenshot size is invalid or exceeds 5 MiB; no preview was saved."
+    )
+    return True
+
+
+async def _download_telegram_screenshot(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    file_id: str,
+    attempt_token: str,
+) -> Optional[bytes]:
+    """Contain Telegram file errors without logging bot-token-bearing exception text."""
+    try:
+        tg_file = await context.bot.get_file(file_id)
+        # The resolved File may disagree with message metadata. Refuse before
+        # allocating image bytes; only the current screenshot may change state.
+        if await _reject_screenshot_size(
+            update, context, tg_file.file_size, attempt_token
+        ):
+            return None
+        downloaded = await tg_file.download_as_bytearray()
+        if await _reject_screenshot_size(
+            update, context, len(downloaded), attempt_token
+        ):
+            return None
+        return bytes(downloaded)
+    except Exception as exc:  # noqa: BLE001
+        # Unhandled Telegram transport errors may contain full /bot<TOKEN>/
+        # URLs. A late failed request must not erase a newer preview.
+        if not _is_current_screenshot_attempt(context, attempt_token):
+            return None
+        _clear_pending_screenshot_preview(context)
+        logger.warning("Telegram screenshot download failed: %s", type(exc).__name__)
+        await update.message.reply_text(
+            "Screenshot couldn't be retrieved. No preview was saved. Please try again."
+        )
+        return None
+
+
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _can_submit_provider_signal(update):
+    attempt_token = _begin_screenshot_attempt(context)
+    authorised = await _can_submit_provider_signal(update)
+    if not _is_current_screenshot_attempt(context, attempt_token):
+        return
+    if not authorised:
+        _clear_pending_screenshot_preview(context)
         await update.message.reply_text(
             "Connect this Telegram account to a provider feed with "
             "/connectprovider before submitting screenshots."
         )
         return
 
-    await update.message.reply_text("📷 Reading your screenshot…")
-
-    # Download the highest-resolution version of the photo.
+    # Refuse oversized metadata before any Telegram file download.
     photo = update.message.photo[-1]
-    tg_file = await context.bot.get_file(photo.file_id)
-    image_bytes = bytes(await tg_file.download_as_bytearray())
-
+    if await _reject_screenshot_size(update, context, photo.file_size, attempt_token):
+        return
+    await update.message.reply_text("📷 Reading your screenshot…")
+    if not _is_current_screenshot_attempt(context, attempt_token):
+        return
+    image_bytes = await _download_telegram_screenshot(
+        update, context, photo.file_id, attempt_token
+    )
+    if image_bytes is None:
+        return
     await _preview_screenshot(
         update=update,
         context=context,
         image_bytes=image_bytes,
         mime="image/jpeg",
+        attempt_token=attempt_token,
     )
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _can_submit_provider_signal(update):
+    attempt_token = _begin_screenshot_attempt(context)
+    authorised = await _can_submit_provider_signal(update)
+    if not _is_current_screenshot_attempt(context, attempt_token):
+        return
+    if not authorised:
+        _clear_pending_screenshot_preview(context)
         await update.message.reply_text(
             "Connect this Telegram account to a provider feed with "
             "/connectprovider before submitting screenshots."
@@ -597,17 +763,26 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     document = update.message.document
     mime = document.mime_type or "application/octet-stream"
     if not mime.startswith("image/"):
+        _clear_pending_screenshot_preview(context)
         await update.message.reply_text("Please send an image screenshot.")
         return
 
+    if await _reject_screenshot_size(update, context, document.file_size, attempt_token):
+        return
     await update.message.reply_text("📷 Reading your screenshot…")
-    tg_file = await context.bot.get_file(document.file_id)
-    image_bytes = bytes(await tg_file.download_as_bytearray())
+    if not _is_current_screenshot_attempt(context, attempt_token):
+        return
+    image_bytes = await _download_telegram_screenshot(
+        update, context, document.file_id, attempt_token
+    )
+    if image_bytes is None:
+        return
     await _preview_screenshot(
         update=update,
         context=context,
         image_bytes=image_bytes,
         mime=mime,
+        attempt_token=attempt_token,
     )
 
 
@@ -649,14 +824,20 @@ async def _preview_screenshot(
     context: ContextTypes.DEFAULT_TYPE,
     image_bytes: bytes,
     mime: str,
+    attempt_token: str | None = None,
 ) -> None:
-    # Never leave an earlier unsent preview available when a new screenshot
-    # fails extraction or its provider source has been revoked.
-    context.user_data.pop("pending_signal_text", None)
-    context.user_data.pop("awaiting_edit", None)
-    context.user_data.pop("pending_preview_token", None)
+    # Direct/offline callers preserve the earlier fresh-preview behaviour.
+    # Telegram screenshot handlers supply the same token across awaits.
+    if attempt_token is None:
+        _clear_pending_screenshot_preview(context)
+    elif not _is_current_screenshot_attempt(context, attempt_token):
+        return
     user_id = update.effective_user.id
     source = await _provider_source_status(user_id)
+    if attempt_token is not None and not _is_current_screenshot_attempt(
+        context, attempt_token
+    ):
+        return
     if source:
         url = f"{config.backend_base_url}/provider-sources/telegram/extract"
         headers = _registration_headers()
@@ -683,8 +864,14 @@ async def _preview_screenshot(
                 headers=headers,
                 files={"file": ("signal", image_bytes, mime)},
             )
+            if attempt_token is not None and not _is_current_screenshot_attempt(
+                context, attempt_token
+            ):
+                return
             if resp.status_code != 200:
                 # Backend error bodies may contain secrets or internal details.
+                if attempt_token is not None:
+                    _clear_pending_screenshot_preview(context)
                 logger.warning("backend screenshot extraction returned HTTP %s", resp.status_code)
                 await update.message.reply_text(
                     "Screenshot extraction was rejected by the backend. "
@@ -693,6 +880,10 @@ async def _preview_screenshot(
                 return
             data = resp.json()
     except Exception as exc:  # noqa: BLE001
+        if attempt_token is not None:
+            if not _is_current_screenshot_attempt(context, attempt_token):
+                return
+            _clear_pending_screenshot_preview(context)
         # HTTP exceptions can include credential-bearing URLs or response text.
         logger.warning("extract failed: %s", type(exc).__name__)
         await update.message.reply_text(
@@ -703,6 +894,8 @@ async def _preview_screenshot(
     # Treat extractor JSON as untrusted even on HTTP 200. A malformed response
     # must not crash callbacks or leave an earlier preview confirmable.
     if not _valid_screenshot_preview_payload(data):
+        if attempt_token is not None:
+            _clear_pending_screenshot_preview(context)
         logger.warning("backend screenshot extraction returned invalid preview shape")
         await update.message.reply_text(
             "Screenshot extraction returned an invalid response. Nothing was saved. "
@@ -719,6 +912,8 @@ async def _preview_screenshot(
         preview_length = len(preview.encode("utf-16-le")) // 2
         preview.encode("utf-8")
     except (TypeError, ValueError, UnicodeError, OverflowError):
+        if attempt_token is not None:
+            _clear_pending_screenshot_preview(context)
         logger.warning("backend screenshot extraction returned unrenderable preview")
         await update.message.reply_text(
             "Screenshot preview could not be rendered. Nothing was saved. "
@@ -726,6 +921,8 @@ async def _preview_screenshot(
         )
         return
     if preview_length > 3900:
+        if attempt_token is not None:
+            _clear_pending_screenshot_preview(context)
         logger.warning("backend screenshot extraction preview exceeded display limit")
         await update.message.reply_text(
             "Screenshot preview was too long. Nothing was saved. "
@@ -733,7 +930,12 @@ async def _preview_screenshot(
         )
         return
 
-    # Old message buttons must never authorise the current screenshot.
+    # An older extraction may complete after a newer screenshot was started.
+    # Never let it overwrite the new preview or issue a confirmable callback.
+    if attempt_token is not None:
+        if not _is_current_screenshot_attempt(context, attempt_token):
+            return
+        context.user_data.pop("active_screenshot_attempt", None)
     preview_token = secrets.token_hex(8)
     context.user_data["pending_signal_text"] = data.get("extracted_text", "")
     context.user_data["pending_preview_token"] = preview_token
@@ -823,7 +1025,30 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Free-text handler. Only acts when the admin is editing an extracted signal."""
     if not context.user_data.get("awaiting_edit"):
         return  # ignore ordinary chatter
-    if not await _can_submit_provider_signal(update):
+    # Bind corrected text to its exact preview across the async permission check.
+    # A newer screenshot/cancel or another edit can consume it while I/O awaits.
+    edit_token = context.user_data.get("pending_preview_token")
+    if (
+        not isinstance(edit_token, str)
+        or len(edit_token) != 16
+        or any(ch not in "0123456789abcdef" for ch in edit_token)
+    ):
+        context.user_data.pop("awaiting_edit", None)
+        return
+    authorised = await _can_submit_provider_signal(update)
+    refreshed = context.user_data.get("pending_preview_token")
+    if (
+        not context.user_data.get("awaiting_edit")
+        or not isinstance(refreshed, str)
+        or len(refreshed) != 16
+        or any(ch not in "0123456789abcdef" for ch in refreshed)
+        or not secrets.compare_digest(edit_token, refreshed)
+    ):
+        return  # An obsolete edit must never act on a newer preview.
+    if not authorised:
+        context.user_data.pop("awaiting_edit", None)
+        context.user_data.pop("pending_signal_text", None)
+        context.user_data.pop("pending_preview_token", None)
         return
     raw_text = (update.message.text or "").strip()
     if not raw_text:
