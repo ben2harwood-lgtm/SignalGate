@@ -244,10 +244,21 @@ def test_bound_source_recipients_are_only_that_feeds_consented_subscribers(clien
     u1 = register_user(client, "9205", "feed_a", "Feed A")
     u2 = register_user(client, "9206", "feed_b", "Feed B")
     u3 = register_user(client, "not-a-chat-id", "non_numeric", "Non Numeric")
+    max_user = register_user(client, "4503599627370495", "max_direct_id", "Max Direct")
+    invalid_users = [
+        register_user(client, value, f"invalid_direct_{i}", "Invalid Direct")
+        for i, value in enumerate((
+            "-1001234567890", "0", "09205", "4503599627370496",
+            "12345678901234567", "１２３４",
+        ))
+    ]
 
     crud.subscribe_user_to_feed(db, p1, f1, db.get(models.User, u1["id"]))
     crud.subscribe_user_to_feed(db, p2, f2, db.get(models.User, u2["id"]))
     crud.subscribe_user_to_feed(db, p1, f1, db.get(models.User, u3["id"]))
+    crud.subscribe_user_to_feed(db, p1, f1, db.get(models.User, max_user["id"]))
+    for invalid_user in invalid_users:
+        crud.subscribe_user_to_feed(db, p1, f1, db.get(models.User, invalid_user["id"]))
     db.commit()
 
     invite = _source_invite(client, p1, f1, k1)
@@ -261,7 +272,7 @@ def test_bound_source_recipients_are_only_that_feeds_consented_subscribers(clien
     assert response.json()["provider_id"] == p1.id
     assert response.json()["feed_id"] == f1.id
     ids = {x["telegram_user_id"] for x in response.json()["recipients"]}
-    assert ids == {"9205"}
+    assert ids == {"9205", "4503599627370495"}
 
 
 def test_bound_source_recipients_refuse_pause_after_source_connect(client, db):
