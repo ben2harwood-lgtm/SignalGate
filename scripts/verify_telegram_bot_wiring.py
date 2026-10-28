@@ -556,6 +556,68 @@ def check_preview_callback_identity_and_single_use() -> None:
     assert calls == ["B-SIGNAL"]
 
 
+def check_shared_chat_text_edits_fail_closed() -> None:
+    """Group/unknown text cannot consume a user-scoped private screenshot edit."""
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("Shared-chat edit reached provider backend or broadcast")
+
+    for chat_type in ("group", "supergroup", "channel", None):
+        for awaiting_edit in (True, False):
+            replies = []
+
+            async def reply_text(text, **_kwargs):
+                replies.append(text)
+
+            state = {
+                "awaiting_edit": awaiting_edit,
+                "pending_signal_text": "PRIVATE-PREVIEW-SIGNAL",
+                "pending_preview_token": "a" * 16,
+                "pending_provider_source_scope": {
+                    "binding_id": "PRIVATE-BINDING",
+                    "provider_id": "PRIVATE-PROVIDER", "feed_id": "PRIVATE-FEED",
+                },
+            }
+            original = {
+                **state,
+                "pending_provider_source_scope": dict(
+                    state["pending_provider_source_scope"]
+                ),
+            }
+            update = SimpleNamespace(
+                effective_chat=(
+                    SimpleNamespace(type=chat_type) if chat_type else None
+                ),
+                effective_user=SimpleNamespace(id=123456),
+                message=SimpleNamespace(
+                    text="SHARED-CHAT-SIGNAL-DO-NOT-SUBMIT",
+                    reply_text=reply_text,
+                ),
+            )
+            context = SimpleNamespace(user_data=state)
+            with (
+                patch.object(handlers, "_preview_source_authorised", forbidden),
+                patch.object(handlers, "_create_and_broadcast", forbidden),
+                patch.object(handlers, "_backend_get", forbidden),
+                patch.object(handlers, "_backend_post", forbidden),
+            ):
+                asyncio.run(handlers.on_text(update, context))
+            assert state == original, (chat_type, awaiting_edit, state)
+            if awaiting_edit:
+                assert len(replies) == 1, (chat_type, replies)
+                assert "private chat" in replies[0].lower()
+                assert "nothing was sent" in replies[0].lower()
+                assert all(
+                    marker not in replies[0]
+                    for marker in (
+                        "PRIVATE-PREVIEW-SIGNAL", "PRIVATE-BINDING",
+                        "PRIVATE-PROVIDER", "PRIVATE-FEED",
+                        "SHARED-CHAT-SIGNAL-DO-NOT-SUBMIT",
+                    )
+                ), "Shared chat echoed private preview or submitted text"
+            else:
+                assert replies == [], "Ordinary shared-chat chatter got a bot reply"
+
+
 def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
     """Late edit-text requests cannot use or clear a newer preview."""
     async def superseded(allowed: bool, cancelled: bool) -> None:
@@ -571,9 +633,12 @@ def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
         async def reply_text(text, **_kwargs):
             replies.append(text)
 
-        update = SimpleNamespace(message=SimpleNamespace(
-            text="OLD BUY SL 1 TP1 2", reply_text=reply_text
-        ))
+        update = SimpleNamespace(
+            message=SimpleNamespace(
+                text="OLD BUY SL 1 TP1 2", reply_text=reply_text
+            ),
+            effective_chat=SimpleNamespace(type="private"),
+        )
 
         async def source(_update, _scope=None):
             entered.set()
@@ -618,9 +683,12 @@ def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
         async def reply_text(_text, **_kwargs):
             return None
 
-        update = SimpleNamespace(message=SimpleNamespace(
-            text="EDITED BUY SL 1 TP1 2", reply_text=reply_text
-        ))
+        update = SimpleNamespace(
+            message=SimpleNamespace(
+                text="EDITED BUY SL 1 TP1 2", reply_text=reply_text
+            ),
+            effective_chat=SimpleNamespace(type="private"),
+        )
 
         async def source(_update, _scope=None):
             nonlocal entered
@@ -660,9 +728,12 @@ def check_edit_text_bound_to_preview_across_authorisation_await() -> None:
         async def reply_text(text, **_kwargs):
             replies.append(text)
 
-        update = SimpleNamespace(message=SimpleNamespace(
-            text="VALID BUY SL 1 TP1 2", reply_text=reply_text
-        ))
+        update = SimpleNamespace(
+            message=SimpleNamespace(
+                text="VALID BUY SL 1 TP1 2", reply_text=reply_text
+            ),
+            effective_chat=SimpleNamespace(type="private"),
+        )
 
         async def create(_update, _context, raw_text, **_kwargs):
             calls.append(raw_text)
@@ -2157,6 +2228,7 @@ def main() -> int:
     check_shared_chat_preview_callbacks_fail_closed()
     check_preview_source_rebind_blocks_confirmation()
     check_edit_text_bound_to_preview_across_authorisation_await()
+    check_shared_chat_text_edits_fail_closed()
     check_provider_source_status_requires_active_typed_binding()
     check_hosted_legacy_provider_status_never_grants_identity()
     check_connectprovider_error_does_not_echo_backend_secrets()
