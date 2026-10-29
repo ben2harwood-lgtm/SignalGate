@@ -512,11 +512,11 @@ separate verification.
 
 ## /start connected-source display boundary (offline verified only)
 
-A private Telegram \`/start\` for an existing ACTIVE, typed provider/feed
+A private Telegram `/start` for an existing ACTIVE, typed provider/feed
 source must treat the backend's provider display name, provider-name fallback
 and feed name as untrusted presentation data. The names use the same
-length-bounded Unicode control/separator rejection as \`/status\`,
-\`/join\` and \`/connectprovider\`; unsafe labels show \`unavailable\` instead
+length-bounded Unicode control/separator rejection as `/status`,
+`/join` and `/connectprovider`; unsafe labels show `unavailable` instead
 of injecting extra safety or account-state lines. An ACTIVE binding remains
 the separate prerequisite for the provider greeting; formatting does not
 alter tenancy, membership or source authority. Shared/unknown chats are
