@@ -174,8 +174,9 @@ This is an offline-tested routing boundary, not a substitute for backend tenancy
 
 The bot separately validates a persisted VALID market signal's visible card
 fields before building any subscriber approval card or querying recipients:
-bounded single-line ASCII symbols, BUY/SELL, MARKET entry and finite positive
-numeric SL/TP/optional entry levels. Missing required SL/TP1, booleans,
+bounded single-line ASCII symbols, BUY/SELL, MARKET or valid numeric LIMIT
+entry and finite positive numeric SL/TP/optional entry levels. LIMIT display
+remains a preview; the demo EA separately refuses LIMIT execution. Missing required SL/TP1, booleans,
 non-finite/huge numbers, injected line breaks and Unicode format controls fail
 closed with generic provider-history guidance. A successful signal-creation
 HTTP status alone never authorises an unverified display. This is an isolated
