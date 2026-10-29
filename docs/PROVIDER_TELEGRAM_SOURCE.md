@@ -67,6 +67,16 @@ private non-admin users still receive the generic denial. Negative and
 positive synthetic offline tests cover these boundaries; they do not establish
 actual Telegram delivery, MT5 broker-demo acceptance or external assurance.
 
+## Administrator `/users` count privacy (offline guard)
+
+The `/users` administrator command must be sent in a private Telegram chat.
+Group, supergroup, channel and missing-chat requests are refused before
+administrator identity, credential/header creation or backend `/admin/status`
+access. Refusals contain no user count or submitted text. Private administrators
+retain the existing approximate count response; private non-admin users remain
+denied. Adversarial and positive checks use synthetic offline handlers only,
+not real Telegram delivery, MT5 broker-demo or external acceptance.
+
 ## Screenshot-preview callback privacy (offline guard)
 
 Confirm, Edit and Cancel screenshot buttons are accepted only in a private
