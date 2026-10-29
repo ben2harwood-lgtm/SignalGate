@@ -333,6 +333,16 @@ shared chats receive only a generic instruction **before** either `/health`
 or provider-source status is queried. Offline tests cover these refusal paths;
 this does not establish actual Telegram delivery or external acceptance.
 
+## Screenshot help source-status privacy (offline verified only)
+
+The `/screenshothelp` command checks whether a provider source is connected
+before showing the screenshot workflow. Group, supergroup, channel and missing
+chat contexts now receive only generic private-chat guidance **before** any
+provider-source lookup. Private connected-source instructions and private
+unconnected-source denial remain unchanged. Offline negative/positive mocks
+cover these paths; they do not prove actual Telegram delivery, provider
+authorisation outside the handler, broadcast safety or broker-demo acceptance.
+
 ## Provider screenshot upload privacy (offline verified only)
 
 Photos and image documents sent to SignalGate must arrive in a **private chat**.
