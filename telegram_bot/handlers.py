@@ -1370,6 +1370,13 @@ async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Administrative user counts must never be requested from a shared chat.
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Use /users in a private chat with SignalGate. "
+            "No user statistics were retrieved."
+        )
+        return
     if not _require_admin(update):
         await update.message.reply_text("Admin only.")
         return
