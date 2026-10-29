@@ -510,6 +510,20 @@ apply. These are offline handler checks, not real Telegram delivery or permissio
 to broadcast or trade; callback and edit-message privacy require their own
 separate verification.
 
+## /start connected-source display boundary (offline verified only)
+
+A private Telegram \`/start\` for an existing ACTIVE, typed provider/feed
+source must treat the backend's provider display name, provider-name fallback
+and feed name as untrusted presentation data. The names use the same
+length-bounded Unicode control/separator rejection as \`/status\`,
+\`/join\` and \`/connectprovider\`; unsafe labels show \`unavailable\` instead
+of injecting extra safety or account-state lines. An ACTIVE binding remains
+the separate prerequisite for the provider greeting; formatting does not
+alter tenancy, membership or source authority. Shared/unknown chats are
+refused before any backend read, registration or one-time credential handling.
+Offline tests cover these paths without a live Telegram connection, MT5 broker
+or independent external acceptance.
+
 ## /start registration receipt privacy (offline verified only)
 
 The hosted bot must not display a newly issued one-time EA licence based only

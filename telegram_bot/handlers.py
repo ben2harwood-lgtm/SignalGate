@@ -239,14 +239,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     source = await _provider_source_status(user.id)
     if source:
-        provider_name = (
-            source.get("provider_display_name")
-            or source.get("provider_name")
-            or "provider"
+        # Binding authority is checked above; its names remain untrusted text.
+        provider_name = _safe_status_label(
+            source.get("provider_display_name") or source.get("provider_name")
         )
+        feed_name = _safe_status_label(source.get("feed_name"))
         await update.message.reply_text(
             f"SignalGate provider source connected to {provider_name} — "
-            f"{source.get('feed_name', 'feed')}.\n"
+            f"{feed_name}.\n"
             f"Your Telegram id is {user.id}.\n\n"
             "Send a signal screenshot. I will preview the extracted levels and "
             "wait for Confirm before any subscriber card is sent."

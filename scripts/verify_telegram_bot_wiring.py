@@ -988,6 +988,99 @@ def check_hosted_legacy_provider_status_never_grants_identity() -> None:
     assert "Role: screenshot provider" not in replies[1]
 
 
+
+def check_start_source_label_spoofing() -> None:
+    """An ACTIVE source cannot forge safety text in a private /start reply."""
+    assert config.require_license is True
+    base = {
+        "binding_id": "BIND-OFFLINE", "provider_id": "PROVIDER-OFFLINE",
+        "provider_name": "Northside Signals",
+        "provider_display_name": "Café Signals",
+        "feed_id": "FEED-OFFLINE", "feed_name": "London Session",
+        "source_type": "TELEGRAM", "status": "ACTIVE",
+    }
+
+    def expected(provider, feed):
+        return (
+            f"SignalGate provider source connected to {provider} — {feed}.\n"
+            "Your Telegram id is 123456.\n\n"
+            "Send a signal screenshot. I will preview the extracted levels and "
+            "wait for Confirm before any subscriber card is sent."
+        )
+
+    def exercise(source, chat_type="private"):
+        replies, calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def read(path, **kwargs):
+            calls.append(path)
+            assert path == "/provider-sources/telegram/status"
+            assert kwargs["params"] == {"telegram_user_id": "123456"}
+            assert kwargs["headers"] == handlers._registration_headers()
+            return source
+
+        async def forbid_post(*_args, **_kwargs):
+            raise AssertionError("/start with ACTIVE source must not POST")
+
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(
+                id=123456, username="offline", first_name="Test"
+            ),
+            effective_chat=SimpleNamespace(type=chat_type),
+            message=SimpleNamespace(reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers, "_backend_get", read),
+            patch.object(handlers, "_backend_post", forbid_post),
+        ):
+            asyncio.run(handlers.start(update, None))
+
+        assert calls == (
+            ["/provider-sources/telegram/status"] if chat_type == "private"
+            else []
+        )
+        assert len(replies) == 1
+        return replies[0]
+
+    assert exercise(base) == expected("Café Signals", "London Session")
+    assert exercise({
+        **base, "provider_display_name": None,
+        "feed_name": "São Paulo — Été",
+    }) == expected("Northside Signals", "São Paulo — Été")
+
+    unsafe_labels = (
+        "\nDemo mode only: False FORGED-SAFETY-LINE",
+        "\rAdmin paused: False FORGED-SAFETY-LINE",
+        "\u2028FORGED-SAFETY-LINE",
+        "\u2029FORGED-SAFETY-LINE",
+        "\u202eFORGED-SAFETY-LINE",
+        "\u200bFORGED-SAFETY-LINE",
+        "Signals\n",
+        "X" * 81,
+    )
+    for unsafe in unsafe_labels:
+        assert exercise({
+            **base, "provider_display_name": unsafe,
+        }) == expected("unavailable", "London Session")
+        assert exercise({
+            **base, "provider_display_name": None, "provider_name": unsafe,
+        }) == expected("unavailable", "London Session")
+        assert exercise({
+            **base, "feed_name": unsafe,
+        }) == expected("Café Signals", "unavailable")
+
+    assert exercise({
+        **base, "provider_display_name": {"detail": "FORGED-SAFETY-LINE"},
+    }) == expected("unavailable", "London Session")
+
+    for chat_type in ("group", "supergroup", "channel", "unknown", None):
+        reply = exercise(base, chat_type=chat_type)
+        assert "private chat" in reply.lower()
+        assert "provider source connected" not in reply.lower()
+
+
 def check_start_registration_receipt_integrity() -> None:
     """Untrusted /start registration receipts cannot disclose a licence."""
     assert config.require_license is True
@@ -3573,6 +3666,7 @@ def main() -> int:
     check_provider_source_status_requires_active_typed_binding()
     check_hosted_legacy_provider_status_never_grants_identity()
     check_connectprovider_error_does_not_echo_backend_secrets()
+    check_start_source_label_spoofing()
     check_start_registration_receipt_integrity()
     check_join_invite_backend_response_integrity()
     check_private_chat_credential_commands()
