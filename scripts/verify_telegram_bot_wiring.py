@@ -2398,6 +2398,73 @@ def check_lastcommands_private_chat_boundary() -> None:
 
 
 
+def check_screenshot_help_private_chat_boundary() -> None:
+    """Shared chats cannot query provider source status via /screenshothelp."""
+    marker = "SYNTHETIC-SOURCE-STATUS-DO-NOT-ECHO"
+
+    async def forbidden_lookup(*_args, **_kwargs):
+        raise AssertionError("Shared screenshot help queried provider source")
+
+    for chat_type in ("group", "supergroup", "channel", None):
+        replies = []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        update = SimpleNamespace(
+            effective_chat=(
+                SimpleNamespace(type=chat_type) if chat_type is not None else None
+            ),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(
+                text="/screenshothelp " + marker, reply_text=reply_text
+            ),
+        )
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", forbidden_lookup),
+            patch.object(handlers, "_backend_get", forbidden_lookup),
+            patch.object(handlers, "_backend_post", forbidden_lookup),
+        ):
+            asyncio.run(handlers.screenshot_help(update, SimpleNamespace()))
+        assert replies == [
+            "Use /screenshothelp in a private chat with SignalGate. "
+            "No provider source was checked."
+        ]
+        assert marker not in replies[0]
+        assert "Screenshot workflow:" not in replies[0]
+
+    for connected in (True, False):
+        replies, lookups = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def provider_check(update):
+            lookups.append(update.effective_user.id)
+            return connected
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/screenshothelp", reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers, "_can_submit_provider_signal", provider_check),
+            patch.object(handlers, "_backend_get", forbidden_lookup),
+            patch.object(handlers, "_backend_post", forbidden_lookup),
+        ):
+            asyncio.run(handlers.screenshot_help(update, SimpleNamespace()))
+        assert lookups == [123456], "Private source lookup must happen once"
+        assert len(replies) == 1
+        if connected:
+            assert replies[0].startswith("Screenshot workflow:")
+            assert "Nothing is sent to testers until you confirm." in replies[0]
+        else:
+            assert replies[0].startswith(
+                "Screenshot submission requires a connected provider source."
+            )
+
+
 def check_resume_private_chat_boundary() -> None:
     """Lifting the demo pause must not originate from shared Telegram chats."""
     secret = "SYNTHETIC-RESUME-COMMAND-DO-NOT-ECHO"
@@ -2701,6 +2768,7 @@ def main() -> int:
     check_lastsignals_private_chat_boundary()
     check_lastcommands_private_chat_boundary()
     check_users_private_chat_boundary()
+    check_screenshot_help_private_chat_boundary()
     check_resume_private_chat_boundary()
     check_settings_private_chat_boundary()
     check_shared_chat_screenshot_uploads_fail_closed()
