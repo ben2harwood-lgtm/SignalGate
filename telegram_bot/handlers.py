@@ -1358,6 +1358,15 @@ async def pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Resuming lifts a protective pause. Never let shared/unknown Telegram
+    # chats submit the state-changing request or consult admin credentials.
+    # Do not restrict /pause here: it is a separate emergency-stop control.
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Use /resume in a private chat with SignalGate. "
+            "No resume request was submitted."
+        )
+        return
     if not _require_admin(update):
         await update.message.reply_text("Admin only.")
         return
