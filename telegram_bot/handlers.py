@@ -389,8 +389,11 @@ async def join_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if isinstance(display_name, str) and display_name.strip()
         else result["provider_name"]
     )
+    # A confirmed invite is not authority to display arbitrary backend names.
+    provider_label = _safe_status_label(provider_name)
+    feed_label = _safe_status_label(result["feed_name"])
     message = (
-        f"Joined {provider_name} — {result.get('feed_name', 'feed')}.\n"
+        f"Joined {provider_label} — {feed_label}.\n"
         "You will only receive cards for feeds you have explicitly joined.\n"
         "Demo mode only. No live trades."
     )
@@ -528,9 +531,12 @@ async def connect_provider_source(
         if isinstance(display_name, str) and display_name.strip()
         else result["provider_name"]
     )
+    # Connection authority and Telegram-safe presentation are separate checks.
+    provider_label = _safe_status_label(provider_name)
+    feed_label = _safe_status_label(result["feed_name"])
     await update.message.reply_text(
-        f"Provider source connected to {provider_name} — "
-        f"{result.get('feed_name', 'feed')}.\n"
+        f"Provider source connected to {provider_label} — "
+        f"{feed_label}.\n"
         "Send /screenshothelp or send a signal screenshot when ready.\n"
         "Demo mode only."
     )
