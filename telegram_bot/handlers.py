@@ -1377,6 +1377,14 @@ async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def lastsignals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Signal history belongs in the administrator's private chat, never in a
+    # shared conversation where its contents and identity may be forwarded.
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Use /lastsignals in a private chat with SignalGate. "
+            "No signal history was retrieved."
+        )
+        return
     if not _require_admin(update):
         await update.message.reply_text("Admin only.")
         return

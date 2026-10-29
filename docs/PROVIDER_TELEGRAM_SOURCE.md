@@ -37,6 +37,15 @@ private non-admin users still receive "Admin only." Synthetic offline cases
 exercise these paths; they do not demonstrate real Telegram delivery or
 MT5 demo-broker execution.
 
+## Administrator `/lastsignals` history privacy (offline guard)
+
+`/lastsignals` also requires a private chat, even for an administrator.
+Group/supergroup/channel or missing-chat requests are refused before an admin
+identity check or backend history retrieval, with no signal IDs, symbols or
+submitted text reflected. Existing private admin history and private non-admin
+rejection remain intact. These protections have isolated synthetic handler
+tests only; they are not Telegram delivery or MT5 broker-demo receipts.
+
 ## Screenshot-preview callback privacy (offline guard)
 
 Confirm, Edit and Cancel screenshot buttons are accepted only in a private

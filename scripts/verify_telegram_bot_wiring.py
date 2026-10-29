@@ -2249,6 +2249,77 @@ def check_testsignal_private_chat_boundary() -> None:
         assert calls == ([raw] if admin else [])
 
 
+def check_lastsignals_private_chat_boundary() -> None:
+    """Never fetch or display admin signal history in a shared/unknown chat."""
+    secret = "SYNTHETIC-PRIVATE-HISTORY-DO-NOT-ECHO"
+
+    async def forbidden_backend(*_args, **_kwargs):
+        raise AssertionError("Shared/non-admin chat queried private signal history")
+
+    def forbidden_admin(*_args, **_kwargs):
+        raise AssertionError("Shared-chat history command consulted admin identity")
+
+    for chat_type in ("group", "supergroup", "channel", None):
+        replies = []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        update = SimpleNamespace(
+            effective_chat=(
+                SimpleNamespace(type=chat_type) if chat_type is not None else None
+            ),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(
+                text="/lastsignals " + secret, reply_text=reply_text
+            ),
+        )
+        with (
+            patch.object(handlers.config, "is_admin", forbidden_admin),
+            patch.object(handlers, "_backend_get", forbidden_backend),
+        ):
+            asyncio.run(handlers.lastsignals(update, SimpleNamespace()))
+        assert len(replies) == 1 and "private chat" in replies[0].lower()
+        assert "no signal history was retrieved" in replies[0].lower()
+        assert secret not in replies[0] and "SIG-OFFLINE" not in replies[0]
+
+    for admin in (True, False):
+        replies, backend_calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def private_history(path, **kwargs):
+            backend_calls.append((path, kwargs))
+            return [{
+                "id": "SIG-OFFLINE", "symbol": "EURUSD",
+                "direction": "BUY", "parser_status": "VALID", "status": "VALID",
+            }]
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/lastsignals", reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers.config, "is_admin", lambda _user_id: admin),
+            patch.object(
+                handlers, "_backend_get",
+                private_history if admin else forbidden_backend,
+            ),
+        ):
+            asyncio.run(handlers.lastsignals(update, SimpleNamespace()))
+        if admin:
+            assert len(backend_calls) == 1
+            assert backend_calls[0][0] == "/signals/recent"
+            assert backend_calls[0][1]["headers"] == handlers._admin_headers(123456)
+            assert replies == [
+                "Recent signals:\\nSIG-OFFLINE: EURUSD BUY [VALID] VALID"
+            ]
+        else:
+            assert not backend_calls and replies == ["Admin only."]
+
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -2310,6 +2381,7 @@ def main() -> int:
     check_join_invite_backend_response_integrity()
     check_private_chat_credential_commands()
     check_testsignal_private_chat_boundary()
+    check_lastsignals_private_chat_boundary()
     check_shared_chat_screenshot_uploads_fail_closed()
     check_connectprovider_success_receipt_integrity()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")
