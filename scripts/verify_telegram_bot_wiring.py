@@ -2314,7 +2314,7 @@ def check_lastsignals_private_chat_boundary() -> None:
             assert backend_calls[0][0] == "/signals/recent"
             assert backend_calls[0][1]["headers"] == handlers._admin_headers(123456)
             assert replies == [
-                "Recent signals:\\nSIG-OFFLINE: EURUSD BUY [VALID] VALID"
+                "Recent signals:\nSIG-OFFLINE: EURUSD BUY [VALID] VALID"
             ]
         else:
             assert not backend_calls and replies == ["Admin only."]
