@@ -229,8 +229,10 @@ token text or server diagnostics from that failure into Telegram.
 Hosted screenshot eligibility now requires a well-formed `ACTIVE` / `TELEGRAM`
 provider-source status response with nonempty binding, provider and feed
 identifiers and names. The status response carries the **effective expiry**
-used by server-side signal parsing: the feed override, or the server default
-when no override is configured. The bot accepts only an exact integer from 1
+used by server-side signal parsing: the feed override, or the same database-backed
+default used by the parser when no override is configured (including any
+operator-managed setting). It must not report only the environment default when
+a persisted setting overrides it. The bot accepts only an exact integer from 1
 through 1440; missing/null, boolean, float, string, zero, negative or
 over-limit expiry values fail closed before screenshot extraction or signal
 creation, so a human approval card cannot claim an expiry different from the
