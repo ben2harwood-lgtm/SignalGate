@@ -322,6 +322,22 @@ Telegram delivery, MT5 demo acceptance, external assurance or release approval.
 No POST, retry, trading-mode change, new backend credential or shared-chat
 access is introduced.
 
+## Administrator /settings response integrity (offline test contract)
+
+The private-chat /settings handler queries GET /admin/status once. When that
+protected endpoint refuses a non-admin (None), it can read GET /health once
+and show generic defaults only with a typed demo_only_mode=true receipt.
+Malformed 2xx responses never trigger that fallback. Administrator settings
+are displayed only from an error-free mapping with demo_only_mode=true.
+Displayed numeric tokens are bounded nonnegative decimal values; the
+split-ticket flag is a typed boolean or true/false string. Missing numeric
+settings are explicitly "not set". Malformed, control-bearing, overly long,
+nested or error-shaped values yield generic unconfirmed guidance without
+exposing backend diagnostics or guessed operating status. Shared chats still
+reach neither backend endpoint. No backend POST, retries, account operation,
+Telegram delivery or external acceptance is claimed. These are synthetic
+offline regressions only.
+
 ## Administrator /lastcommands count receipt integrity (offline verified only)
 
 The private-chat administrator `/lastcommands` command reads `GET /admin/status`
