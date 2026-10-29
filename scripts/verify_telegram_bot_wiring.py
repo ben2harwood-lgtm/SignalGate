@@ -2559,6 +2559,80 @@ def check_resume_private_chat_boundary() -> None:
         assert all(secret not in message for message in replies)
 
 
+def check_pause_receipt_integrity() -> None:
+    """Emergency /pause remains accessible to admins from any chat, but never
+    claims success without the exact backend receipt. No Telegram or broker I/O.
+    """
+    secret = "SYNTHETIC-PAUSE-BACKEND-NEVER-ECHO"
+    unconfirmed = (
+        "Pause status unconfirmed. Verify the administrator pause state "
+        "before relying on this response; the backend may have processed it."
+    )
+
+    async def forbidden_get(*_args, **_kwargs):
+        raise AssertionError("Pause test unexpectedly made a backend GET")
+
+    cases = (
+        ({"status": "ok", "admin_paused": True}, "Trading paused."),
+        (None, unconfirmed),  # The commit may have succeeded before timeout.
+        ({"status": "ok", "admin_paused": False}, unconfirmed),
+        ({"status": "ok", "admin_paused": 1}, unconfirmed),
+        ({"status": "ok", "admin_paused": "true"}, unconfirmed),
+        ({"status": "ok", "admin_paused": None}, unconfirmed),
+        ({"status": "ok", "admin_paused": True, "detail": secret}, unconfirmed),
+        ({"status": "ok", "admin_paused": True, "error": secret}, unconfirmed),
+        ({"detail": secret}, unconfirmed),
+        ({"status": "ERROR", "admin_paused": True}, unconfirmed),
+        (["ok"], unconfirmed),
+        ({}, unconfirmed),
+    )
+    # Deliberately retain emergency-stop access in shared and missing-chat
+    # contexts: unlike /resume, this command must not gain a privacy guard.
+    for chat_type in ("private", "group", "supergroup", "channel", None):
+        for admin, backend_response, expected_reply in (
+            *[(True, response, reply) for response, reply in cases],
+            (False, {"status": "ok", "admin_paused": True}, "Admin only."),
+        ):
+            replies, calls = [], []
+
+            async def reply_text(message, **_kwargs):
+                replies.append(message)
+
+            async def private_post(path, **kwargs):
+                calls.append((path, kwargs))
+                return backend_response
+
+            update = SimpleNamespace(
+                effective_chat=(
+                    SimpleNamespace(type=chat_type)
+                    if chat_type is not None else None
+                ),
+                effective_user=SimpleNamespace(id=123456),
+                message=SimpleNamespace(
+                    text="/pause " + secret, reply_text=reply_text
+                ),
+            )
+            with (
+                patch.object(handlers.config, "is_admin", lambda _id: admin),
+                patch.object(handlers, "_backend_get", forbidden_get),
+                patch.object(
+                    handlers, "_backend_post",
+                    private_post if admin else forbidden_get,
+                ),
+            ):
+                asyncio.run(handlers.pause(update, SimpleNamespace()))
+            if admin:
+                assert len(calls) == 1, (
+                    "An admin pause must make exactly one POST, no blind retry"
+                )
+                assert calls[0][0] == "/admin/pause"
+                assert calls[0][1]["headers"] == handlers._admin_headers(123456)
+            else:
+                assert not calls, "Non-admin pause reached the backend"
+            assert replies == [expected_reply]
+            assert all(secret not in message for message in replies)
+
+
 def check_users_private_chat_boundary() -> None:
     """Shared/unknown Telegram chats cannot request administrator user counts."""
     secret = "SYNTHETIC-PRIVATE-USER-COUNT-NEVER-ECHO"
@@ -2788,6 +2862,7 @@ def main() -> int:
     check_users_private_chat_boundary()
     check_screenshot_help_private_chat_boundary()
     check_resume_private_chat_boundary()
+    check_pause_receipt_integrity()
     check_settings_private_chat_boundary()
     check_shared_chat_screenshot_uploads_fail_closed()
     check_connectprovider_success_receipt_integrity()

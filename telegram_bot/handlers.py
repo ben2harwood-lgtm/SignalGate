@@ -1360,8 +1360,22 @@ async def pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     result = await _backend_post(
         "/admin/pause", headers=_admin_headers(update.effective_user.id)
     )
+    # A successful HTTP response alone is not proof the emergency stop took
+    # effect. A failed response can also arrive AFTER the backend commits it.
+    # Do not automatically retry or claim a confirmed pause on uncertainty.
+    confirmed = (
+        isinstance(result, dict)
+        and set(result) == {"status", "admin_paused"}
+        and result.get("status") == "ok"
+        and result.get("admin_paused") is True
+    )
     await update.message.reply_text(
-        "Trading paused." if result else "Backend unreachable."
+        "Trading paused."
+        if confirmed
+        else (
+            "Pause status unconfirmed. Verify the administrator pause state "
+            "before relying on this response; the backend may have processed it."
+        )
     )
 
 
