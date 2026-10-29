@@ -78,6 +78,25 @@ receipts and no network/broker contact. Even a passing CI test does not
 establish actual MT5 demo-broker, deployed health monitoring, independent
 assurance or external acceptance. Frozen RC2 and all release holds remain.
 
+## `/join` and `/connectprovider` reply-label integrity (offline guard)
+
+A backend-confirmed, typed ACTIVE subscription or Telegram source connection
+is evidence of the recorded membership/binding, **not** authority to print
+arbitrary provider/feed labels. The private `/join` and `/connectprovider`
+success replies now apply the same display-only 80-character, raw Unicode
+control/format/line-separator guard as `/status` to the chosen provider name
+and feed name. An unsafe label renders `unavailable`; it cannot insert a
+forged safety line, one-time credential label or backend diagnostic.
+
+The guard does not change registration, one-time invite consumption,
+provider/feed authority, source binding, HTTP methods or retry behaviour.
+A valid one-time EA licence is still shown **only** in the existing private
+join reply; a failed/ambiguous POST must still be reconciled before retry.
+The registered offline smoke extends the existing join and connection
+receipt checks with hostile names and benign Unicode examples. These are
+synthetic display checks, not actual Telegram delivery, broker-demo evidence
+or independent security acceptance. Frozen RC2 and the release HOLD remain.
+
 ## `/settings` configuration privacy (offline guard)
 
 The `/settings` command now requires a private Telegram chat **before**
