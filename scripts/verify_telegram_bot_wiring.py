@@ -2468,6 +2468,71 @@ def check_lastcommands_private_chat_boundary() -> None:
 
 
 
+def check_lastcommands_count_receipt_integrity() -> None:
+    """A partial, malformed, or error-shaped /admin/status is not a count."""
+    secret = "SYNTHETIC-COMMAND-COUNT-ERROR-NEVER-ECHO"
+    valid = {"commands": 7, "executions": 4, "management_events": 2}
+    invalid = [
+        None, False, [], "offline", {},
+        {"detail": secret, "counts": valid},
+        {"detail": None, "counts": valid},
+        {"error": secret, "counts": valid},
+        {"counts": None}, {"counts": []}, {"counts": {}},
+        {"counts": {"commands": 7, "executions": 4}},
+    ]
+    # Each of the three independent counters must fail closed.
+    for field in valid:
+        for bad_value in (None, False, True, -1, "7", 7.0, 1 << 63, [], {}):
+            counts = dict(valid)
+            counts[field] = bad_value
+            invalid.append({"counts": counts})
+
+    async def forbidden_post(*_args, **_kwargs):
+        raise AssertionError("Read-only /lastcommands attempted backend mutation")
+
+    cases = [(value, None) for value in invalid] + [
+        ({"counts": {key: 0 for key in valid}}, (0, 0, 0)),
+        ({"counts": valid}, (7, 4, 2)),
+    ]
+    for payload, expected in cases:
+        replies, backend_calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def status_backend(path, **kwargs):
+            backend_calls.append((path, kwargs))
+            return payload
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/lastcommands", reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers.config, "is_admin", lambda _user_id: True),
+            patch.object(handlers, "_backend_get", status_backend),
+            patch.object(handlers, "_backend_post", forbidden_post),
+        ):
+            asyncio.run(handlers.lastcommands(update, SimpleNamespace()))
+
+        assert len(backend_calls) == 1
+        assert backend_calls[0][0] == "/admin/status"
+        assert backend_calls[0][1]["headers"] == handlers._admin_headers(123456)
+        assert len(replies) == 1 and secret not in replies[0]
+        if expected is None:
+            assert "could not be confirmed" in replies[0].lower()
+            assert "Command count:" not in replies[0]
+            assert "Executions:" not in replies[0]
+            assert "Management events:" not in replies[0]
+        else:
+            assert replies == [
+                f"Command count: {expected[0]}\\n"
+                f"Executions: {expected[1]}\\n"
+                f"Management events: {expected[2]}"
+            ]
+
+
 def check_screenshot_help_private_chat_boundary() -> None:
     """Shared chats cannot query provider source status via /screenshothelp."""
     marker = "SYNTHETIC-SOURCE-STATUS-DO-NOT-ECHO"
@@ -2984,6 +3049,7 @@ def main() -> int:
     check_testsignal_private_chat_boundary()
     check_lastsignals_private_chat_boundary()
     check_lastcommands_private_chat_boundary()
+    check_lastcommands_count_receipt_integrity()
     check_users_private_chat_boundary()
     check_users_count_receipt_integrity()
     check_screenshot_help_private_chat_boundary()

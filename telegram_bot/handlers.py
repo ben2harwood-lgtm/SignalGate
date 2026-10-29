@@ -1495,11 +1495,26 @@ async def lastcommands(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     data = await _backend_get(
         "/admin/status", headers=_admin_headers(update.effective_user.id)
     )
-    if not data:
-        await update.message.reply_text("Backend unreachable.")
+    # HTTP 200 alone does not establish trustworthy operational statistics.
+    # The backend returns SQL COUNT() values: actual nonnegative int64s.
+    # Refuse error-shaped and partial receipts instead of displaying None,
+    # booleans, impossible values or server-provided diagnostics.
+    counts = data.get("counts") if isinstance(data, dict) and not (
+        "detail" in data or "error" in data
+    ) else None
+    fields = ("commands", "executions", "management_events")
+    values = tuple(counts.get(name) for name in fields) if isinstance(counts, dict) else ()
+    if len(values) != len(fields) or not all(
+        type(value) is int and 0 <= value <= (1 << 63) - 1 for value in values
+    ):
+        await update.message.reply_text(
+            "Command statistics could not be confirmed. Verify the "
+            "administrative counts before relying on them."
+        )
         return
+    commands, executions, management_events = values
     await update.message.reply_text(
-        f"Command count: {data['counts'].get('commands')}\n"
-        f"Executions: {data['counts'].get('executions')}\n"
-        f"Management events: {data['counts'].get('management_events')}"
+        f"Command count: {commands}\n"
+        f"Executions: {executions}\n"
+        f"Management events: {management_events}"
     )

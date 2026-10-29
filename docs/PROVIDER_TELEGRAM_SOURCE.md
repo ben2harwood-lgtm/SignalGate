@@ -303,6 +303,22 @@ replace deployed log-review or independent security assurance.
 The same offline smoke refuses Python `-O`, `-OO` or `PYTHONOPTIMIZE`,
 which would otherwise disable its assertion-based checks and print a false PASS.
 
+## Administrator /lastcommands count receipt integrity (offline verified only)
+
+The private-chat administrator `/lastcommands` command reads `GET /admin/status`
+once. The response must contain all three `counts.commands`,
+`counts.executions` and `counts.management_events` as genuine nonnegative
+signed 64-bit integers. Missing, malformed, wrong-type, negative, overflowing,
+partial or top-level `detail`/`error` responses yield generic **unconfirmed**
+guidance, not invented counts or reflected backend diagnostics. There is no
+automatic retry, mutation or additional credential exposure.
+
+The registered hosted Telegram offline smoke exercises each counter with
+adversarial payloads, valid zero/nonzero receipts, and exactly one GET per
+authorised private request; the existing shared-chat and non-admin refusal
+checks remain. This is synthetic test coverage only, not actual Telegram
+delivery, MT5 broker-demo evidence or independent external assurance.
+
 ## Administrator /users count receipt integrity (offline verified only)
 
 The private-chat `/users` command reads `GET /admin/status` once after
