@@ -403,18 +403,38 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     health = await _backend_get("/health")
     source = await _provider_source_status(user.id)
 
-    backend_ok = health is not None
-    paused = health.get("admin_paused") if health else "unknown"
+    # A reachable /health endpoint is not proof of a valid health receipt.
+    # Reject malformed/error-shaped JSON and bool-like values before display.
+    health_verified = (
+        isinstance(health, dict)
+        and "detail" not in health
+        and "error" not in health
+        and health.get("status") == "ok"
+        and type(health.get("demo_only_mode")) is bool
+        and type(health.get("admin_paused")) is bool
+    )
+    paused = health["admin_paused"] if health_verified else "unknown"
+    demo_only = health["demo_only_mode"] if health_verified else "unknown"
     role = _role_name(user.id)
     if source:
         role = "provider source"
     lines = [
         f"Registered: yes (telegram id {user.id})",
         f"Role: {role}",
-        f"Backend reachable: {'yes' if backend_ok else 'no'}",
-        f"Demo only mode: {health.get('demo_only_mode') if health else 'unknown'}",
+        f"Backend health verified: {'yes' if health_verified else 'no'}",
+        f"Demo only mode: {demo_only}",
         f"Admin paused: {paused}",
     ]
+    if not health_verified:
+        lines.append(
+            "Backend health unconfirmed. Verify demo mode and pause state "
+            "with the operator before relying on this status."
+        )
+    elif demo_only is False:
+        lines.append(
+            "WARNING: Backend reports demo-only mode disabled. "
+            "Do not use SignalGate to trade."
+        )
     if source:
         lines.extend(
             [
