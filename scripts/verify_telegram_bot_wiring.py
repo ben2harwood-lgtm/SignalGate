@@ -3351,6 +3351,7 @@ def check_status_source_label_spoofing() -> None:
         "provider_display_name": "Café Signals",
         "feed_id": "FEED-OFFLINE",
         "feed_name": "London Session",
+        "expiry_minutes": 5,
         "source_type": "TELEGRAM",
         "status": "ACTIVE",
     }
