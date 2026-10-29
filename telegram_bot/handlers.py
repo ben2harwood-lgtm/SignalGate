@@ -9,6 +9,7 @@ import logging
 import math
 import re
 import secrets
+import unicodedata
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -74,6 +75,21 @@ def _safe_registration_license(value: Any) -> bool:
         and value.isascii()
         and value.isprintable()
     )
+
+
+def _safe_status_label(value: Any) -> str:
+    """Display-only guard: source names are never authority or bot control text."""
+    if not isinstance(value, str) or len(value) > 80:
+        return "unavailable"
+    label = value.strip()
+    if not label or any(
+        unicodedata.category(ch).startswith("C")
+        or unicodedata.category(ch) in ("Zl", "Zp")
+        for ch in label
+    ):
+        # Includes control/newline, bidi formatting, zero-width and surrogates.
+        return "unavailable"
+    return label
 
 
 # --- backend helpers ------------------------------------------------------
@@ -419,7 +435,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if source:
         role = "provider source"
     lines = [
-        f"Registered: yes (telegram id {user.id})",
+        f"Telegram ID: {user.id} (registration not checked)",
         f"Role: {role}",
         f"Backend health verified: {'yes' if health_verified else 'no'}",
         f"Demo only mode: {demo_only}",
@@ -436,10 +452,17 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Do not use SignalGate to trade."
         )
     if source:
+        # Binding authority was checked separately. Backend-managed names are
+        # still untrusted presentation text and must not spoof status lines.
+        provider_label = _safe_status_label(
+            source.get("provider_display_name") or source.get("provider_name")
+        )
+        feed_label = _safe_status_label(source.get("feed_name"))
+        feed_id_label = _safe_status_label(source.get("feed_id"))
         lines.extend(
             [
-                f"Provider: {source.get('provider_display_name') or source.get('provider_name')}",
-                f"Feed: {source.get('feed_name')} ({source.get('feed_id')})",
+                f"Provider: {provider_label}",
+                f"Feed: {feed_label} ({feed_id_label})",
             ]
         )
     elif config.require_license:
