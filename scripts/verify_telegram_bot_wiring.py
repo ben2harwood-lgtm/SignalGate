@@ -2397,6 +2397,99 @@ def check_lastcommands_private_chat_boundary() -> None:
             assert not calls and replies == ["Admin only."]
 
 
+
+def check_settings_private_chat_boundary() -> None:
+    """No backend configuration or generic readiness is fetched for groups."""
+    secret = "SYNTHETIC-PRIVATE-SETTINGS-NEVER-ECHO"
+
+    async def forbidden_backend(*_args, **_kwargs):
+        raise AssertionError("Shared settings command contacted backend")
+
+    def forbidden_admin(*_args, **_kwargs):
+        raise AssertionError("Shared settings command checked admin identity")
+
+    for chat_type in ("group", "supergroup", "channel", None):
+        replies = []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        update = SimpleNamespace(
+            effective_chat=(
+                SimpleNamespace(type=chat_type) if chat_type is not None else None
+            ),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(
+                text="/settings " + secret, reply_text=reply_text
+            ),
+        )
+        with (
+            patch.object(handlers.config, "is_admin", forbidden_admin),
+            patch.object(handlers, "_backend_get", forbidden_backend),
+            patch.object(handlers, "_backend_post", forbidden_backend),
+        ):
+            asyncio.run(handlers.settings_cmd(update, SimpleNamespace()))
+        assert len(replies) == 1
+        assert "private chat" in replies[0].lower()
+        assert "no settings were retrieved" in replies[0].lower()
+        assert secret not in replies[0]
+        assert "Expiry minutes:" not in replies[0]
+        assert "Default lot:" not in replies[0]
+        assert "Split-ticket partial mode:" not in replies[0]
+
+    for privileged in (True, False):
+        replies, backend_calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def private_read(path, **kwargs):
+            backend_calls.append((path, kwargs))
+            if path == "/admin/status":
+                return {
+                    "settings": {
+                        "default_signal_expiry_minutes": 30,
+                        "split_ticket_demo_partial_mode": True,
+                        "default_lot_size": 0.01,
+                        "tp1_lot": 0.02, "tp2_lot": 0.01, "tp3_lot": 0.01,
+                        "tp1_close_percent": 50,
+                        "tp2_close_percent": 30,
+                        "tp3_close_percent": 20,
+                    },
+                    "demo_only_mode": True,
+                } if privileged else None
+            assert path == "/health" and not privileged
+            return {"demo_only_mode": True}
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/settings", reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers, "_backend_get", private_read),
+            patch.object(handlers, "_backend_post", forbidden_backend),
+        ):
+            asyncio.run(handlers.settings_cmd(update, SimpleNamespace()))
+        if privileged:
+            assert [path for path, _ in backend_calls] == ["/admin/status"]
+            assert backend_calls[0][1]["headers"] == handlers._admin_headers(123456)
+            assert len(replies) == 1
+            assert "SignalGate settings:" in replies[0]
+            assert "Expiry minutes: 30" in replies[0]
+            assert "Default lot: 0.01" in replies[0]
+            assert "Close %: 50/30/20" in replies[0]
+        else:
+            assert [path for path, _ in backend_calls] == [
+                "/admin/status", "/health",
+            ]
+            assert replies == [
+                "SignalGate settings:\nDemo only: True\n"
+                "Split-ticket partial mode: ON (default)\n"
+                "Default lot: 0.01  TP lots: 0.02/0.01/0.01"
+            ]
+
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -2460,6 +2553,7 @@ def main() -> int:
     check_testsignal_private_chat_boundary()
     check_lastsignals_private_chat_boundary()
     check_lastcommands_private_chat_boundary()
+    check_settings_private_chat_boundary()
     check_shared_chat_screenshot_uploads_fail_closed()
     check_connectprovider_success_receipt_integrity()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")

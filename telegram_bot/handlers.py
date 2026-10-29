@@ -482,6 +482,14 @@ async def connect_provider_source(
 
 
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Configuration and even generic readiness hints belong in a private chat.
+    # Refuse before admin credentials, backend status or public health lookup.
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Use /settings in a private chat with SignalGate. "
+            "No settings were retrieved."
+        )
+        return
     # Admin status endpoint returns settings; non-admins get the generic view.
     user = update.effective_user
     data = await _backend_get("/admin/status", headers=_admin_headers(user.id))

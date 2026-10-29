@@ -46,6 +46,16 @@ submitted text reflected. Existing private admin history and private non-admin
 rejection remain intact. These protections have isolated synthetic handler
 tests only; they are not Telegram delivery or MT5 broker-demo receipts.
 
+## `/settings` configuration privacy (offline guard)
+
+The `/settings` command now requires a private Telegram chat **before**
+requesting protected admin settings or public health fallback. Group,
+supergroup, channel and missing-chat requests receive generic guidance with
+no backend lookup, configuration values or submitted text reflected.
+Existing private admin settings and private generic fallback remain unchanged.
+This guard has synthetic offline positive/negative coverage only, not
+real Telegram delivery, MT5 broker-demo testing or external acceptance.
+
 ## Administrator `/lastcommands` metadata privacy (offline guard)
 
 `/lastcommands` is private-chat-only even for an administrator. A group,
