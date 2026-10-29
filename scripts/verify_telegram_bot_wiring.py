@@ -426,24 +426,31 @@ def check_malformed_pending_confirmation_fails_closed() -> None:
 
 
 def check_shared_chat_preview_callbacks_fail_closed() -> None:
-    """Group/unknown chat preview buttons never use a private pending signal."""
+    """A shared preview button may alert its clicker, never edit a group card."""
     async def forbidden(*_args, **_kwargs):
         raise AssertionError("Shared-chat preview reached backend or broadcast")
 
-    for chat_type in ("group", "supergroup", "channel", None):
+    for chat_type in ("group", "supergroup", "channel", "unknown", None):
         for action in ("SIGOK", "SIGEDIT", "SIGNO"):
-            answers, replies = [], []
+            answers = []
 
             class Query:
                 def __init__(self):
                     self.data = f"{action}:{'a' * 16}"
-                    self.message = SimpleNamespace(text="PRIVATE-SCREENSHOT-PREVIEW")
 
-                async def answer(self):
-                    answers.append("ack")
+                @property
+                def message(self):
+                    raise AssertionError("Shared-chat preview read message content")
 
-                async def edit_message_text(self, message):
-                    replies.append(message)
+                @property
+                def from_user(self):
+                    raise AssertionError("Shared-chat preview read private identity")
+
+                async def answer(self, **kwargs):
+                    answers.append(kwargs)
+
+                async def edit_message_text(self, _message):
+                    raise AssertionError("Shared-chat preview edited a shared message")
 
             state = {
                 "pending_signal_text": "PRIVATE-SIGNAL-DO-NOT-DISCLOSE",
@@ -463,9 +470,9 @@ def check_shared_chat_preview_callbacks_fail_closed() -> None:
             update = SimpleNamespace(
                 callback_query=Query(),
                 effective_chat=(
-                    SimpleNamespace(type=chat_type) if chat_type else None
+                    SimpleNamespace(type=chat_type) if chat_type is not None
+                    else None
                 ),
-                effective_user=SimpleNamespace(id=123456),
             )
             context = SimpleNamespace(
                 user_data=state, bot=SimpleNamespace(send_message=forbidden)
@@ -477,17 +484,19 @@ def check_shared_chat_preview_callbacks_fail_closed() -> None:
                 patch.object(handlers, "_backend_post", forbidden),
             ):
                 asyncio.run(handlers.on_signal_preview(update, context))
-            assert answers == ["ack"], (chat_type, action, answers)
+            assert len(answers) == 1, (chat_type, action, answers)
+            assert answers[0].get("show_alert") is True, (chat_type, action)
+            alert = answers[0].get("text", "")
+            assert "private chat" in alert.lower(), (chat_type, action, alert)
+            assert "nothing was sent" in alert.lower(), (chat_type, action, alert)
             assert state == original, (chat_type, action, state)
-            assert len(replies) == 1 and "private chat" in replies[0].lower()
-            assert "nothing was sent" in replies[0].lower()
             assert all(
-                marker not in replies[0]
+                marker not in str(answers[0])
                 for marker in (
                     "PRIVATE-SIGNAL-DO-NOT-DISCLOSE", "PRIVATE-SCREENSHOT-PREVIEW",
-                    "BIND-PRIVATE", "FEED-PRIVATE",
+                    "BIND-PRIVATE", "FEED-PRIVATE", "PROVIDER-PRIVATE",
                 )
-            ), "Shared chat leaked private preview or feed identifiers"
+            ), "Shared-chat callback alert disclosed private preview state"
 
 
 def check_preview_keyboard_token_contract() -> None:
