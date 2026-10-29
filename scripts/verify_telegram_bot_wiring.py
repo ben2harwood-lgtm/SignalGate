@@ -2527,8 +2527,8 @@ def check_lastcommands_count_receipt_integrity() -> None:
             assert "Management events:" not in replies[0]
         else:
             assert replies == [
-                f"Command count: {expected[0]}\\n"
-                f"Executions: {expected[1]}\\n"
+                f"Command count: {expected[0]}\n"
+                f"Executions: {expected[1]}\n"
                 f"Management events: {expected[2]}"
             ]
 
