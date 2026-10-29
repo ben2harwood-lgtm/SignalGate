@@ -34,7 +34,12 @@ def _provider_binding_out(
     binding,
     provider,
     feed,
+    *,
+    effective_expiry: bool = False,
 ) -> ProviderSourceBindingOut:
+    expiry_minutes = feed.expiry_minutes
+    if effective_expiry and expiry_minutes is None:
+        expiry_minutes = settings.default_signal_expiry_minutes
     return ProviderSourceBindingOut(
         binding_id=binding.id,
         provider_id=provider.id,
@@ -42,7 +47,7 @@ def _provider_binding_out(
         provider_display_name=provider.brand_display_name,
         feed_id=feed.id,
         feed_name=feed.name,
-        expiry_minutes=feed.expiry_minutes,
+        expiry_minutes=expiry_minutes,
         source_type=binding.source_type,
         status=binding.status,
     )
@@ -220,7 +225,7 @@ def telegram_provider_source_status(
     if resolved is None:
         raise HTTPException(status_code=404, detail="Telegram provider source not connected")
     binding, provider, feed = resolved
-    return _provider_binding_out(binding, provider, feed)
+    return _provider_binding_out(binding, provider, feed, effective_expiry=True)
 
 
 @router.post(

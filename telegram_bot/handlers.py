@@ -224,6 +224,11 @@ async def _provider_source_status(
         for field in required_fields
     ):
         return None
+    # The status receipt must carry the effective expiry used by the server.
+    # Null/missing and malformed values cannot safely label a human approval card.
+    expiry_minutes = data.get("expiry_minutes")
+    if type(expiry_minutes) is not int or not 1 <= expiry_minutes <= 1440:
+        return None
     return data
 
 

@@ -102,6 +102,33 @@ def test_connect_status_and_one_use_semantics(client, db):
     assert db.query(models.ProviderSourceBinding).count() == 1
 
 
+def test_source_status_returns_effective_expiry_for_bot(client, db):
+    from app.config import get_settings
+
+    provider, feed, key = _provider(db, "source-expiry-default")
+    feed.expiry_minutes = 17
+    db.commit()
+    invite = _source_invite(client, provider, feed, key)
+    connected = _connect(client, invite, "9209")
+    assert connected.status_code == 200, connected.text
+
+    def read_status():
+        response = client.get(
+            "/provider-sources/telegram/status",
+            params={"telegram_user_id": "9209"},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    assert read_status()["expiry_minutes"] == 17
+
+    # An unset feed override must report the same configured default the
+    # backend uses when parsing/persisting this feed's signal expiry.
+    feed.expiry_minutes = None
+    db.commit()
+    assert read_status()["expiry_minutes"] == get_settings().default_signal_expiry_minutes
+
+
 def test_rebinding_requires_a_new_provider_owned_token_and_is_audited(client, db):
     p1, f1, k1 = _provider(db, "source-a")
     p2, f2, k2 = _provider(db, "source-b")

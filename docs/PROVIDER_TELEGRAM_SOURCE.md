@@ -228,13 +228,19 @@ token text or server diagnostics from that failure into Telegram.
 
 Hosted screenshot eligibility now requires a well-formed `ACTIVE` / `TELEGRAM`
 provider-source status response with nonempty binding, provider and feed
-identifiers and names. An HTTP 200 with an array, error detail, revoked binding,
-other source type or incomplete fields is **not** authority to submit a
-screenshot; an existing confirmable preview is invalidated instead. A stale
-local-demo provider ID cannot override this hosted refusal. The backend's
-authenticated, tenant-bound lookup is still authoritative, and the bot never
-treats an identifier/header alone as authentication. Synthetic offline tests
-exercise the malformed, revoked and valid cases without Telegram or broker
+identifiers and names. The status response carries the **effective expiry**
+used by server-side signal parsing: the feed override, or the server default
+when no override is configured. The bot accepts only an exact integer from 1
+through 1440; missing/null, boolean, float, string, zero, negative or
+over-limit expiry values fail closed before screenshot extraction or signal
+creation, so a human approval card cannot claim an expiry different from the
+server policy. An HTTP 200 with an array, error detail, revoked binding, other
+source type or incomplete fields is **not** authority to submit a screenshot;
+an existing confirmable preview is invalidated instead. A stale local-demo
+provider ID cannot override this hosted refusal. The backend's authenticated,
+tenant-bound lookup is still authoritative, and the bot never treats an
+identifier/header alone as authentication. Synthetic offline tests exercise
+malformed, revoked, expiry-boundary and valid cases without Telegram or broker
 traffic. This does not establish external provider or MT5 demo acceptance.
 
 ## Screenshot extraction failures

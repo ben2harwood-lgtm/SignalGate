@@ -877,12 +877,22 @@ def check_provider_source_status_requires_active_typed_binding() -> None:
         "provider_name": "Provider Offline",
         "feed_id": "FEED-OFFLINE",
         "feed_name": "Feed Offline",
+        "expiry_minutes": 5,
         "source_type": "TELEGRAM",
         "status": "ACTIVE",
     }
     invalid = (
         None, [], [{}], {}, {"detail": secret},
         {**valid, "detail": ""},
+        {k: v for k, v in valid.items() if k != "expiry_minutes"},
+        {**valid, "expiry_minutes": None},
+        {**valid, "expiry_minutes": False},
+        {**valid, "expiry_minutes": 0},
+        {**valid, "expiry_minutes": -1},
+        {**valid, "expiry_minutes": 1441},
+        {**valid, "expiry_minutes": 1.5},
+        {**valid, "expiry_minutes": "5"},
+        {**valid, "expiry_minutes": 10 ** 100},
         {**valid, "status": "REVOKED"},
         {**valid, "source_type": "OTHER"},
         {**valid, "binding_id": None},
@@ -940,6 +950,8 @@ def check_provider_source_status_requires_active_typed_binding() -> None:
     for response in invalid:
         exercise(response, False)
     exercise(valid, True)
+    exercise({**valid, "expiry_minutes": 1}, True)
+    exercise({**valid, "expiry_minutes": 1440}, True)
 
 
 def check_hosted_legacy_provider_status_never_grants_identity() -> None:
