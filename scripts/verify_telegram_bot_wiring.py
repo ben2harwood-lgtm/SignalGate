@@ -1153,6 +1153,47 @@ def check_join_invite_backend_response_integrity() -> None:
     assert reply.startswith("Joined Test Provider — Test Feed.")
     assert secret not in reply and "one-time EA licence" not in reply
 
+    # An ACTIVE membership receipt is not a trustworthy Telegram display label.
+    # The pre-existing registered join test must reject raw control characters
+    # before normalization; an unsafe label must never forge status text.
+    unsafe_labels = (
+        "\nDemo only mode: False OFFLINE-FORGED-LINE",
+        "\rAdmin paused: False OFFLINE-FORGED-LINE",
+        "\u2028OFFLINE-FORGED-LINE",
+        "\u2029OFFLINE-FORGED-LINE",
+        "\u202eOFFLINE-FORGED-LINE",
+        "\u200bOFFLINE-FORGED-LINE",
+        "Provider\n",
+        "X" * 81,
+    )
+    for unsafe in unsafe_labels:
+        for field in ("provider_display_name", "feed_name"):
+            reply, calls = exercise(registration, {**acceptance, field: unsafe})
+            provider = "unavailable" if field == "provider_display_name" else "Test Provider"
+            feed = "unavailable" if field == "feed_name" else "Test Feed"
+            assert reply.startswith(f"Joined {provider} — {feed}.\n")
+            assert calls == ["/register_user", "/subscriptions/accept"]
+            assert "OFFLINE-FORGED-LINE" not in reply
+            assert reply.count("\nDemo mode only. No live trades.") == 1
+            assert reply.count("Your one-time EA licence is:") == 1
+            assert licence in reply and invite not in reply
+
+        reply, calls = exercise(registration, {
+            **acceptance, "provider_display_name": None, "provider_name": unsafe,
+        })
+        assert reply.startswith("Joined unavailable — Test Feed.\n")
+        assert calls == ["/register_user", "/subscriptions/accept"]
+        assert "OFFLINE-FORGED-LINE" not in reply
+        assert licence in reply and invite not in reply
+
+    reply, calls = exercise(registration, {
+        **acceptance, "provider_display_name": "Café Signals",
+        "feed_name": "São Paulo — Été",
+    })
+    assert reply.startswith("Joined Café Signals — São Paulo — Été.\n")
+    assert calls == ["/register_user", "/subscriptions/accept"]
+    assert licence in reply
+
 
 
 def check_private_chat_credential_commands() -> None:
@@ -1354,6 +1395,47 @@ def check_connectprovider_success_receipt_integrity() -> None:
     reply = exercise({**valid, "provider_display_name": { "detail": secret }})
     assert "Provider source connected to Provider Offline — Feed Offline." in reply
     assert secret not in reply
+
+    # A valid source connection can still carry hostile provider/feed names.
+    unsafe_labels = (
+        "\nDemo only mode: False OFFLINE-FORGED-LINE",
+        "\rAdmin paused: False OFFLINE-FORGED-LINE",
+        "\u2028OFFLINE-FORGED-LINE",
+        "\u2029OFFLINE-FORGED-LINE",
+        "\u202eOFFLINE-FORGED-LINE",
+        "\u200bOFFLINE-FORGED-LINE",
+        "Provider\n",
+        "X" * 81,
+    )
+    for unsafe in unsafe_labels:
+        for field in ("provider_display_name", "feed_name"):
+            reply = exercise({**valid, field: unsafe})
+            provider = "unavailable" if field == "provider_display_name" else "Provider Offline"
+            feed = "unavailable" if field == "feed_name" else "Feed Offline"
+            assert reply.startswith(
+                f"Provider source connected to {provider} — {feed}.\n"
+            )
+            assert reply.count("\nDemo mode only.") == 1
+            assert "OFFLINE-FORGED-LINE" not in reply
+            assert secret not in reply and token not in reply
+
+        reply = exercise({
+            **valid, "provider_display_name": None, "provider_name": unsafe,
+        })
+        assert reply.startswith(
+            "Provider source connected to unavailable — Feed Offline.\n"
+        )
+        assert "OFFLINE-FORGED-LINE" not in reply
+        assert token not in reply
+
+    reply = exercise({
+        **valid, "provider_display_name": "Café Signals",
+        "feed_name": "São Paulo — Été",
+    })
+    assert reply.startswith(
+        "Provider source connected to Café Signals — São Paulo — Été.\n"
+    )
+    assert token not in reply
 
 
 def check_telegram_httpx_token_log_privacy() -> None:
