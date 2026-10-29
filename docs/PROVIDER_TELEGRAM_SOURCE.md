@@ -303,6 +303,20 @@ replace deployed log-review or independent security assurance.
 The same offline smoke refuses Python `-O`, `-OO` or `PYTHONOPTIMIZE`,
 which would otherwise disable its assertion-based checks and print a false PASS.
 
+## Administrator resume safety boundary (offline verified only)
+
+The Telegram `/resume` command removes an administrative pause. A request
+from a group, supergroup, channel or unknown chat is refused **before**
+administrator identity lookup, credential creation or `POST /admin/resume`.
+A private-chat administrator can still resume; a private non-administrator
+remains denied. Offline negative tests prove no state-change request is sent
+from a shared/unknown chat, but not actual Telegram delivery or broker state.
+
+This narrow guard intentionally **does not change `/pause`**, because
+restricting an emergency stop needs its own safety/operability review.
+It does not approve execution, release the frozen RC2, or replace MT5
+demo-broker and independent external-assurance evidence.
+
 ## Private-chat boundary for one-time credentials (offline verified only)
 
 The Telegram bot handles `/start` registration, `/join INVITE_TOKEN` and
