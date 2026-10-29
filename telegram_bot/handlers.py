@@ -76,8 +76,12 @@ def _safe_trade_card_signal(signal: Dict[str, Any]) -> bool:
         type(symbol) is not str
         or re.fullmatch(r"[A-Za-z0-9#._-]{1,40}", symbol, flags=re.ASCII) is None
         or signal.get("direction") not in ("BUY", "SELL")
-        or signal.get("entry_type") not in (None, "MARKET")
+        or signal.get("entry_type") not in (None, "MARKET", "LIMIT")
     ):
+        return False
+    # The backend parser can mark a LIMIT signal VALID; preserving that
+    # existing preview path requires a finite positive limit entry as well.
+    if signal.get("entry_type") == "LIMIT" and signal.get("entry_price") is None:
         return False
 
     for field in ("initial_stop_loss", "tp1", "tp2", "tp3", "entry_price"):
