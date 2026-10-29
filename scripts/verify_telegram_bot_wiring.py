@@ -68,6 +68,67 @@ def check_backend_http_fail_closed() -> None:
                      ("POST", "/fake"), ("GET", "/fake"), ("POST", "/fake")]
 
 
+def check_shared_chat_decision_callbacks_fail_closed() -> None:
+    """A shared Telegram card must never authorize a subscriber decision."""
+    secret = "SYNTHETIC-PRIVATE-TRADE-CARD-NOT-FOR-SHARED-CHAT"
+    replies = []
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("Shared-chat callback reached backend")
+
+    def forbidden_sync(*_args, **_kwargs):
+        raise AssertionError("Shared-chat callback parsed private decision data")
+
+    class Query:
+        def __init__(self, data):
+            self.data = data
+
+        @property
+        def from_user(self):
+            raise AssertionError("Shared-chat callback read subscriber identity")
+
+        @property
+        def message(self):
+            raise AssertionError("Shared-chat callback read trade-card content")
+
+        async def answer(self, **kwargs):
+            replies.append(kwargs)
+
+        async def edit_message_text(self, _message):
+            raise AssertionError("Shared-chat callback modified group card")
+
+    with (
+        patch.object(handlers, "_backend_post", forbidden),
+        patch.object(handlers, "_registration_headers", forbidden_sync),
+        patch.object(handlers, "_valid_signal_id", forbidden_sync),
+    ):
+        for chat_type in ("group", "supergroup", "channel", "unknown", None):
+            for data in ("YES:SIG-TEST", "NO:SIG-TEST", "YES:" + secret):
+                replies.clear()
+                update = SimpleNamespace(
+                    callback_query=Query(data),
+                    effective_chat=(
+                        SimpleNamespace(type=chat_type) if chat_type is not None
+                        else None
+                    ),
+                )
+                asyncio.run(handlers.on_decision(update, None))
+                assert len(replies) == 1, (chat_type, data)
+                assert replies[0].get("show_alert") is True, (chat_type, data)
+                assert "private chat" in replies[0].get("text", "").lower()
+                assert data not in str(replies[0])
+                assert secret not in str(replies[0])
+
+        # Inline callbacks and malformed synthetic updates without an
+        # effective_chat also fail closed before identity/backend access.
+        replies.clear()
+        asyncio.run(handlers.on_decision(
+            SimpleNamespace(callback_query=Query("YES:SIG-TEST")), None
+        ))
+        assert len(replies) == 1
+        assert replies[0].get("show_alert") is True
+
+
 def check_unconfirmed_decision_does_not_claim_approval() -> None:
     """No untrusted backend decision code/diagnostics can reach a subscriber."""
     seen, called = [], []
@@ -96,7 +157,10 @@ def check_unconfirmed_decision_does_not_claim_approval() -> None:
         called.clear()
         query = Query()
         query.data = f"{decision}:SIG-TEST"
-        await handlers.on_decision(SimpleNamespace(callback_query=query), None)
+        await handlers.on_decision(SimpleNamespace(
+            callback_query=query,
+            effective_chat=SimpleNamespace(type="private"),
+        ), None)
         expected_path = (
             f"/signals/SIG-TEST/{'approve' if decision == 'YES' else 'reject'}"
         )
@@ -155,7 +219,10 @@ def check_unconfirmed_decision_does_not_claim_approval() -> None:
             data = "UNKNOWN:SIG-TEST"
 
         asyncio.run(handlers.on_decision(
-            SimpleNamespace(callback_query=InvalidQuery()), None
+            SimpleNamespace(
+                callback_query=InvalidQuery(),
+                effective_chat=SimpleNamespace(type="private"),
+            ), None
         ))
         assert seen == ["Invalid action."]
         assert not called
@@ -178,7 +245,10 @@ def check_unconfirmed_decision_does_not_claim_approval() -> None:
             malformed_query = Query()
             malformed_query.data = callback_data
             asyncio.run(handlers.on_decision(
-                SimpleNamespace(callback_query=malformed_query), None
+                SimpleNamespace(
+                    callback_query=malformed_query,
+                    effective_chat=SimpleNamespace(type="private"),
+                ), None
             ))
             assert seen == ["Invalid action."], callback_data
             assert not called, callback_data
@@ -2838,6 +2908,7 @@ def main() -> int:
     check_broadcast_recipient_feed_binding()
     check_signal_create_backend_errors_remain_private()
     check_backend_http_fail_closed()
+    check_shared_chat_decision_callbacks_fail_closed()
     check_unconfirmed_decision_does_not_claim_approval()
     check_screenshot_extraction_fail_closed()
     check_screenshot_upload_size_guard()
