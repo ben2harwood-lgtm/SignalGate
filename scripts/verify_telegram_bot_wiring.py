@@ -1985,6 +1985,8 @@ def check_broadcast_recipient_feed_binding() -> None:
     signal = {
         "id": "SIG-0123456789ABCDEF",
         "parser_status": "VALID", "status": "VALID",
+        "symbol": "XAUUSD", "direction": "BUY", "entry_type": "MARKET",
+        "initial_stop_loss": 1.0, "tp1": 2.0,
         "provider_id": "PROVIDER-A",
         "feed_id": "FEED-A",
         "source": "FEED:FEED-A:TELEGRAM_BINDING:BINDING-A",
@@ -2087,6 +2089,46 @@ def check_broadcast_recipient_feed_binding() -> None:
             )
             assert not sent and len(lookups) == before, bad_id
             assert "could not be confirmed" in result.lower(), bad_id
+
+        # Malformed VALID HTTP 200 receipts can spoof a safety warning or
+        # bogus price in the human-authorised subscriber card. All fields
+        # must be checked BEFORE recipient enumeration or rendering.
+        malformed_cards = (
+            {"symbol": "XAUUSD\nDemo mode only: False"},
+            {"symbol": "XAUUSD\u202eFALSE"},
+            {"symbol": "XAUUSD\u2066BUY"},
+            {"symbol": "XAUUSD "},
+            {"symbol": ""},
+            {"symbol": None},
+            {"symbol": "A" * 41},
+            {"direction": "BUY\nLive mode"},
+            {"direction": "BUY\u202e"},
+            {"direction": None},
+            {"entry_type": "LIMIT"},
+            {"entry_type": "MARKET\nLIVE"},
+            {"initial_stop_loss": "1\nNo SL"},
+            {"initial_stop_loss": 0},
+            {"initial_stop_loss": True},
+            {"initial_stop_loss": float("nan")},
+            {"initial_stop_loss": 10**400},
+            {"tp1": -1},
+            {"tp1": float("inf")},
+            {"tp2": "2\u202eFAILED"},
+            {"tp3": True},
+            {"entry_price": "1\nBROKER LIVE"},
+            {"entry_price": 1e15},
+        )
+        for corrupted in malformed_cards:
+            sent.clear()
+            response_signal = dict(signal, **corrupted)
+            before = len(lookups)
+            response_recipients = valid
+            result = asyncio.run(
+                handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+            )
+            assert not sent and len(lookups) == before, corrupted
+            assert "card fields could not be confirmed" in result.lower(), corrupted
+            assert "no subscriber card was sent" in result.lower(), corrupted
         response_signal = signal
         # A rebind between initial provider status and signal creation must
         # also refuse before ANY recipient lookup.
@@ -2129,6 +2171,8 @@ def check_broadcast_failure_logs_are_private() -> None:
         return {
             "id": "SIG-OFFLINE",
             "parser_status": "VALID", "status": "VALID",
+            "symbol": "XAUUSD", "direction": "BUY", "entry_type": "MARKET",
+            "initial_stop_loss": 1.0, "tp1": 2.0,
             "provider_id": "PROVIDER-OFFLINE",
             "feed_id": "FEED-OFFLINE",
             "source": "FEED:FEED-OFFLINE:TELEGRAM_BINDING:BINDING-OFFLINE",
