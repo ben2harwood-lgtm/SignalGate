@@ -2774,6 +2774,60 @@ def check_users_private_chat_boundary() -> None:
             assert not backend_calls and replies == ["Admin only."]
 
 
+def check_users_count_receipt_integrity() -> None:
+    """Only a nonnegative SQL-compatible integer confirms /users counts."""
+    secret = "SYNTHETIC-ADMIN-COUNT-DIAGNOSTIC-NEVER-ECHO"
+    invalid = (
+        None, False, [], "unavailable", {},
+        {"detail": secret, "counts": {"users": 17}},
+        {"detail": None, "counts": {"users": 17}},
+        {"error": secret, "counts": {"users": 17}},
+        {"counts": None}, {"counts": []}, {"counts": {}},
+        {"counts": {"users": None}}, {"counts": {"users": True}},
+        {"counts": {"users": False}}, {"counts": {"users": -1}},
+        {"counts": {"users": "17"}}, {"counts": {"users": 17.0}},
+        {"counts": {"users": 1 << 63}}, {"counts": {"users": [17]}},
+    )
+
+    async def forbidden_post(*_args, **_kwargs):
+        raise AssertionError("Read-only /users attempted backend mutation")
+
+    for payload, expected in (
+        *((value, None) for value in invalid),
+        ({"counts": {"users": 0}}, 0),
+        ({"counts": {"users": 17}}, 17),
+    ):
+        replies, backend_calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def status_backend(path, **kwargs):
+            backend_calls.append((path, kwargs))
+            return payload
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/users", reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers.config, "is_admin", lambda _user_id: True),
+            patch.object(handlers, "_backend_get", status_backend),
+            patch.object(handlers, "_backend_post", forbidden_post),
+        ):
+            asyncio.run(handlers.users_cmd(update, SimpleNamespace()))
+
+        assert len(backend_calls) == 1
+        assert backend_calls[0][0] == "/admin/status"
+        assert backend_calls[0][1]["headers"] == handlers._admin_headers(123456)
+        assert len(replies) == 1 and secret not in replies[0]
+        if expected is None:
+            assert "could not be confirmed" in replies[0].lower()
+            assert "Active user count" not in replies[0]
+        else:
+            assert replies == [f"Active user count (approx): {expected}"]
+
 def check_settings_private_chat_boundary() -> None:
     """No backend configuration or generic readiness is fetched for groups."""
     secret = "SYNTHETIC-PRIVATE-SETTINGS-NEVER-ECHO"
@@ -2931,6 +2985,7 @@ def main() -> int:
     check_lastsignals_private_chat_boundary()
     check_lastcommands_private_chat_boundary()
     check_users_private_chat_boundary()
+    check_users_count_receipt_integrity()
     check_screenshot_help_private_chat_boundary()
     check_resume_private_chat_boundary()
     check_pause_receipt_integrity()

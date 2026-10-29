@@ -303,6 +303,21 @@ replace deployed log-review or independent security assurance.
 The same offline smoke refuses Python `-O`, `-OO` or `PYTHONOPTIMIZE`,
 which would otherwise disable its assertion-based checks and print a false PASS.
 
+## Administrator /users count receipt integrity (offline verified only)
+
+The private-chat `/users` command reads `GET /admin/status` once after
+administrator authorisation. An HTTP 200 alone cannot confirm a user count:
+`counts.users` must be a genuine nonnegative signed 64-bit integer, not a
+bool, float, string, list or missing field. An error-shaped `detail`/`error`
+response, malformed JSON or invalid count yields generic **unconfirmed**
+guidance without reflecting server diagnostics or inventing zero users.
+No mutating call, retry or credential disclosure is introduced.
+
+Registered isolated Telegram smoke covers 19 synthetic invalid responses,
+positive zero/17 counts, a single admin GET and forbidden backend mutation.
+Existing private administrator results remain unchanged. This is not actual
+Telegram delivery, MT5 broker-demo evidence or independent assurance.
+
 ## Administrator emergency pause response integrity (offline verified only)
 
 The `/pause` emergency-stop command is intentionally **not** restricted to

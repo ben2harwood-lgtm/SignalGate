@@ -1438,12 +1438,19 @@ async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = await _backend_get(
         "/admin/status", headers=_admin_headers(update.effective_user.id)
     )
-    if not data:
-        await update.message.reply_text("Backend unreachable.")
+    # A successful HTTP status does not establish a trustworthy admin count.
+    # SQL COUNT() is a nonnegative signed 64-bit integer; bool is not a count.
+    counts = data.get("counts") if isinstance(data, dict) and not (
+        "detail" in data or "error" in data
+    ) else None
+    users = counts.get("users") if isinstance(counts, dict) else None
+    if type(users) is not int or not 0 <= users <= (1 << 63) - 1:
+        await update.message.reply_text(
+            "User statistics could not be confirmed. Verify the "
+            "administrative count before relying on it."
+        )
         return
-    await update.message.reply_text(
-        f"Active user count (approx): {data['counts'].get('users')}"
-    )
+    await update.message.reply_text(f"Active user count (approx): {users}")
 
 
 async def lastsignals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
