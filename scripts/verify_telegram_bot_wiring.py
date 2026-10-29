@@ -2000,6 +2000,8 @@ def check_broadcast_recipient_feed_binding() -> None:
         "parser_status": "VALID", "status": "VALID",
         "symbol": "XAUUSD", "direction": "BUY", "entry_type": "MARKET",
         "initial_stop_loss": 1.0, "tp1": 2.0,
+        "created_at": "2026-10-29T12:00:00.123456",
+        "expires_at": "2026-10-29T12:05:00.123456",
         "provider_id": "PROVIDER-A",
         "feed_id": "FEED-A",
         "source": "FEED:FEED-A:TELEGRAM_BINDING:BINDING-A",
@@ -2012,6 +2014,7 @@ def check_broadcast_recipient_feed_binding() -> None:
     }
     sent = []
     lookups = []
+    rendered_expiries = []
 
     async def source_status(_user_id):
         return source
@@ -2065,11 +2068,15 @@ def check_broadcast_recipient_feed_binding() -> None:
             900000000011,
         )
     )
+    def capture_card(_signal, minutes):
+        rendered_expiries.append(minutes)
+        return "OFFLINE-TRADE-CARD"
+
     with (
         patch.object(handlers, "_provider_source_status", source_status),
         patch.object(handlers, "_backend_post", post),
         patch.object(handlers, "_backend_get", get),
-        patch("keyboards.format_trade_card", lambda *_args: "OFFLINE-TRADE-CARD"),
+        patch("keyboards.format_trade_card", capture_card),
         patch("keyboards.trade_card_keyboard", lambda *_args: "OFFLINE-BUTTONS"),
     ):
         response_signal = signal
@@ -2079,6 +2086,41 @@ def check_broadcast_recipient_feed_binding() -> None:
         )
         assert "sent to 1 subscriber" in result.lower()
         assert sent == ["900000000011"]
+        assert rendered_expiries[-1] == 5
+
+        # Stale status advertises 5 minutes; the persisted signal has 23.
+        # No recipient may be shown the obsolete pre-creation duration.
+        response_signal = dict(signal, expires_at="2026-10-29T12:23:00.123456")
+        sent.clear()
+        result = asyncio.run(
+            handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+        )
+        assert "sent to 1 subscriber" in result.lower()
+        assert sent == ["900000000011"]
+        assert rendered_expiries[-1] == 23
+
+        invalid_expiry = (
+            dict(signal, created_at=None),
+            dict(signal, expires_at=None),
+            dict(signal, created_at=True),
+            dict(signal, expires_at="2026-10-29T12:04:30.123456"),
+            dict(signal, expires_at="2026-10-29T12:00:00.123456"),
+            dict(signal, expires_at="2026-10-30T13:00:00.123456"),
+            dict(signal, expires_at="not a timestamp"),
+            {k: v for k, v in signal.items() if k != "created_at"},
+            {k: v for k, v in signal.items() if k != "expires_at"},
+        )
+        for bad_receipt in invalid_expiry:
+            response_signal = bad_receipt
+            sent.clear()
+            before = len(lookups)
+            result = asyncio.run(
+                handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+            )
+            assert not sent and len(lookups) == before, bad_receipt
+            assert "expiry receipt could not be confirmed" in result.lower()
+
+        response_signal = signal
         for payload in bad:
             sent.clear()
             response_recipients = payload
@@ -2214,6 +2256,8 @@ def check_broadcast_failure_logs_are_private() -> None:
             "parser_status": "VALID", "status": "VALID",
             "symbol": "XAUUSD", "direction": "BUY", "entry_type": "MARKET",
             "initial_stop_loss": 1.0, "tp1": 2.0,
+            "created_at": "2026-10-29T12:00:00.123456",
+            "expires_at": "2026-10-29T12:05:00.123456",
             "provider_id": "PROVIDER-OFFLINE",
             "feed_id": "FEED-OFFLINE",
             "source": "FEED:FEED-OFFLINE:TELEGRAM_BINDING:BINDING-OFFLINE",
@@ -2387,6 +2431,8 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
                 # guard must not mask this source-rebinding regression.
                 "symbol": "EURUSD", "direction": "BUY", "entry_type": "MARKET",
                 "initial_stop_loss": 1.05, "tp1": 1.07,
+                "created_at": "2026-10-29T12:00:00.123456",
+                "expires_at": "2026-10-29T12:05:00.123456",
                 "provider_id": "PROVIDER-A", "feed_id": "FEED-A",
                 "source": "FEED:FEED-A:TELEGRAM_BINDING:BINDING-A",
             }
