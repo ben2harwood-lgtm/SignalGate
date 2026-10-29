@@ -415,6 +415,24 @@ An unconfirmed response may still have consumed an invite, so subscribers should
 check membership with their provider before retrying. This is verified using
 synthetic offline response fixtures only; no real subscriber or provider was used.
 
+## Subscriber YES/NO private-chat decision boundary (offline verified only)
+
+Trade-card YES/NO callbacks are **private subscriber-chat only**. When a callback
+arrives from a group, supergroup, channel, inline message without an associated
+chat, or an unknown/missing chat type, the bot displays a generic private-chat
+alert to the clicker **without editing the shared card**. Rejection occurs before
+reading subscriber identity or trade-card text, parsing the signal identifier,
+creating registration headers or making a decision POST. A valid private-chat
+subscriber retains the existing explicit YES/NO backend decision flow; no
+automatic approval or retry has been added.
+
+The isolated hosted Telegram offline smoke checks these negative cases against
+forbidden backend/identity calls and retains the private YES/NO receipt and
+malformed-ID regressions. This is **not** actual Telegram delivery, broker-demo
+execution evidence, independent security assurance or release approval. The
+subscriber-authorisation path remains execution-critical and draft/HOLD until
+independent review and actual controlled MT5 demo-broker acceptance.
+
 ## Subscriber YES/NO decision receipt safety (offline verified only)
 
 A Telegram subscriber's YES/NO callback treats a backend decision POST as
