@@ -324,19 +324,26 @@ access is introduced.
 
 ## Administrator /settings response integrity (offline test contract)
 
-The private-chat /settings handler queries GET /admin/status once. When that
-protected endpoint refuses a non-admin (None), it can read GET /health once
-and show generic defaults only with a typed demo_only_mode=true receipt.
-Malformed 2xx responses never trigger that fallback. Administrator settings
+The private-chat /settings handler queries GET /admin/status once. Only an
+explicit HTTP **401/403** from this protected endpoint permits a single
+GET /health fallback, with generic defaults shown only after a typed
+demo_only_mode=true health receipt. The HTTP client now returns an internal
+denial sentinel for this narrow case; a failed connection, 4xx other than
+401/403, 5xx, malformed/invalid JSON, null or scalar HTTP-2xx response is
+**not** evidence of non-admin refusal and yields unconfirmed guidance with
+**no** /health request. Administrator settings
 are displayed only from an error-free mapping with demo_only_mode=true.
 Displayed numeric tokens are bounded nonnegative decimal values; the
 split-ticket flag is a typed boolean or true/false string. Missing numeric
 settings are explicitly "not set". Malformed, control-bearing, overly long,
 nested or error-shaped values yield generic unconfirmed guidance without
 exposing backend diagnostics or guessed operating status. Shared chats still
-reach neither backend endpoint. No backend POST, retries, account operation,
-Telegram delivery or external acceptance is claimed. These are synthetic
-offline regressions only.
+reach neither backend endpoint. The offline smoke tests real HTTP helper
+classification with a mock transport (401/403 refusal, other HTTP errors,
+invalid JSON, null/scalar/list 2xx, connection failure, valid admin) as well
+as direct handler fixtures; no external request is made. No backend POST,
+retries, account operation, Telegram delivery or external acceptance is
+claimed. These are synthetic offline regressions only.
 
 ## Administrator /lastcommands count receipt integrity (offline verified only)
 
