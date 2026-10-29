@@ -172,6 +172,16 @@ non-ASCII, non-decimal, non-string and out-of-range (>52-bit) identities before
 sending **any** card from that recipient list, even if earlier entries are valid.
 This is an offline-tested routing boundary, not a substitute for backend tenancy.
 
+The bot separately validates a persisted VALID market signal's visible card
+fields before building any subscriber approval card or querying recipients:
+bounded single-line ASCII symbols, BUY/SELL, MARKET entry and finite positive
+numeric SL/TP/optional entry levels. Missing required SL/TP1, booleans,
+non-finite/huge numbers, injected line breaks and Unicode format controls fail
+closed with generic provider-history guidance. A successful signal-creation
+HTTP status alone never authorises an unverified display. This is an isolated
+synthetic Telegram guard; no actual recipient delivery, MT5 broker-demo,
+independent pentest or release acceptance is inferred.
+
 This is an offline-tested cross-tenant guard, **not** a guarantee of atomic
 revocation during Telegram delivery and not actual Telegram/MT5 acceptance.
 
