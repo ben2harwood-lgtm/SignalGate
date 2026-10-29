@@ -1300,16 +1300,19 @@ async def _preview_screenshot(
 async def on_signal_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle Confirm / Edit / Cancel on an extracted-signal preview."""
     query = update.callback_query
-    await query.answer()
     # A callback can survive after a private screenshot preview, then arrive
-    # from a shared chat. Never read, edit or broadcast that private candidate
-    # on the authority of a group/channel button.
+    # from a shared chat. Do not inspect or edit a group message or touch the
+    # private candidate: notify only the clicker through an ephemeral alert.
     if not _private_command_chat(update):
-        await query.edit_message_text(
-            "Screenshot confirmation and edits require a private chat with "
-            "SignalGate. Nothing was sent."
+        await query.answer(
+            text=(
+                "Screenshot confirmation and edits require a private chat with "
+                "SignalGate. Nothing was sent."
+            ),
+            show_alert=True,
         )
         return
+    await query.answer()
     callback_data = query.data if isinstance(query.data, str) else ""
     action, separator, token = callback_data.partition(":")
     active_token = context.user_data.get("pending_preview_token")
