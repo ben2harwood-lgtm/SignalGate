@@ -180,8 +180,16 @@ price. Finite positive numeric SL/TP and optional price levels are checked too.
 LIMIT display remains a preview; the demo EA separately refuses LIMIT execution. Missing required SL/TP1, booleans,
 non-finite/huge numbers, injected line breaks and Unicode format controls fail
 closed with generic provider-history guidance. A successful signal-creation
-HTTP status alone never authorises an unverified display. This is an isolated
-synthetic Telegram guard; no actual recipient delivery, MT5 broker-demo,
+HTTP status alone never authorises an unverified display. In hosted mode the
+card expiry policy duration is derived from persisted signal `created_at` and
+`expires_at` (UTC ISO-8601), rather than the preceding source-status policy.
+An operator's expiry-policy update between status GET and signal creation POST
+therefore cannot make the bot show the stale policy duration. Missing, malformed,
+inconsistent or implausible timestamps refuse the card before recipient lookup.
+Offline coverage simulates source status at five minutes and persisted signal
+expiry at 23 minutes, plus fail-closed malformed receipts. The displayed
+duration is not a real-time remaining-duration guarantee on replay. This is an
+isolated synthetic Telegram guard; no actual recipient delivery, MT5 broker-demo,
 independent pentest or release acceptance is inferred.
 
 This is an offline-tested cross-tenant guard, **not** a guarantee of atomic
