@@ -2504,9 +2504,26 @@ def check_resume_private_chat_boundary() -> None:
         assert secret not in replies[0]
         assert "Trading resumed" not in replies[0]
 
+    unconfirmed = (
+        "Resume status unconfirmed. Verify the administrator pause state "
+        "before relying on this response; the backend may have processed it."
+    )
     for admin, backend_response, expected_reply in (
-        (True, {"status": "RESUMED"}, "Trading resumed."),
-        (True, None, "Backend unreachable."),
+        # This is the exact receipt emitted by backend/app/routes/admin.py.
+        (True, {"status": "ok", "admin_paused": False}, "Trading resumed."),
+        # A transport failure can occur AFTER the backend commits the change.
+        (True, None, unconfirmed),
+        # HTTP 200, valid JSON and even a truthy dict do not prove success.
+        (True, {"status": "RESUMED"}, unconfirmed),
+        (True, {"status": "ok", "admin_paused": True}, unconfirmed),
+        (True, {"status": "ok", "admin_paused": 0}, unconfirmed),
+        (True, {"status": "ok", "admin_paused": "false"}, unconfirmed),
+        (True, {"status": "ok", "admin_paused": None}, unconfirmed),
+        (True, {"status": "ok", "admin_paused": False, "detail": secret}, unconfirmed),
+        (True, {"status": "ok", "admin_paused": False, "error": secret}, unconfirmed),
+        (True, {"detail": secret}, unconfirmed),
+        (True, ["ok"], unconfirmed),
+        (True, {}, unconfirmed),
         (False, None, "Admin only."),
     ):
         replies, calls = [], []
@@ -2539,6 +2556,7 @@ def check_resume_private_chat_boundary() -> None:
         else:
             assert not calls, "Non-admin must not reach backend"
         assert replies == [expected_reply]
+        assert all(secret not in message for message in replies)
 
 
 def check_users_private_chat_boundary() -> None:

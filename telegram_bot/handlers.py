@@ -1381,8 +1381,22 @@ async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     result = await _backend_post(
         "/admin/resume", headers=_admin_headers(update.effective_user.id)
     )
+    # A 2xx response may be malformed or error-shaped even when the backend
+    # already changed the administrative state. Never claim a successful resume
+    # without the exact typed receipt returned by /admin/resume.
+    confirmed = (
+        isinstance(result, dict)
+        and set(result) == {"status", "admin_paused"}
+        and result.get("status") == "ok"
+        and result.get("admin_paused") is False
+    )
     await update.message.reply_text(
-        "Trading resumed." if result else "Backend unreachable."
+        "Trading resumed."
+        if confirmed
+        else (
+            "Resume status unconfirmed. Verify the administrator pause state "
+            "before relying on this response; the backend may have processed it."
+        )
     )
 
 

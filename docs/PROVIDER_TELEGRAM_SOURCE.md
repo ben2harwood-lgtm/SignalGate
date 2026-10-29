@@ -312,10 +312,21 @@ A private-chat administrator can still resume; a private non-administrator
 remains denied. Offline negative tests prove no state-change request is sent
 from a shared/unknown chat, but not actual Telegram delivery or broker state.
 
+A successful HTTP status alone is **not** confirmation that the protective
+pause was lifted. The bot only displays "Trading resumed." for the exact typed
+backend `/admin/resume` JSON receipt
+`{"status": "ok", "admin_paused": false}`. An error-shaped or
+extra-field response, wrong pause state, malformed value or uncertain transport
+result instead receives generic **unconfirmed** guidance without echoing server
+diagnostics. The backend may have committed before a response was lost, so
+the operator must verify authoritative admin pause state before relying on it
+or retrying; the bot does not automatically repeat the request.
+
 This narrow guard intentionally **does not change `/pause`**, because
 restricting an emergency stop needs its own safety/operability review.
-It does not approve execution, release the frozen RC2, or replace MT5
-demo-broker and independent external-assurance evidence.
+The receipt check only has synthetic offline adversarial coverage; it does not
+approve execution, release frozen RC2, or replace MT5 demo-broker or independent
+external-assurance evidence.
 
 ## Private-chat boundary for one-time credentials (offline verified only)
 
