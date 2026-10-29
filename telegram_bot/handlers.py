@@ -622,6 +622,14 @@ def _role_name(telegram_user_id: int | str) -> str:
 
 
 async def screenshot_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Even the help path queries a user's provider-source status. Do not make
+    # that tenant-linked lookup or expose its result from a shared chat.
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Use /screenshothelp in a private chat with SignalGate. "
+            "No provider source was checked."
+        )
+        return
     if not await _can_submit_provider_signal(update):
         await update.message.reply_text(
             "Screenshot submission requires a connected provider source.\n"
