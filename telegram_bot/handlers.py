@@ -490,31 +490,92 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "No settings were retrieved."
         )
         return
-    # Admin status endpoint returns settings; non-admins get the generic view.
+
+    unconfirmed = (
+        "Settings could not be confirmed. Verify demo mode and configuration "
+        "in the Provider Portal before relying on them."
+    )
+    # Non-admins receive None from the protected endpoint and may consult
+    # public health once. A malformed 2xx admin receipt is NOT a reason to
+    # silently substitute generic settings or make an extra backend request.
     user = update.effective_user
     data = await _backend_get("/admin/status", headers=_admin_headers(user.id))
-    if data and "settings" in data:
-        s = data["settings"]
-        lines = [
-            "SignalGate settings:",
-            f"Demo only: {data.get('demo_only_mode')}",
-            f"Expiry minutes: {s.get('default_signal_expiry_minutes')}",
-            f"Split-ticket partial mode: {s.get('split_ticket_demo_partial_mode')}",
-            f"Default lot: {s.get('default_lot_size')}",
-            f"TP lots: {s.get('tp1_lot')}/{s.get('tp2_lot')}/{s.get('tp3_lot')}",
-            f"Close %: {s.get('tp1_close_percent')}/"
-            f"{s.get('tp2_close_percent')}/{s.get('tp3_close_percent')}",
-        ]
-    else:
+    if data is None:
         health = await _backend_get("/health")
-        lines = [
-            "SignalGate settings:",
-            f"Demo only: {health.get('demo_only_mode') if health else 'unknown'}",
-            "Split-ticket partial mode: ON (default)",
-            "Default lot: 0.01  TP lots: 0.02/0.01/0.01",
-        ]
-    await update.message.reply_text("\n".join(lines))
+        if (
+            not isinstance(health, dict)
+            or "detail" in health
+            or "error" in health
+            or health.get("demo_only_mode") is not True
+        ):
+            await update.message.reply_text(unconfirmed)
+            return
+        await update.message.reply_text(
+            "SignalGate settings:\n"
+            "Demo only: True\n"
+            "Split-ticket partial mode: ON (default)\n"
+            "Default lot: 0.01  TP lots: 0.02/0.01/0.01"
+        )
+        return
 
+    if (
+        not isinstance(data, dict)
+        or "detail" in data
+        or "error" in data
+        or data.get("demo_only_mode") is not True
+        or not isinstance(data.get("settings"), dict)
+    ):
+        await update.message.reply_text(unconfirmed)
+        return
+
+    settings = data["settings"]
+    if "detail" in settings or "error" in settings:
+        await update.message.reply_text(unconfirmed)
+        return
+
+    def numeric_setting(key: str) -> Optional[str]:
+        value = settings.get(key)
+        if value is None:
+            return "not set"
+        if type(value) not in (str, int, float):
+            return None
+        shown = str(value)
+        if len(shown) > 24 or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", shown):
+            return None
+        return shown
+
+    numeric_keys = (
+        "default_signal_expiry_minutes", "default_lot_size",
+        "tp1_lot", "tp2_lot", "tp3_lot",
+        "tp1_close_percent", "tp2_close_percent", "tp3_close_percent",
+    )
+    values = {key: numeric_setting(key) for key in numeric_keys}
+    split = settings.get("split_ticket_demo_partial_mode")
+    if type(split) is bool:
+        split_shown = str(split)
+    elif type(split) is str and split.lower() in ("true", "false"):
+        split_shown = split.lower()
+    elif split is None:
+        split_shown = "not set"
+    else:
+        split_shown = None
+    if split_shown is None or any(value is None for value in values.values()):
+        await update.message.reply_text(unconfirmed)
+        return
+
+    await update.message.reply_text(
+        "\n".join((
+            "SignalGate settings:",
+            "Demo only: True",
+            f"Expiry minutes: {values['default_signal_expiry_minutes']}",
+            f"Split-ticket partial mode: {split_shown}",
+            f"Default lot: {values['default_lot_size']}",
+            f"TP lots: {values['tp1_lot']}/{values['tp2_lot']}/{values['tp3_lot']}",
+            "Close %: "
+            f"{values['tp1_close_percent']}/"
+            f"{values['tp2_close_percent']}/{values['tp3_close_percent']}",
+        ))
+    )
 
 async def provider_invite(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Self-enrol a screenshot provider with a shared invite code (local demo only)."""
