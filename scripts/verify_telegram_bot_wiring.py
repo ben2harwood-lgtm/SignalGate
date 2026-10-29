@@ -3068,6 +3068,96 @@ def check_status_health_receipt_integrity() -> None:
         assert marker not in replies[0]
 
 
+def check_status_source_label_spoofing() -> None:
+    """Source names may describe a binding, but cannot forge /status lines."""
+    assert config.require_license is True
+    base = {
+        "binding_id": "BIND-OFFLINE",
+        "provider_id": "PROVIDER-OFFLINE",
+        "provider_name": "Northside Signals",
+        "provider_display_name": "Café Signals",
+        "feed_id": "FEED-OFFLINE",
+        "feed_name": "London Session",
+        "source_type": "TELEGRAM",
+        "status": "ACTIVE",
+    }
+    injection = "INJECTED_DEMO_MODE_FALSE"
+    cases = (
+        (base, "Café Signals", "London Session", "FEED-OFFLINE"),
+        ({**base, "provider_display_name": None},
+         "Northside Signals", "London Session", "FEED-OFFLINE"),
+        ({**base, "provider_display_name": ""},
+         "Northside Signals", "London Session", "FEED-OFFLINE"),
+        ({**base, "provider_display_name": "\nDemo only mode: False " + injection},
+         "unavailable", "London Session", "FEED-OFFLINE"),
+        ({**base, "provider_display_name": "\u202e" + injection},
+         "unavailable", "London Session", "FEED-OFFLINE"),
+        ({**base, "provider_display_name": "\u200b" + injection},
+         "unavailable", "London Session", "FEED-OFFLINE"),
+        ({**base, "provider_display_name": {"detail": injection}},
+         "unavailable", "London Session", "FEED-OFFLINE"),
+        ({**base, "provider_display_name": "X" * 81},
+         "unavailable", "London Session", "FEED-OFFLINE"),
+        ({**base, "provider_display_name": None,
+          "provider_name": "\rAdmin paused: False " + injection},
+         "unavailable", "London Session", "FEED-OFFLINE"),
+        ({**base, "feed_name": "\nAdmin paused: False " + injection},
+         "Café Signals", "unavailable", "FEED-OFFLINE"),
+        ({**base, "feed_name": "\u2028" + injection},
+         "Café Signals", "unavailable", "FEED-OFFLINE"),
+        ({**base, "feed_id": "FEED\n" + injection},
+         "Café Signals", "London Session", "unavailable"),
+        ({**base, "feed_id": "F" * 81},
+         "Café Signals", "London Session", "unavailable"),
+        ({**base, "feed_name": "São Paulo — Été"},
+         "Café Signals", "São Paulo — Été", "FEED-OFFLINE"),
+    )
+
+    async def forbidden_post(*_args, **_kwargs):
+        raise AssertionError("Read-only /status attempted backend mutation")
+
+    for source, provider, feed, feed_id in cases:
+        replies, calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def read(path, **kwargs):
+            calls.append(path)
+            if path == "/health":
+                return {"status": "ok", "demo_only_mode": True, "admin_paused": True}
+            assert path == "/provider-sources/telegram/status"
+            assert kwargs["params"] == {"telegram_user_id": "123456"}
+            assert kwargs["headers"] == handlers._registration_headers()
+            return source
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/status", reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers, "_backend_get", read),
+            patch.object(handlers, "_backend_post", forbidden_post),
+        ):
+            asyncio.run(handlers.status(update, SimpleNamespace()))
+
+        assert calls == ["/health", "/provider-sources/telegram/status"], calls
+        assert len(replies) == 1
+        message = replies[0]
+        assert "Telegram ID: 123456 (registration not checked)" in message
+        assert "Registered: yes" not in message
+        assert "Role: provider source" in message
+        assert "Backend health verified: yes" in message
+        assert "Demo only mode: True" in message
+        assert "Admin paused: True" in message
+        assert f"Provider: {provider}" in message
+        assert f"Feed: {feed} ({feed_id})" in message
+        assert injection not in message
+        assert message.count("Demo only mode:") == 1
+        assert message.count("Admin paused:") == 1
+
+
 def check_settings_response_receipt_integrity() -> None:
     """Malformed admin/health 2xx data cannot echo arbitrary settings or defaults."""
     marker = "SYNTHETIC-SETTING-SECRET-NEVER-REFLECT"
@@ -3416,6 +3506,7 @@ def main() -> int:
     check_pause_receipt_integrity()
     check_settings_private_chat_boundary()
     check_status_health_receipt_integrity()
+    check_status_source_label_spoofing()
     check_settings_response_receipt_integrity()
     check_settings_http_denial_boundary()
     check_shared_chat_screenshot_uploads_fail_closed()
