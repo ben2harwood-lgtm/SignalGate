@@ -5,6 +5,7 @@ logic itself — all decisions, idempotency and safety live in the backend.
 """
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import math
 import re
@@ -99,6 +100,40 @@ def _safe_trade_card_signal(signal: Dict[str, Any]) -> bool:
         ):
             return False
     return True
+
+def _persisted_signal_expiry_minutes(signal: Dict[str, Any]) -> Optional[int]:
+    """Derive the card policy duration from persisted timestamps, not status.
+
+    Parser expiry precedes the database's created_at stamp by milliseconds;
+    accept up to five seconds of write latency around the policy minute.
+    """
+    timestamps = []
+    for field in ("created_at", "expires_at"):
+        value = signal.get(field)
+        if (
+            type(value) is not str
+            or re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+                r"(?:\.\d{1,6})?(?:Z|\+00:00)?",
+                value,
+                flags=re.ASCII,
+            ) is None
+        ):
+            return None
+        try:
+            stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=dt.timezone.utc)
+        timestamps.append(stamp)
+
+    seconds = (timestamps[1] - timestamps[0]).total_seconds()
+    minutes = round(seconds / 60)
+    if not 1 <= minutes <= 1440 or abs(seconds - minutes * 60) > 5:
+        return None
+    return minutes
+
 
 def _private_command_chat(update: Update) -> bool:
     """Keep one-time credentials and registration out of shared Telegram chats."""
@@ -865,10 +900,7 @@ async def _create_and_broadcast(
             },
             headers=_registration_headers(),
         )
-        try:
-            expiry = int(source.get("expiry_minutes") or 5)
-        except (TypeError, ValueError):
-            expiry = 5
+        # The prior source status is never authoritative for the card expiry.
     else:
         # Local-demo legacy path only. Hosted mode requires the persisted,
         # feed-bound Telegram provider source above.
@@ -952,6 +984,14 @@ async def _create_and_broadcast(
             "Signal card fields could not be confirmed. No subscriber card was "
             "sent; check provider history before retrying."
         )
+
+    if source:
+        expiry = _persisted_signal_expiry_minutes(signal)
+        if expiry is None:
+            return (
+                "Signal expiry receipt could not be confirmed. No subscriber "
+                "card was sent; check provider history before retrying."
+            )
 
     from keyboards import format_trade_card, trade_card_keyboard
 
