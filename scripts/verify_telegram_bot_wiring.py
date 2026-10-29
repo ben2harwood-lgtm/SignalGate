@@ -2972,6 +2972,104 @@ def check_users_count_receipt_integrity() -> None:
         else:
             assert replies == [f"Active user count (approx): {expected}"]
 
+def check_settings_response_receipt_integrity() -> None:
+    """Malformed admin/health 2xx data cannot echo arbitrary settings or defaults."""
+    marker = "SYNTHETIC-SETTING-SECRET-NEVER-REFLECT"
+    settings = {
+        "default_signal_expiry_minutes": 30,
+        "split_ticket_demo_partial_mode": True,
+        "default_lot_size": "0.01",
+        "tp1_lot": "0.02", "tp2_lot": "0.01", "tp3_lot": "0.01",
+        "tp1_close_percent": 50,
+        "tp2_close_percent": 30,
+        "tp3_close_percent": 20,
+    }
+    valid = {"demo_only_mode": True, "settings": settings}
+    invalid = [
+        [], [marker], {}, {"error": marker},
+        {"demo_only_mode": True, "settings": []},
+        {"demo_only_mode": True, "settings": marker},
+        {"demo_only_mode": "true", "settings": settings},
+        {"demo_only_mode": False, "settings": settings},
+        {"demo_only_mode": True, "settings": settings, "detail": marker},
+        {"demo_only_mode": True, "settings": settings, "error": marker},
+        {"demo_only_mode": True, "settings": {**settings, "error": marker}},
+        {"demo_only_mode": True, "settings": {**settings, "default_lot_size": marker}},
+        {"demo_only_mode": True, "settings": {**settings, "default_lot_size": True}},
+        {"demo_only_mode": True, "settings": {**settings, "default_lot_size": {}}},
+        {"demo_only_mode": True, "settings": {**settings, "tp1_lot": "0.01\n" + marker}},
+        {"demo_only_mode": True, "settings": {**settings, "tp2_lot": "7" * 30}},
+        {"demo_only_mode": True, "settings": {**settings, "tp3_lot": -1}},
+        {"demo_only_mode": True, "settings": {**settings, "tp1_close_percent": float("nan")}},
+        {"demo_only_mode": True, "settings": {**settings, "split_ticket_demo_partial_mode": []}},
+    ]
+    # An error-shaped 2xx admin response must not trigger a second /health GET.
+    for receipt in invalid + [valid, {"demo_only_mode": True, "settings": {}}]:
+        replies, calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def read(path, **kwargs):
+            calls.append((path, kwargs))
+            assert path == "/admin/status"
+            return receipt
+
+        async def forbidden_post(*_args, **_kwargs):
+            raise AssertionError("Read-only settings command issued POST")
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/settings", reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers, "_backend_get", read),
+            patch.object(handlers, "_backend_post", forbidden_post),
+        ):
+            asyncio.run(handlers.settings_cmd(update, SimpleNamespace()))
+        assert [path for path, _ in calls] == ["/admin/status"], calls
+        assert len(replies) == 1
+        assert marker not in replies[0]
+        if receipt in invalid:
+            assert "could not be confirmed" in replies[0]
+            assert "Expiry minutes:" not in replies[0]
+            assert "Default lot:" not in replies[0]
+        elif receipt is valid:
+            assert "Expiry minutes: 30" in replies[0]
+            assert "Default lot: 0.01" in replies[0]
+            assert "Close %: 50/30/20" in replies[0]
+        else:
+            assert "Expiry minutes: not set" in replies[0]
+
+    for health in (
+        [], {"detail": marker}, {"error": marker, "demo_only_mode": True},
+        {"demo_only_mode": "true"}, {"demo_only_mode": False}, None,
+    ):
+        replies, calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def read(path, **_kwargs):
+            calls.append(path)
+            assert path in ("/admin/status", "/health")
+            return None if path == "/admin/status" else health
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/settings", reply_text=reply_text),
+        )
+        with patch.object(handlers, "_backend_get", read):
+            asyncio.run(handlers.settings_cmd(update, SimpleNamespace()))
+        assert calls == ["/admin/status", "/health"], calls
+        assert len(replies) == 1
+        assert "could not be confirmed" in replies[0]
+        assert marker not in replies[0]
+        assert "Default lot:" not in replies[0]
+
+
 def check_settings_private_chat_boundary() -> None:
     """No backend configuration or generic readiness is fetched for groups."""
     secret = "SYNTHETIC-PRIVATE-SETTINGS-NEVER-ECHO"
@@ -3136,6 +3234,7 @@ def main() -> int:
     check_resume_private_chat_boundary()
     check_pause_receipt_integrity()
     check_settings_private_chat_boundary()
+    check_settings_response_receipt_integrity()
     check_shared_chat_screenshot_uploads_fail_closed()
     check_connectprovider_success_receipt_integrity()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")
