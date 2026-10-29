@@ -1468,11 +1468,48 @@ async def lastsignals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     signals = await _backend_get(
         "/signals/recent", headers=_admin_headers(update.effective_user.id)
     )
-    if not signals:
+    # A successful HTTP status alone does not make signal history trustworthy.
+    # Render only the first ten fully validated rows; malformed/error-shaped
+    # responses must not crash the handler or reflect untrusted diagnostics.
+    if signals is None or signals == []:
         await update.message.reply_text("No signals or backend unreachable.")
         return
+
+    def safe_history_text(value: Any, *, required: bool) -> bool:
+        if value is None:
+            return not required
+        return (
+            type(value) is str
+            and (not required or bool(value))
+            and len(value) <= 64
+            and value.isascii()
+            and value.isprintable()
+        )
+
+    def safe_history_row(row: Any) -> bool:
+        return (
+            isinstance(row, dict)
+            and "detail" not in row
+            and "error" not in row
+            and all(
+                safe_history_text(row.get(field), required=True)
+                for field in ("id", "parser_status", "status")
+            )
+            and all(
+                safe_history_text(row.get(field), required=False)
+                for field in ("symbol", "direction")
+            )
+        )
+
+    recent = signals[:10] if isinstance(signals, list) else []
+    if not recent or not all(safe_history_row(row) for row in recent):
+        await update.message.reply_text(
+            "Signal history could not be confirmed. Verify the backend "
+            "before relying on its records."
+        )
+        return
     lines = ["Recent signals:"]
-    for s in signals[:10]:
+    for s in recent:
         lines.append(
             f"{s['id']}: {s.get('symbol')} {s.get('direction')} "
             f"[{s['parser_status']}] {s['status']}"

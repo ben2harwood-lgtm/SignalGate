@@ -303,6 +303,25 @@ replace deployed log-review or independent security assurance.
 The same offline smoke refuses Python `-O`, `-OO` or `PYTHONOPTIMIZE`,
 which would otherwise disable its assertion-based checks and print a false PASS.
 
+## Administrator /lastsignals history receipt boundary (offline test contract)
+
+The administrator's private-chat /lastsignals command reads GET /signals/recent
+exactly once. The canonical backend returns an array of signal summaries, with
+required ID, parser-status and lifecycle-status strings and optional symbol
+and direction. Never treat a successful HTTP response, a map-shaped error or
+partial/malformed history row as confirmed history. Display at most ten rows,
+with printable ASCII strings bounded to 64 characters; reject error/detail
+fields, control characters, Unicode spoofing, wrong types and malformed rows
+before displaying any of the returned history. A missing backend response or
+genuinely empty array keeps the existing no-history/unreachable message.
+
+The registered isolated smoke tests invalid roots, individual fields, mixed
+good/bad rows, private positive results, nullable optional fields and the ten
+row display cap. This is a broker-free test contract, not proof of actual
+Telegram delivery, MT5 demo acceptance, external assurance or release approval.
+No POST, retry, trading-mode change, new backend credential or shared-chat
+access is introduced.
+
 ## Administrator /lastcommands count receipt integrity (offline verified only)
 
 The private-chat administrator `/lastcommands` command reads `GET /admin/status`

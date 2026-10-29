@@ -2391,6 +2391,85 @@ def check_lastsignals_private_chat_boundary() -> None:
 
 
 
+def check_lastsignals_history_receipt_integrity() -> None:
+    """Malformed admin history never becomes a Telegram-visible signal row."""
+    secret = "SYNTHETIC-HISTORY-DIAGNOSTIC-NEVER-ECHO"
+    valid = {
+        "id": "SIG-OFFLINE", "symbol": "EURUSD", "direction": "BUY",
+        "parser_status": "VALID", "status": "VALID",
+    }
+    invalid = [
+        False, {}, {"detail": secret}, {"error": secret},
+        [None], [True], ["unexpected"], [[]],
+        [{"detail": secret}], [{"error": secret}],
+        [{**valid, "detail": secret}], [{**valid, "error": secret}],
+        [valid, {"detail": secret}],
+    ]
+    for field in ("id", "parser_status", "status"):
+        invalid.append([[*valid.values()]])
+        invalid.append([{key: value for key, value in valid.items() if key != field}])
+        for value in (None, True, 7, "", "X" * 65, "OK\n" + secret,
+                      "\u202eBAD", [], {}):
+            invalid.append([{**valid, field: value}])
+    for field in ("symbol", "direction"):
+        for value in (False, 7, "X" * 65, "X\n" + secret,
+                      "\u202eBAD", [], {}):
+            invalid.append([{**valid, field: value}])
+
+    async def forbidden_post(*_args, **_kwargs):
+        raise AssertionError("Read-only /lastsignals attempted backend mutation")
+
+    cases = [(payload, None) for payload in invalid] + [
+        (None, "unavailable"),
+        ([], "unavailable"),
+        ([valid], "valid"),
+        ([{**valid, "symbol": None, "direction": None}], "nullable"),
+        ([dict(valid) for _ in range(11)], "capped"),
+    ]
+    for payload, expected in cases:
+        replies, backend_calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def history_backend(path, **kwargs):
+            backend_calls.append((path, kwargs))
+            return payload
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/lastsignals", reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers.config, "is_admin", lambda _user_id: True),
+            patch.object(handlers, "_backend_get", history_backend),
+            patch.object(handlers, "_backend_post", forbidden_post),
+        ):
+            asyncio.run(handlers.lastsignals(update, SimpleNamespace()))
+
+        assert len(backend_calls) == 1
+        assert backend_calls[0][0] == "/signals/recent"
+        assert backend_calls[0][1]["headers"] == handlers._admin_headers(123456)
+        assert len(replies) == 1 and secret not in replies[0]
+        if expected is None:
+            assert "could not be confirmed" in replies[0].lower(), payload
+            assert "Recent signals:" not in replies[0], payload
+        elif expected == "unavailable":
+            assert replies == ["No signals or backend unreachable."]
+        elif expected == "valid":
+            assert replies == [
+                "Recent signals:\nSIG-OFFLINE: EURUSD BUY [VALID] VALID"
+            ]
+        elif expected == "nullable":
+            assert replies == [
+                "Recent signals:\nSIG-OFFLINE: None None [VALID] VALID"
+            ]
+        else:
+            assert expected == "capped"
+            assert replies[0].count("SIG-OFFLINE: EURUSD BUY [VALID] VALID") == 10
+
+
 def check_lastcommands_private_chat_boundary() -> None:
     """Shared chats cannot obtain admin command/execution/management counts."""
     secret = "SYNTHETIC-PRIVATE-COMMAND-METADATA-NEVER-ECHO"
@@ -3048,6 +3127,7 @@ def main() -> int:
     check_private_chat_credential_commands()
     check_testsignal_private_chat_boundary()
     check_lastsignals_private_chat_boundary()
+    check_lastsignals_history_receipt_integrity()
     check_lastcommands_private_chat_boundary()
     check_lastcommands_count_receipt_integrity()
     check_users_private_chat_boundary()
