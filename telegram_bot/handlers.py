@@ -79,17 +79,15 @@ def _safe_registration_license(value: Any) -> bool:
 
 def _safe_status_label(value: Any) -> str:
     """Display-only guard: source names are never authority or bot control text."""
-    if not isinstance(value, str) or len(value) > 80:
-        return "unavailable"
-    label = value.strip()
-    if not label or any(
+    if not isinstance(value, str) or len(value) > 80 or any(
         unicodedata.category(ch).startswith("C")
         or unicodedata.category(ch) in ("Zl", "Zp")
-        for ch in label
+        for ch in value
     ):
-        # Includes control/newline, bidi formatting, zero-width and surrogates.
+        # Validate before strip(): stripping a leading newline/bidi separator
+        # must not turn a forged status line into a displayable label.
         return "unavailable"
-    return label
+    return value.strip() or "unavailable"
 
 
 # --- backend helpers ------------------------------------------------------
