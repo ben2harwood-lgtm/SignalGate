@@ -78,13 +78,27 @@ def _safe_registration_license(value: Any) -> bool:
 
 # --- backend helpers ------------------------------------------------------
 
-async def _backend_get(path: str, **kwargs) -> Optional[Any]:
+# Protected /admin/status 401/403 is an explicit authentication refusal.
+# Malformed 2xx JSON, transport failures and 5xx are NOT non-admin evidence.
+# Keep this identity sentinel internal; never send it to Telegram.
+_ADMIN_STATUS_FORBIDDEN = object()
+
+
+async def _backend_get(
+    path: str, *, distinguish_admin_denial: bool = False, **kwargs
+) -> Optional[Any]:
     url = f"{config.backend_base_url}{path}"
     try:
         async with httpx.AsyncClient(timeout=10.0) as http:
             resp = await http.get(url, **kwargs)
             if not 200 <= resp.status_code < 300:
                 logger.warning("backend GET %s returned HTTP %s", path, resp.status_code)
+                if (
+                    distinguish_admin_denial
+                    and path == "/admin/status"
+                    and resp.status_code in (401, 403)
+                ):
+                    return _ADMIN_STATUS_FORBIDDEN
                 return None
             data = resp.json()
             return data if isinstance(data, (dict, list)) else None
@@ -495,12 +509,16 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Settings could not be confirmed. Verify demo mode and configuration "
         "in the Provider Portal before relying on them."
     )
-    # Non-admins receive None from the protected endpoint and may consult
-    # public health once. A malformed 2xx admin receipt is NOT a reason to
-    # silently substitute generic settings or make an extra backend request.
+    # Only an explicit protected-endpoint 401/403 is a non-admin refusal.
+    # Unavailable, invalid JSON, malformed 2xx and other HTTP failures must
+    # NOT cause a public-health fallback or guessed settings.
     user = update.effective_user
-    data = await _backend_get("/admin/status", headers=_admin_headers(user.id))
-    if data is None:
+    data = await _backend_get(
+        "/admin/status",
+        headers=_admin_headers(user.id),
+        distinguish_admin_denial=True,
+    )
+    if data is _ADMIN_STATUS_FORBIDDEN:
         health = await _backend_get("/health")
         if (
             not isinstance(health, dict)
