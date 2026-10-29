@@ -62,6 +62,38 @@ def _valid_signal_id(value: Any) -> bool:
     )
 
 
+
+def _safe_trade_card_signal(signal: Dict[str, Any]) -> bool:
+    """Fail closed on malformed HTTP 200 data before displaying an approval card.
+
+    SignalOut's VALID market signals contain a bounded symbol, BUY/SELL and
+    finite positive numeric price levels. Never turn untrusted JSON strings,
+    Unicode controls or non-finite numbers into a subscriber's safety message.
+    This is display validation, not a substitute for backend parser authority.
+    """
+    symbol = signal.get("symbol")
+    if (
+        type(symbol) is not str
+        or re.fullmatch(r"[A-Za-z0-9#._-]{1,40}", symbol, flags=re.ASCII) is None
+        or signal.get("direction") not in ("BUY", "SELL")
+        or signal.get("entry_type") not in (None, "MARKET")
+    ):
+        return False
+
+    for field in ("initial_stop_loss", "tp1", "tp2", "tp3", "entry_price"):
+        value = signal.get(field)
+        if value is None and field not in ("initial_stop_loss", "tp1"):
+            continue
+        # Test the numeric range before math.isfinite: huge hostile JSON ints
+        # must be refused without an int-to-float overflow.
+        if (
+            type(value) not in (int, float)
+            or not (0 < value < 1e12)
+            or not math.isfinite(value)
+        ):
+            return False
+    return True
+
 def _private_command_chat(update: Update) -> bool:
     """Keep one-time credentials and registration out of shared Telegram chats."""
     return getattr(getattr(update, "effective_chat", None), "type", None) == "private"
@@ -901,6 +933,14 @@ async def _create_and_broadcast(
                 "Signal creation was confirmed but its provider/feed binding "
                 "changed. No subscriber card was sent; check provider history."
             )
+
+    # The same HTTP 200 that confirmed persistence can contain malformed
+    # presentation fields. Never broadcast a forged safety/price line.
+    if not _safe_trade_card_signal(signal):
+        return (
+            "Signal card fields could not be confirmed. No subscriber card was "
+            "sent; check provider history before retrying."
+        )
 
     from keyboards import format_trade_card, trade_card_keyboard
 
