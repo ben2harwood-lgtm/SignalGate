@@ -2398,6 +2398,82 @@ def check_lastcommands_private_chat_boundary() -> None:
 
 
 
+def check_resume_private_chat_boundary() -> None:
+    """Lifting the demo pause must not originate from shared Telegram chats."""
+    secret = "SYNTHETIC-RESUME-COMMAND-DO-NOT-ECHO"
+
+    async def forbidden_backend(*_args, **_kwargs):
+        raise AssertionError("Shared/non-admin resume contacted the backend")
+
+    def forbidden_auth(*_args, **_kwargs):
+        raise AssertionError("Shared resume consulted administrator authority")
+
+    for chat_type in ("group", "supergroup", "channel", None):
+        replies = []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        update = SimpleNamespace(
+            effective_chat=(
+                SimpleNamespace(type=chat_type) if chat_type is not None else None
+            ),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(
+                text="/resume " + secret, reply_text=reply_text
+            ),
+        )
+        with (
+            patch.object(handlers.config, "is_admin", forbidden_auth),
+            patch.object(handlers, "_admin_headers", forbidden_auth),
+            patch.object(handlers, "_backend_get", forbidden_backend),
+            patch.object(handlers, "_backend_post", forbidden_backend),
+        ):
+            asyncio.run(handlers.resume(update, SimpleNamespace()))
+        assert replies == [
+            "Use /resume in a private chat with SignalGate. "
+            "No resume request was submitted."
+        ]
+        assert secret not in replies[0]
+        assert "Trading resumed" not in replies[0]
+
+    for admin, backend_response, expected_reply in (
+        (True, {"status": "RESUMED"}, "Trading resumed."),
+        (True, None, "Backend unreachable."),
+        (False, None, "Admin only."),
+    ):
+        replies, calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def private_post(path, **kwargs):
+            calls.append((path, kwargs))
+            return backend_response
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/resume", reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers.config, "is_admin", lambda _id: admin),
+            patch.object(handlers, "_backend_get", forbidden_backend),
+            patch.object(
+                handlers, "_backend_post",
+                private_post if admin else forbidden_backend,
+            ),
+        ):
+            asyncio.run(handlers.resume(update, SimpleNamespace()))
+        if admin:
+            assert len(calls) == 1, "Private admin must send exactly one request"
+            assert calls[0][0] == "/admin/resume"
+            assert calls[0][1]["headers"] == handlers._admin_headers(123456)
+        else:
+            assert not calls, "Non-admin must not reach backend"
+        assert replies == [expected_reply]
+
+
 def check_users_private_chat_boundary() -> None:
     """Shared/unknown Telegram chats cannot request administrator user counts."""
     secret = "SYNTHETIC-PRIVATE-USER-COUNT-NEVER-ECHO"
@@ -2625,6 +2701,7 @@ def main() -> int:
     check_lastsignals_private_chat_boundary()
     check_lastcommands_private_chat_boundary()
     check_users_private_chat_boundary()
+    check_resume_private_chat_boundary()
     check_settings_private_chat_boundary()
     check_shared_chat_screenshot_uploads_fail_closed()
     check_connectprovider_success_receipt_integrity()
