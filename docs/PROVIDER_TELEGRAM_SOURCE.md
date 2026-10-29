@@ -58,8 +58,20 @@ a generic health-unconfirmed warning; untrusted server text is not echoed.
 A structurally valid receipt reporting demo-only mode **disabled** is
 displayed with an explicit *do not trade* warning, never as permission
 to execute. Group, supergroup, channel and missing-chat requests remain
-refused before backend calls. Registered/role lines are pre-existing bot
-hints, not proof of registration or release acceptance.
+refused before backend calls. `/status` now shows the Telegram ID with an
+explicit **registration not checked** label, rather than asserting that
+registration succeeded. The local role hint and an ACTIVE provider-source
+binding are not evidence of subscriber registration or release acceptance.
+
+Backend-managed provider/feed display names and feed IDs are untrusted even
+after source-binding checks. The read-only `/status` renderer bounds each
+field to 80 characters and rejects control, invisible format/bidi,
+surrogate and line/paragraph separator characters. Invalid labels display
+`unavailable`, never backend diagnostic text or injected `Demo only mode` /
+`Admin paused` lines. Ordinary safe Unicode names remain displayable.
+The label guard does **not** change binding authority, provider permission,
+backend calls or trading controls; it also does not prove that visually
+similar Unicode letters are impossible. This is a presentation boundary.
 
 The registered offline smoke contains negative and positive synthetic
 receipts and no network/broker contact. Even a passing CI test does not
