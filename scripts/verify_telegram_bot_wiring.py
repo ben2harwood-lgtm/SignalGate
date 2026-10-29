@@ -3054,7 +3054,10 @@ def check_settings_response_receipt_integrity() -> None:
         async def read(path, **_kwargs):
             calls.append(path)
             assert path in ("/admin/status", "/health")
-            return None if path == "/admin/status" else health
+            return (
+                handlers._ADMIN_STATUS_FORBIDDEN
+                if path == "/admin/status" else health
+            )
 
         update = SimpleNamespace(
             effective_chat=SimpleNamespace(type="private"),
@@ -3068,6 +3071,88 @@ def check_settings_response_receipt_integrity() -> None:
         assert "could not be confirmed" in replies[0]
         assert marker not in replies[0]
         assert "Default lot:" not in replies[0]
+
+
+def check_settings_http_denial_boundary() -> None:
+    """Exercise the real HTTP helper with an OFFLINE mock transport.
+
+    A malformed protected HTTP-200 receipt, network failure or server error
+    must never be mistaken for a 401/403 non-admin refusal; that confusion
+    would cause the bot to retrieve /health and display guessed defaults.
+    """
+    marker = "SYNTHETIC-ADMIN-STATUS-SECRET-NEVER-ECHO"
+    invalid_json = object()
+    original_client = httpx.AsyncClient
+    cases = (
+        ("denied-403", 403, {"detail": marker}, True, False),
+        ("denied-401", 401, {"detail": marker}, True, False),
+        ("bad-request", 400, {"detail": marker}, False, False),
+        ("not-found", 404, {"detail": marker}, False, False),
+        ("server-error", 500, {"detail": marker}, False, False),
+        ("json-null", 200, None, False, False),
+        ("json-boolean", 200, True, False, False),
+        ("json-integer", 200, 17, False, False),
+        ("json-string", 200, marker, False, False),
+        ("json-array", 200, [], False, False),
+        ("json-error-object", 200, {"detail": marker}, False, False),
+        ("bad-json", 200, invalid_json, False, False),
+        ("empty-204", 204, invalid_json, False, False),
+        ("network-error", 0, invalid_json, False, False),
+        ("valid-admin", 200, {"demo_only_mode": True, "settings": {}}, False, True),
+    )
+    for label, code, payload, expect_health, expect_admin in cases:
+        calls, replies = [], []
+
+        def respond(request):
+            calls.append((request.method, request.url.path))
+            assert request.method == "GET", label
+            if request.url.path == "/admin/status":
+                if label == "network-error":
+                    raise httpx.ConnectError("synthetic-secret", request=request)
+                if payload is invalid_json:
+                    return httpx.Response(code, content=b"not-json")
+                return httpx.Response(code, json=payload)
+            assert request.url.path == "/health", (label, calls)
+            return httpx.Response(200, json={"demo_only_mode": True})
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def forbidden_post(*_args, **_kwargs):
+            raise AssertionError("Read-only /settings issued POST")
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/settings", reply_text=reply_text),
+        )
+        transport = httpx.MockTransport(respond)
+        with (
+            patch.object(
+                handlers.httpx, "AsyncClient",
+                lambda *args, **kwargs: original_client(
+                    *args, transport=transport, **kwargs
+                ),
+            ),
+            patch.object(handlers, "_backend_post", forbidden_post),
+        ):
+            asyncio.run(handlers.settings_cmd(update, SimpleNamespace()))
+
+        expected_calls = [("GET", "/admin/status")]
+        if expect_health:
+            expected_calls.append(("GET", "/health"))
+        assert calls == expected_calls, (label, calls)
+        assert len(replies) == 1, (label, replies)
+        assert marker not in replies[0] and "synthetic-secret" not in replies[0]
+        if expect_admin:
+            assert "Expiry minutes: not set" in replies[0], (label, replies)
+        elif expect_health:
+            assert "Split-ticket partial mode: ON (default)" in replies[0], (
+                label, replies,
+            )
+        else:
+            assert "could not be confirmed" in replies[0], (label, replies)
+            assert "Default lot:" not in replies[0], (label, replies)
 
 
 def check_settings_private_chat_boundary() -> None:
@@ -3129,7 +3214,7 @@ def check_settings_private_chat_boundary() -> None:
                         "tp3_close_percent": 20,
                     },
                     "demo_only_mode": True,
-                } if privileged else None
+                } if privileged else handlers._ADMIN_STATUS_FORBIDDEN
             assert path == "/health" and not privileged
             return {"demo_only_mode": True}
 
@@ -3235,6 +3320,7 @@ def main() -> int:
     check_pause_receipt_integrity()
     check_settings_private_chat_boundary()
     check_settings_response_receipt_integrity()
+    check_settings_http_denial_boundary()
     check_shared_chat_screenshot_uploads_fail_closed()
     check_connectprovider_success_receipt_integrity()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")
