@@ -2972,6 +2972,102 @@ def check_users_count_receipt_integrity() -> None:
         else:
             assert replies == [f"Active user count (approx): {expected}"]
 
+def check_status_health_receipt_integrity() -> None:
+    """Untrusted /health JSON must not become a false demo/paused receipt."""
+    marker = "SYNTHETIC-HEALTH-DIAGNOSTIC-NEVER-ECHO"
+    good = {"status": "ok", "demo_only_mode": True, "admin_paused": True}
+    invalid = (
+        None, [], [good], True, 17, marker, {},
+        {"detail": marker, **good},
+        {**good, "detail": marker},
+        {**good, "error": marker},
+        {**good, "status": "ready"},
+        {**good, "status": "OK"},
+        {**good, "demo_only_mode": "true"},
+        {**good, "demo_only_mode": 1},
+        {**good, "demo_only_mode": None},
+        {**good, "admin_paused": "false"},
+        {**good, "admin_paused": 0},
+        {**good, "admin_paused": None},
+    )
+    cases = [
+        *((value, False) for value in invalid),
+        (good, True),
+        ({"status": "ok", "demo_only_mode": True, "admin_paused": False}, True),
+        ({"status": "ok", "demo_only_mode": False, "admin_paused": True}, True),
+    ]
+
+    async def forbidden_post(*_args, **_kwargs):
+        raise AssertionError("Read-only /status issued backend POST")
+
+    for receipt, verified in cases:
+        replies, backend_calls, source_calls = [], [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def read(path, **_kwargs):
+            backend_calls.append(path)
+            assert path == "/health"
+            return receipt
+
+        async def source_status(user_id):
+            source_calls.append(user_id)
+            return None
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/status", reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers, "_backend_get", read),
+            patch.object(handlers, "_backend_post", forbidden_post),
+            patch.object(handlers, "_provider_source_status", source_status),
+        ):
+            asyncio.run(handlers.status(update, SimpleNamespace()))
+
+        assert backend_calls == ["/health"] and source_calls == [123456]
+        assert len(replies) == 1 and marker not in replies[0]
+        if not verified:
+            assert "Backend health verified: no" in replies[0]
+            assert "Demo only mode: unknown" in replies[0]
+            assert "Admin paused: unknown" in replies[0]
+            assert "Backend health unconfirmed." in replies[0]
+        else:
+            assert "Backend health verified: yes" in replies[0]
+            assert f"Demo only mode: {receipt['demo_only_mode']}" in replies[0]
+            assert f"Admin paused: {receipt['admin_paused']}" in replies[0]
+            assert "Backend health unconfirmed." not in replies[0]
+            if receipt["demo_only_mode"] is False:
+                assert "Do not use SignalGate to trade." in replies[0]
+
+    # Reject shared/missing chat *before* any backend or identity lookup.
+    for chat_type in ("group", "supergroup", "channel", None):
+        replies = []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def forbidden(*_args, **_kwargs):
+            raise AssertionError("Shared /status attempted backend lookup")
+
+        update = SimpleNamespace(
+            effective_chat=(
+                SimpleNamespace(type=chat_type) if chat_type is not None else None
+            ),
+            message=SimpleNamespace(text="/status " + marker, reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers, "_backend_get", forbidden),
+            patch.object(handlers, "_backend_post", forbidden),
+            patch.object(handlers, "_provider_source_status", forbidden),
+        ):
+            asyncio.run(handlers.status(update, SimpleNamespace()))
+        assert len(replies) == 1 and "private chat" in replies[0].lower()
+        assert marker not in replies[0]
+
+
 def check_settings_response_receipt_integrity() -> None:
     """Malformed admin/health 2xx data cannot echo arbitrary settings or defaults."""
     marker = "SYNTHETIC-SETTING-SECRET-NEVER-REFLECT"
@@ -3319,6 +3415,7 @@ def main() -> int:
     check_resume_private_chat_boundary()
     check_pause_receipt_integrity()
     check_settings_private_chat_boundary()
+    check_status_health_receipt_integrity()
     check_settings_response_receipt_integrity()
     check_settings_http_denial_boundary()
     check_shared_chat_screenshot_uploads_fail_closed()
