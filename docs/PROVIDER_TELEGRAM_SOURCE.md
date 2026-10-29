@@ -46,6 +46,17 @@ submitted text reflected. Existing private admin history and private non-admin
 rejection remain intact. These protections have isolated synthetic handler
 tests only; they are not Telegram delivery or MT5 broker-demo receipts.
 
+## Administrator `/lastcommands` metadata privacy (offline guard)
+
+`/lastcommands` is private-chat-only even for an administrator. A group,
+supergroup, channel or missing-chat update is refused before checking the
+administrator identity, sending its credentials or querying backend command,
+execution and management counts. Refusals reveal no counts or command text.
+Private administrators retain the authenticated status-count path, while
+private non-admin users still receive the generic denial. Negative and
+positive synthetic offline tests cover these boundaries; they do not establish
+actual Telegram delivery, MT5 broker-demo acceptance or external assurance.
+
 ## Screenshot-preview callback privacy (offline guard)
 
 Confirm, Edit and Cancel screenshot buttons are accepted only in a private

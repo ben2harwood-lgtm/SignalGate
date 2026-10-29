@@ -1404,6 +1404,14 @@ async def lastsignals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def lastcommands(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Command/execution counts are operational metadata, not group-chat output.
+    # Refuse before admin identity or any backend credential/request is consulted.
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Use /lastcommands in a private chat with SignalGate. "
+            "No command statistics were retrieved."
+        )
+        return
     if not _require_admin(update):
         await update.message.reply_text("Admin only.")
         return
