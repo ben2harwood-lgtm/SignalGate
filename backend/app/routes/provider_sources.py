@@ -6,6 +6,8 @@ actions resolve to the persisted provider/feed binding.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
@@ -36,10 +38,17 @@ def _provider_binding_out(
     feed,
     *,
     effective_expiry: bool = False,
+    default_expiry_minutes: Optional[int] = None,
 ) -> ProviderSourceBindingOut:
     expiry_minutes = feed.expiry_minutes
     if effective_expiry and expiry_minutes is None:
-        expiry_minutes = settings.default_signal_expiry_minutes
+        # Match crud.create_signal: an operator-managed DB setting overrides
+        # the environment default when a feed has no explicit expiry.
+        expiry_minutes = (
+            default_expiry_minutes
+            if default_expiry_minutes is not None
+            else settings.default_signal_expiry_minutes
+        )
     return ProviderSourceBindingOut(
         binding_id=binding.id,
         provider_id=provider.id,
@@ -225,7 +234,18 @@ def telegram_provider_source_status(
     if resolved is None:
         raise HTTPException(status_code=404, detail="Telegram provider source not connected")
     binding, provider, feed = resolved
-    return _provider_binding_out(binding, provider, feed, effective_expiry=True)
+    effective_default = crud.get_setting_int(
+        db,
+        "default_signal_expiry_minutes",
+        settings.default_signal_expiry_minutes,
+    )
+    return _provider_binding_out(
+        binding,
+        provider,
+        feed,
+        effective_expiry=True,
+        default_expiry_minutes=effective_default,
+    )
 
 
 @router.post(
