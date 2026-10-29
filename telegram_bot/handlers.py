@@ -557,6 +557,16 @@ async def provider_invite(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    # Telegram trade-card buttons are delivered to private subscriber chats.
+    # Reject shared/inline or unknown-chat callbacks before reading identity,
+    # parsing IDs or contacting the decision backend. An alert is visible only
+    # to the clicker and leaves any shared card unchanged.
+    if not _private_command_chat(update):
+        await query.answer(
+            text="Open a private chat with SignalGate to approve or reject a demo trade.",
+            show_alert=True,
+        )
+        return
     await query.answer()
     user = query.from_user
     callback_data = query.data
