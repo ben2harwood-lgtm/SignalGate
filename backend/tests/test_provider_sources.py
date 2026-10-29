@@ -122,11 +122,32 @@ def test_source_status_returns_effective_expiry_for_bot(client, db):
 
     assert read_status()["expiry_minutes"] == 17
 
-    # An unset feed override must report the same configured default the
-    # backend uses when parsing/persisting this feed's signal expiry.
+    # With no feed override, status must report the same default used by
+    # create_signal, including a persisted operator-managed setting.
     feed.expiry_minutes = None
     db.commit()
-    assert read_status()["expiry_minutes"] == get_settings().default_signal_expiry_minutes
+    configured_default = get_settings().default_signal_expiry_minutes
+    assert read_status()["expiry_minutes"] == configured_default
+
+    crud.set_setting(db, "default_signal_expiry_minutes", "23")
+    db.commit()
+    assert read_status()["expiry_minutes"] == 23
+
+    # The persisted signal deadline must use the same effective value that
+    # the Telegram status receipt advertises to the human approval card.
+    signal_response = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": "9209",
+            "raw_text": EUR_BUY,
+            "source_message_id": "9209:db-default-expiry",
+        },
+    )
+    assert signal_response.status_code == 200, signal_response.text
+    signal = signal_response.json()
+    created_at = dt.datetime.fromisoformat(signal["created_at"])
+    expires_at = dt.datetime.fromisoformat(signal["expires_at"])
+    assert abs((expires_at - created_at).total_seconds() - 23 * 60) < 5
 
 
 def test_rebinding_requires_a_new_provider_owned_token_and_is_audited(client, db):
