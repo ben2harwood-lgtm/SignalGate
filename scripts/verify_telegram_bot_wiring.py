@@ -2398,6 +2398,77 @@ def check_lastcommands_private_chat_boundary() -> None:
 
 
 
+def check_users_private_chat_boundary() -> None:
+    """Shared/unknown Telegram chats cannot request administrator user counts."""
+    secret = "SYNTHETIC-PRIVATE-USER-COUNT-NEVER-ECHO"
+
+    async def forbidden_backend(*_args, **_kwargs):
+        raise AssertionError("Shared/non-admin users command contacted backend")
+
+    def forbidden_admin(*_args, **_kwargs):
+        raise AssertionError("Shared users command consulted administrator authority")
+
+    for chat_type in ("group", "supergroup", "channel", None):
+        replies = []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        update = SimpleNamespace(
+            effective_chat=(
+                SimpleNamespace(type=chat_type) if chat_type is not None else None
+            ),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(
+                text="/users " + secret, reply_text=reply_text
+            ),
+        )
+        with (
+            patch.object(handlers.config, "is_admin", forbidden_admin),
+            patch.object(handlers, "_admin_headers", forbidden_admin),
+            patch.object(handlers, "_backend_get", forbidden_backend),
+            patch.object(handlers, "_backend_post", forbidden_backend),
+        ):
+            asyncio.run(handlers.users_cmd(update, SimpleNamespace()))
+        assert len(replies) == 1
+        assert "private chat" in replies[0].lower()
+        assert "no user statistics were retrieved" in replies[0].lower()
+        assert secret not in replies[0]
+        assert "Active user count" not in replies[0]
+
+    for admin in (True, False):
+        replies, backend_calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def private_status(path, **kwargs):
+            backend_calls.append((path, kwargs))
+            return {"counts": {"users": 17}}
+
+        update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            message=SimpleNamespace(text="/users", reply_text=reply_text),
+        )
+        with (
+            patch.object(handlers.config, "is_admin", lambda _user_id: admin),
+            patch.object(
+                handlers, "_backend_get",
+                private_status if admin else forbidden_backend,
+            ),
+            patch.object(handlers, "_backend_post", forbidden_backend),
+        ):
+            asyncio.run(handlers.users_cmd(update, SimpleNamespace()))
+        if admin:
+            assert len(backend_calls) == 1
+            assert backend_calls[0][0] == "/admin/status"
+            assert backend_calls[0][1]["headers"] == handlers._admin_headers(123456)
+            assert replies == ["Active user count (approx): 17"]
+        else:
+            assert not backend_calls and replies == ["Admin only."]
+
+
 def check_settings_private_chat_boundary() -> None:
     """No backend configuration or generic readiness is fetched for groups."""
     secret = "SYNTHETIC-PRIVATE-SETTINGS-NEVER-ECHO"
@@ -2553,6 +2624,7 @@ def main() -> int:
     check_testsignal_private_chat_boundary()
     check_lastsignals_private_chat_boundary()
     check_lastcommands_private_chat_boundary()
+    check_users_private_chat_boundary()
     check_settings_private_chat_boundary()
     check_shared_chat_screenshot_uploads_fail_closed()
     check_connectprovider_success_receipt_integrity()
