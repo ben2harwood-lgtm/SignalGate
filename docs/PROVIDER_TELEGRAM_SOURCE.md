@@ -172,11 +172,12 @@ non-ASCII, non-decimal, non-string and out-of-range (>52-bit) identities before
 sending **any** card from that recipient list, even if earlier entries are valid.
 This is an offline-tested routing boundary, not a substitute for backend tenancy.
 
-The bot separately validates a persisted VALID market signal's visible card
-fields before building any subscriber approval card or querying recipients:
-bounded single-line ASCII symbols, BUY/SELL, MARKET or valid numeric LIMIT
-entry and finite positive numeric SL/TP/optional entry levels. LIMIT display
-remains a preview; the demo EA separately refuses LIMIT execution. Missing required SL/TP1, booleans,
+The bot separately validates a persisted VALID signal's visible card fields
+before building any subscriber approval card or querying recipients: bounded
+single-line ASCII symbols, BUY/SELL and an explicit entry shape. MARKET must
+have no non-null entry price; LIMIT must have a finite positive numeric entry
+price. Finite positive numeric SL/TP and optional price levels are checked too.
+LIMIT display remains a preview; the demo EA separately refuses LIMIT execution. Missing required SL/TP1, booleans,
 non-finite/huge numbers, injected line breaks and Unicode format controls fail
 closed with generic provider-history guidance. A successful signal-creation
 HTTP status alone never authorises an unverified display. This is an isolated
