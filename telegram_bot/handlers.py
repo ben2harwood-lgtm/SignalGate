@@ -777,6 +777,14 @@ async def _create_and_broadcast(
 
 
 async def testsignal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # An administrator may also belong to public groups. Never parse or submit
+    # group command text as a provider signal, or route cards from a shared chat.
+    if not _private_command_chat(update):
+        await update.message.reply_text(
+            "Use /testsignal in a private chat with SignalGate. "
+            "Nothing was submitted or sent."
+        )
+        return
     if not _require_admin(update):
         await update.message.reply_text("Admin only.")
         return

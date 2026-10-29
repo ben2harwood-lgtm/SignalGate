@@ -2175,6 +2175,80 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
     asyncio.run(exercise())
 
 
+def check_testsignal_private_chat_boundary() -> None:
+    """Admin /testsignal must not create a signal from any shared/unknown chat."""
+    raw = "EURUSD BUY SL 1.0500 TP1 1.0600"
+    message_text = "/testsignal " + raw
+    secret = "SYNTHETIC-PRIVATE-SIGNAL-DO-NOT-ECHO"
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("Shared-chat testsignal reached source/backend/broadcast")
+
+    def forbidden_admin(*_args, **_kwargs):
+        raise AssertionError("Shared-chat testsignal consulted admin identity")
+
+    for chat_type in ("group", "supergroup", "channel", None):
+        replies = []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        update = SimpleNamespace(
+            effective_chat=(
+                SimpleNamespace(type=chat_type) if chat_type is not None else None
+            ),
+            effective_user=SimpleNamespace(id=123456),
+            effective_message=SimpleNamespace(message_id=77),
+            message=SimpleNamespace(
+                text=message_text + " " + secret, reply_text=reply_text
+            ),
+        )
+        with (
+            patch.object(handlers.config, "is_admin", forbidden_admin),
+            patch.object(handlers, "_create_and_broadcast", forbidden),
+            patch.object(handlers, "_backend_get", forbidden),
+            patch.object(handlers, "_backend_post", forbidden),
+            patch.object(handlers, "_provider_source_status", forbidden),
+        ):
+            asyncio.run(handlers.testsignal(update, SimpleNamespace()))
+        assert len(replies) == 1
+        assert "private chat" in replies[0].lower()
+        assert "nothing was submitted or sent" in replies[0].lower()
+        assert raw not in replies[0] and secret not in replies[0]
+
+    for admin in (True, False):
+        replies, calls = [], []
+
+        async def reply_text(message, **_kwargs):
+            replies.append(message)
+
+        async def broadcast(update, context, submitted_text):
+            assert update.effective_chat.type == "private"
+            assert context is private_context
+            assert submitted_text == raw
+            calls.append(submitted_text)
+            return "Synthetic signal accepted offline"
+
+        private_update = SimpleNamespace(
+            effective_chat=SimpleNamespace(type="private"),
+            effective_user=SimpleNamespace(id=123456),
+            effective_message=SimpleNamespace(message_id=78),
+            message=SimpleNamespace(text=message_text, reply_text=reply_text),
+        )
+        private_context = SimpleNamespace()
+        with (
+            patch.object(handlers.config, "is_admin", lambda _user_id: admin),
+            patch.object(handlers, "_create_and_broadcast", broadcast),
+            patch.object(handlers, "_backend_get", forbidden),
+            patch.object(handlers, "_backend_post", forbidden),
+        ):
+            asyncio.run(handlers.testsignal(private_update, private_context))
+        assert replies == (
+            ["Synthetic signal accepted offline"] if admin else ["Admin only."]
+        )
+        assert calls == ([raw] if admin else [])
+
+
 def main() -> int:
     assert config.require_license is True, "Hosted-mode test failed to set boundary"
     app = build_application()  # Builder only: no initialize()/run_polling()/network
@@ -2235,6 +2309,7 @@ def main() -> int:
     check_start_registration_receipt_integrity()
     check_join_invite_backend_response_integrity()
     check_private_chat_credential_commands()
+    check_testsignal_private_chat_boundary()
     check_shared_chat_screenshot_uploads_fail_closed()
     check_connectprovider_success_receipt_integrity()
     print("Hosted Telegram bot: offline wiring and backend-error safety PASS; no external calls")

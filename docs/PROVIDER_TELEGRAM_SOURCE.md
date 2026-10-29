@@ -25,6 +25,18 @@ Telegram screenshot -> bot -> tenant-bound extraction preview -> provider human 
 
 The backend source identity is the internal binding id, not a shared provider secret or raw Telegram id.
 
+## Administrator `/testsignal` private-chat boundary (offline guard)
+
+Even an authorised administrator must submit the manual demo-only `/testsignal`
+command in a private Telegram chat. Group, supergroup, channel and missing-chat
+requests are refused **before** checking administrator identity, parsing command
+text, submitting a signal or enumerating/sending subscriber cards. The refusal
+contains no submitted text or source details. A private administrator command
+continues through the existing authenticated, tenant-scoped demo-only path;
+private non-admin users still receive "Admin only." Synthetic offline cases
+exercise these paths; they do not demonstrate real Telegram delivery or
+MT5 demo-broker execution.
+
 ## Screenshot-preview callback privacy (offline guard)
 
 Confirm, Edit and Cancel screenshot buttons are accepted only in a private
