@@ -131,12 +131,14 @@ not real Telegram delivery, MT5 broker-demo or external acceptance.
 ## Screenshot-preview callback privacy (offline guard)
 
 Confirm, Edit and Cancel screenshot buttons are accepted only in a private
-Telegram chat. A group, supergroup, channel or missing-chat callback receives
-generic private-chat guidance before provider-source lookup, pending-preview
-state changes or signal creation/broadcast. An existing private preview remains
-unchanged on a shared-chat refusal; its text, source and tokens are not echoed.
-This is tested with synthetic handler updates only and is **not** evidence of
-real Telegram callback delivery, a broker-demo trade or external assurance.
+Telegram chat. A group, supergroup, channel, unknown-type or missing-chat callback
+gets an ephemeral alert visible to the clicker, **without reading or editing the
+shared message**, before provider-source lookup, pending-preview state changes
+or signal creation/broadcast. An existing private preview remains unchanged on
+a shared-chat refusal; its text, source and tokens are not echoed. Offline
+adversarial tests cover all three actions and five non-private chat shapes.
+This is synthetic handler evidence only, **not** proof of real Telegram callback
+delivery, a broker-demo trade, independent assurance or release acceptance.
 
 ## Screenshot edit-text privacy (offline guard)
 
