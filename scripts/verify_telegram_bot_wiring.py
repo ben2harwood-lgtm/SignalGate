@@ -2104,7 +2104,9 @@ def check_broadcast_recipient_feed_binding() -> None:
             {"direction": "BUY\nLive mode"},
             {"direction": "BUY\u202e"},
             {"direction": None},
+            {"entry_type": None},
             {"entry_type": "LIMIT", "entry_price": None},
+            {"entry_price": 1.5},
             {"entry_type": "MARKET\nLIVE"},
             {"initial_stop_loss": "1\nNo SL"},
             {"initial_stop_loss": 0},
@@ -2129,6 +2131,22 @@ def check_broadcast_recipient_feed_binding() -> None:
             assert not sent and len(lookups) == before, corrupted
             assert "card fields could not be confirmed" in result.lower(), corrupted
             assert "no subscriber card was sent" in result.lower(), corrupted
+        # The entry type must be explicit: omission is not a MARKET default.
+        response_signal = {
+            key: value for key, value in signal.items() if key != "entry_type"
+        }
+        sent.clear()
+        before = len(lookups)
+        response_recipients = valid
+        result = asyncio.run(
+            handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+        )
+        assert not sent and len(lookups) == before, (
+            "Missing entry_type must be refused before recipient lookup"
+        )
+        assert "no subscriber card was sent" in result.lower()
+        response_signal = signal
+
         # A parser-confirmed LIMIT signal has a numeric entry and keeps its
         # existing card preview (the MT5 demo EA separately rejects LIMIT).
         response_signal = dict(signal, entry_type="LIMIT", entry_price=1.5)
