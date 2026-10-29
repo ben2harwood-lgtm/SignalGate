@@ -46,6 +46,26 @@ submitted text reflected. Existing private admin history and private non-admin
 rejection remain intact. These protections have isolated synthetic handler
 tests only; they are not Telegram delivery or MT5 broker-demo receipts.
 
+## /status health-receipt safety (offline checks; external HOLD)
+
+Private Telegram `/status` is a read-only display, not a release
+acceptance or readiness probe. An HTTP-200 `/health` response counts as
+verified only when it is an error-free mapping with `status="ok"`,
+a real boolean `demo_only_mode` and a real boolean `admin_paused`.
+Malformed arrays, diagnostic/error payloads, missing fields, bool-like
+numbers and strings must display `unknown` for the safety fields and
+a generic health-unconfirmed warning; untrusted server text is not echoed.
+A structurally valid receipt reporting demo-only mode **disabled** is
+displayed with an explicit *do not trade* warning, never as permission
+to execute. Group, supergroup, channel and missing-chat requests remain
+refused before backend calls. Registered/role lines are pre-existing bot
+hints, not proof of registration or release acceptance.
+
+The registered offline smoke contains negative and positive synthetic
+receipts and no network/broker contact. Even a passing CI test does not
+establish actual MT5 demo-broker, deployed health monitoring, independent
+assurance or external acceptance. Frozen RC2 and all release holds remain.
+
 ## `/settings` configuration privacy (offline guard)
 
 The `/settings` command now requires a private Telegram chat **before**
