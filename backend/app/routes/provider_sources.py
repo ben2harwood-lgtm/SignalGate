@@ -351,6 +351,17 @@ def telegram_provider_source_signal(
     if resolved is None:
         raise HTTPException(status_code=403, detail="Telegram provider source not connected")
     binding, provider, feed = resolved
+    # A rebind between bot status and this POST must fail BEFORE the raw
+    # screenshot/text enters the newly bound provider\x27s signal ledger.
+    if (
+        payload.expected_binding_id != binding.id
+        or payload.expected_provider_id != provider.id
+        or payload.expected_feed_id != feed.id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Telegram provider source changed; capture a new signal",
+        )
     try:
         signal, newly_created = crud.create_signal_with_freshness(
             db,
