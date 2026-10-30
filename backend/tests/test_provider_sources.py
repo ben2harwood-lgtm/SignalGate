@@ -6,6 +6,8 @@ import io
 import os
 from pathlib import Path
 
+import pytest
+
 from app import crud, models, security
 
 from .conftest import register_user
@@ -352,10 +354,19 @@ def test_bound_source_creation_marker_requires_id_and_closes_insert_race(
 
 
 
-def test_provider_source_concurrent_replay_freshness_postgresql(client, db):
-    """Real two-connection race: only the committed creator may be fresh."""
+@pytest.mark.parametrize(
+    "competing_raw_text, expect_conflict",
+    [
+        (EUR_BUY, False),
+        ("EURUSD BUY SL 1.0750 TP1 1.0900", True),
+    ],
+    ids=["identical-message-replay", "conflicting-message-content"],
+)
+def test_provider_source_concurrent_replay_freshness_postgresql(
+    client, db, competing_raw_text, expect_conflict
+):
+    """Real two-connection races: replay is not fresh; changed text conflicts."""
     if db.get_bind().dialect.name != "postgresql":
-        import pytest
         pytest.skip("Requires two independent PostgreSQL transactions")
 
     from concurrent.futures import ThreadPoolExecutor
@@ -401,8 +412,17 @@ def test_provider_source_concurrent_replay_freshness_postgresql(client, db):
                     return value
 
                 second.scalar = observe_precheck
+                if expect_conflict:
+                    # The same source/message ID with different text must
+                    # fail even when both workers observed an empty precheck.
+                    with pytest.raises(crud.SignalReplayConflict):
+                        crud.create_signal_with_freshness(
+                            second, **{**args, "raw_text": competing_raw_text}
+                        )
+                    second.commit()
+                    return None, False
                 competing, fresh = crud.create_signal_with_freshness(
-                    second, **args
+                    second, **{**args, "raw_text": competing_raw_text}
                 )
                 second.commit()
                 return competing.id, fresh
@@ -418,9 +438,16 @@ def test_provider_source_concurrent_replay_freshness_postgresql(client, db):
                 first_session.commit()
             competitor_id, competitor_fresh = future.result(timeout=20)
 
-        assert competitor_id == first_id
-        assert competitor_fresh is False
         db.expire_all()
+        if expect_conflict:
+            assert competitor_id is None and competitor_fresh is False
+            assert db.query(models.AuditLog).filter(
+                models.AuditLog.event_type == "SIGNAL_REPLAY_CONFLICT",
+                models.AuditLog.entity_id == first_id,
+            ).count() == 1
+        else:
+            assert competitor_id == first_id
+            assert competitor_fresh is False
         assert db.query(models.Signal).filter(
             models.Signal.source == f"FEED:{feed.id}:{args['source']}",
             models.Signal.source_message_id == args["source_message_id"],
