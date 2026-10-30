@@ -163,6 +163,13 @@ creation-time gate, **not** durable proof of Telegram delivery. A crash between
 persistence and card submission can leave zero deliveries; a replay will not
 blindly resend them. Operators must reconcile such cases with provider
 history and subscribers before any manual resend.
+The hosted route also requires the bot\x27s exact expected `binding_id`,
+`provider_id`, and `feed_id` from its pre-submit source status; it compares all
+three with the authoritative current binding **before** creating a signal.
+A source A-to-B rebind during the bot/backend request must not persist source
+A\x27s private text under tenant B, even if subsequent card checks would refuse
+broadcast. Omitted or stale expected scope fails closed; this is not authority
+to bypass backend bot authentication and does not remove mid-transaction races.
 The hosted route requires a nonempty stable `source_message_id` to prevent
 the caller from defeating replay identity by omitting it.
 Before broadcasting subscriber cards, the bot checks that identity against the
