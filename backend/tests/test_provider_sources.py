@@ -934,6 +934,12 @@ def test_rebind_during_extraction_refuses_result_and_audit_postgresql(
             # The route already resolved provider A. A separate transaction
             # now rebinds the same Telegram source row before extraction ends.
             with SessionLocal() as writer:
+                # Do not deadlock the suite if extraction accidentally holds
+                # a binding row lock while invoking this synchronous writer.
+                # A Python/pytest timeout cannot cancel a blocked DB query.
+                connection = writer.connection()
+                connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+                connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
                 bound = writer.get(
                     models.ProviderSourceBinding, original["binding_id"]
                 )
