@@ -44,6 +44,15 @@ def _source_invite(client, provider, feed, key, expires_minutes=60):
     return response.json()
 
 
+def _source_claim(binding):
+    """Constrain hosted signal creation to the original source snapshot."""
+    return {
+        "expected_binding_id": binding["binding_id"],
+        "expected_provider_id": binding["provider_id"],
+        "expected_feed_id": binding["feed_id"],
+    }
+
+
 def _connect(client, invite, telegram_user_id, headers=None):
     return client.post(
         "/provider-sources/telegram/connect",
@@ -143,6 +152,7 @@ def test_source_status_returns_effective_expiry_for_bot(client, db):
             "telegram_user_id": "9209",
             "raw_text": EUR_BUY,
             "source_message_id": "9209:db-default-expiry",
+            **_source_claim(connected.json()),
         },
     )
     assert signal_response.status_code == 200, signal_response.text
@@ -225,6 +235,51 @@ def test_provider_cannot_manage_other_provider_source_objects(client, db):
     assert cross_binding_revoke.status_code == 404
 
 
+def test_rebind_refuses_stale_source_claim_before_cross_tenant_signal_write(client, db):
+    """An A snapshot may not be stored under B after a source identity rebind."""
+    p1, f1, k1 = _provider(db, "stale-create-a")
+    p2, f2, k2 = _provider(db, "stale-create-b")
+    old = _connect(client, _source_invite(client, p1, f1, k1), "9374")
+    assert old.status_code == 200, old.text
+    a_scope = _source_claim(old.json())
+    new = _connect(client, _source_invite(client, p2, f2, k2), "9374")
+    assert new.status_code == 200, new.text
+    # Rebind reuses the same binding ID, so feed and provider must ALSO match.
+    assert old.json()["binding_id"] == new.json()["binding_id"]
+    assert a_scope["expected_feed_id"] != new.json()["feed_id"]
+
+    source_text = "EURUSD BUY SL 1.0800 TP1 1.0900"
+    payload = {
+        "telegram_user_id": "9374",
+        "raw_text": source_text,
+        "source_message_id": "9374:stale-preview",
+        **a_scope,
+    }
+    stale = client.post("/provider-sources/telegram/signals", json=payload)
+    assert stale.status_code == 409, stale.text
+    assert db.query(models.Signal).count() == 0
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "SIGNAL_CREATED"
+    ).count() == 0
+
+    # A missing scope cannot become an implicit trust-the-current-source mode.
+    missing = {k: v for k, v in payload.items() if not k.startswith("expected_")}
+    refused = client.post("/provider-sources/telegram/signals", json=missing)
+    assert refused.status_code == 422, refused.text
+    assert db.query(models.Signal).count() == 0
+
+    # Current B binding still works and preserves its own provider/feed.
+    current = client.post(
+        "/provider-sources/telegram/signals",
+        json={**payload, **_source_claim(new.json())},
+    )
+    assert current.status_code == 200, current.text
+    assert current.json()["provider_id"] == p2.id
+    assert current.json()["feed_id"] == f2.id
+    assert current.json()["newly_created"] is True
+    assert db.query(models.Signal).count() == 1
+
+
 def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client, db):
     provider, feed, key = _provider(db, "source-policy")
     crud.update_feed_policy(
@@ -246,6 +301,7 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
             "telegram_user_id": "9204",
             "raw_text": EUR_BUY,
             "source_message_id": "chat:101",
+            **_source_claim(binding),
         },
     )
     assert valid.status_code == 200, valid.text
@@ -262,6 +318,7 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
             "telegram_user_id": "9204",
             "raw_text": GBPJPY_SELL,
             "source_message_id": "chat:102",
+            **_source_claim(binding),
         },
     )
     assert blocked.status_code == 200
@@ -275,6 +332,7 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
             "telegram_user_id": "9204",
             "raw_text": EUR_BUY,
             "source_message_id": "chat:101",
+            **_source_claim(binding),
         },
     )
     assert duplicate.status_code == 200
@@ -287,6 +345,7 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
             "telegram_user_id": "9204",
             "raw_text": "EURUSD BUY SL 1.0790 TP1 1.0910",
             "source_message_id": "chat:101",
+            **_source_claim(binding),
         },
     )
     assert conflict.status_code == 409
@@ -305,6 +364,7 @@ def test_bound_source_creation_marker_requires_id_and_closes_insert_race(
         "telegram_user_id": "9371",
         "raw_text": EUR_BUY,
         "source_message_id": "9371:durable-id",
+        **_source_claim(binding),
     }
     # A missing/empty message identity cannot bypass hosted replay protection.
     for invalid in ({k: v for k, v in payload.items() if k != "source_message_id"},
@@ -570,6 +630,7 @@ def test_bound_source_duplicate_replay_expires_stale_signal_once(client, db):
         "telegram_user_id": "9360",
         "raw_text": EUR_BUY,
         "source_message_id": "9360:replay",
+        **_source_claim(connected.json()),
     }
     first = client.post("/provider-sources/telegram/signals", json=payload)
     assert first.status_code == 200, first.text
@@ -664,6 +725,7 @@ def test_bound_source_recipients_refuse_pause_after_source_connect(client, db):
             "telegram_user_id": "9359",
             "raw_text": EUR_BUY,
             "source_message_id": "9359:1",
+            **_source_claim(connected.json()),
         },
     )
     assert stored.status_code == 200, stored.text
@@ -731,6 +793,7 @@ def test_unbound_or_revoked_source_cannot_extract_create_or_broadcast(client, db
                     "telegram_user_id": "9209",
                     "raw_text": EUR_BUY,
                     "source_message_id": "1",
+                    **_source_claim({"binding_id": "ABSENT", "provider_id": "ABSENT", "feed_id": "ABSENT"}),
                 }
             },
         ),
@@ -766,6 +829,7 @@ def test_unbound_or_revoked_source_cannot_extract_create_or_broadcast(client, db
             "telegram_user_id": "9210",
             "raw_text": EUR_BUY,
             "source_message_id": "1",
+            **_source_claim(connected),
         },
     )
     assert denied.status_code == 403
@@ -796,6 +860,7 @@ def test_hosted_source_calls_require_bot_registration_secret(client, db):
                 "telegram_user_id": "9211",
                 "raw_text": EUR_BUY,
                 "source_message_id": "1",
+                **_source_claim(allowed.json()),
             },
         )
         assert no_secret.status_code == 401
@@ -805,6 +870,7 @@ def test_hosted_source_calls_require_bot_registration_secret(client, db):
                 "telegram_user_id": "9211",
                 "raw_text": EUR_BUY,
                 "source_message_id": "1",
+                **_source_claim(allowed.json()),
             },
             headers={"X-Registration-API-Key": "r" * 40},
         )
