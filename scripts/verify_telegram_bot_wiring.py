@@ -2099,7 +2099,9 @@ def check_broadcast_recipient_feed_binding() -> None:
         result = asyncio.run(
             handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
         )
-        assert "sent to 1 subscriber" in result.lower()
+        assert "telegram accepted 1 card submission(s)" in result.lower()
+        assert "delivery is not confirmed" in result.lower()
+        assert "card sent to" not in result.lower()
         assert sent == ["900000000011"]
         assert rendered_expiries[-1] == 5
 
@@ -2110,9 +2112,24 @@ def check_broadcast_recipient_feed_binding() -> None:
         result = asyncio.run(
             handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
         )
-        assert "sent to 1 subscriber" in result.lower()
+        assert "telegram accepted 1 card submission(s)" in result.lower()
+        assert "delivery is not confirmed" in result.lower()
+        assert "card sent to" not in result.lower()
         assert sent == ["900000000011"]
         assert rendered_expiries[-1] == 23
+
+        # An empty consented subscriber list must not become a delivery claim.
+        response_signal = signal
+        response_recipients = dict(valid, recipients=[])
+        sent.clear()
+        result = asyncio.run(
+            handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+        )
+        assert not sent
+        assert "telegram accepted 0 card submission(s)" in result.lower()
+        assert "delivery is not confirmed" in result.lower()
+        assert "card sent to" not in result.lower()
+        response_recipients = valid
 
         # The deadline can elapse while recipient lookup awaits. An initial
         # passing check must not permit a later, already-expired first card.
@@ -2287,7 +2304,9 @@ def check_broadcast_recipient_feed_binding() -> None:
         result = asyncio.run(
             handlers._create_and_broadcast(update, context, "XAUUSD BUY ENTRY 1.5 SL 1 TP1 2")
         )
-        assert "sent to 1 subscriber" in result.lower()
+        assert "telegram accepted 1 card submission(s)" in result.lower()
+        assert "delivery is not confirmed" in result.lower()
+        assert "card sent to" not in result.lower()
         assert sent == ["900000000011"]
         response_signal = signal
         # A rebind between initial provider status and signal creation must
@@ -2655,7 +2674,8 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
                 ("GET", "/provider-sources/telegram/recipients"),
             ]
             assert sends == ["900000000011"] and state == {}
-            assert "sent to 1 subscriber" in replies[-1].lower()
+            assert "telegram accepted 1 card submission(s)" in replies[-1].lower()
+            assert "delivery is not confirmed" in replies[-1].lower()
 
             # A pre-upgrade hosted preview with no scope snapshot is invalid.
             state.update({

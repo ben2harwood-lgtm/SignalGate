@@ -1051,7 +1051,10 @@ async def _create_and_broadcast(
             "An error does not prove non-delivery. Check with affected subscribers "
             "before any manual resend; no automatic retry was attempted."
         )
-    return f"Signal {signal['id']} created and card sent to {sent} subscriber(s)."
+    return (
+        f"Signal {signal['id']} created. Telegram accepted {sent} card "
+        "submission(s); delivery is not confirmed."
+    )
 
 
 async def testsignal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

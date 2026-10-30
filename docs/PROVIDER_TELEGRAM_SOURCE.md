@@ -206,7 +206,10 @@ subscriber card was not accepted: the bot does not automatically retry, and
 its provider summary distinguishes API-accepted card submissions from
 unconfirmed attempts, including expiry-interrupted batches. Operators must
 confirm uncertain delivery with affected subscribers before manually resending.
-Counts are not proof of actual Telegram delivery.
+Counts are not proof of actual Telegram delivery. Even when every send
+returns without an exception (including an empty subscriber list), the
+provider summary reports Telegram API-accepted submissions, **not** confirmed
+subscriber delivery.
 This is an isolated synthetic Telegram guard; no actual recipient delivery, MT5 broker-demo,
 independent pentest or release acceptance is inferred.
 
