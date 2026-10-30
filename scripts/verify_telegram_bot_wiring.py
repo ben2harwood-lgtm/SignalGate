@@ -261,7 +261,11 @@ def check_screenshot_extraction_fail_closed() -> None:
     secret = "SYNTHETIC-SECRET-NOT-FOR-TELEGRAM"
 
     async def connected(_user_id):
-        return {"feed_id": "FEED-OFFLINE"}
+        return {
+            "binding_id": "BINDING-OFFLINE",
+            "provider_id": "PROVIDER-OFFLINE",
+            "feed_id": "FEED-OFFLINE",
+        }
 
     async def disconnected(_user_id):
         return None
@@ -283,6 +287,12 @@ def check_screenshot_extraction_fail_closed() -> None:
 
         def respond(request):
             requests.append(request.url.path)
+            assert dict(request.url.params) == {
+                "telegram_user_id": "123456",
+                "expected_binding_id": "BINDING-OFFLINE",
+                "expected_provider_id": "PROVIDER-OFFLINE",
+                "expected_feed_id": "FEED-OFFLINE",
+            }, "Hosted screenshot test lost its original source claim"
             if fail is not None:
                 raise RuntimeError(fail)
             if payload is not None:
