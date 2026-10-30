@@ -2126,6 +2126,10 @@ def check_broadcast_recipient_feed_binding() -> None:
         assert "expiry receipt could not be confirmed" in result.lower()
 
         invalid_expiry = (
+            # The interval can be internally valid yet start in the future.
+            # Do not send a card that would remain apparently active before
+            # its recorded signal creation (backend/bot clock misalignment).
+            dict(signal, created_at=at(10), expires_at=at(15)),
             dict(signal, created_at=None),
             dict(signal, expires_at=None),
             dict(signal, created_at=True),
