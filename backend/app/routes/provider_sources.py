@@ -352,7 +352,7 @@ def telegram_provider_source_signal(
         raise HTTPException(status_code=403, detail="Telegram provider source not connected")
     binding, provider, feed = resolved
     # A rebind between bot status and this POST must fail BEFORE the raw
-    # screenshot/text enters the newly bound provider\x27s signal ledger.
+    # screenshot/text enters the newly bound provider's signal ledger.
     if (
         payload.expected_binding_id != binding.id
         or payload.expected_provider_id != provider.id
