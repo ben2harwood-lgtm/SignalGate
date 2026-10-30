@@ -351,6 +351,84 @@ def test_bound_source_creation_marker_requires_id_and_closes_insert_race(
     ).count() == 1
 
 
+
+def test_provider_source_concurrent_replay_freshness_postgresql(client, db):
+    """Real two-connection race: only the committed creator may be fresh."""
+    if db.get_bind().dialect.name != "postgresql":
+        import pytest
+        pytest.skip("Requires two independent PostgreSQL transactions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from app.database import SessionLocal
+
+    provider, feed, key = _provider(db, "source-concurrent-freshness")
+    invite = _source_invite(client, provider, feed, key)
+    binding = _connect(client, invite, "9372")
+    assert binding.status_code == 200, binding.text
+    args = {
+        "raw_text": EUR_BUY,
+        "source": f"TELEGRAM_BINDING:{binding.json()['binding_id']}",
+        "source_message_id": "9372:one-message",
+        "provider_id": provider.id,
+        "feed_id": feed.id,
+    }
+    precheck_completed = Event()
+    first_session = SessionLocal()
+    try:
+        first, first_fresh = crud.create_signal_with_freshness(
+            first_session, **args
+        )
+        assert first_fresh is True
+        first_id = first.id
+        # Leave this first insert uncommitted. The second transaction must
+        # observe absence, then lose to the database uniqueness constraint.
+        def competitor():
+            with SessionLocal() as second:
+                original_scalar = second.scalar
+
+                def observe_precheck(statement, *scalar_args, **scalar_kwargs):
+                    value = original_scalar(
+                        statement, *scalar_args, **scalar_kwargs
+                    )
+                    if (
+                        not precheck_completed.is_set()
+                        and "signals.source_message_id" in str(statement)
+                    ):
+                        assert value is None
+                        precheck_completed.set()
+                    return value
+
+                second.scalar = observe_precheck
+                competing, fresh = crud.create_signal_with_freshness(
+                    second, **args
+                )
+                second.commit()
+                return competing.id, fresh
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(competitor)
+            try:
+                assert precheck_completed.wait(timeout=10), (
+                    "Competing PostgreSQL transaction did not reach precheck"
+                )
+            finally:
+                # Unblock the uniqueness check even if the assertion fails.
+                first_session.commit()
+            competitor_id, competitor_fresh = future.result(timeout=20)
+
+        assert competitor_id == first_id
+        assert competitor_fresh is False
+        db.expire_all()
+        assert db.query(models.Signal).filter(
+            models.Signal.source == f"FEED:{feed.id}:{args['source']}",
+            models.Signal.source_message_id == args["source_message_id"],
+        ).count() == 1
+    finally:
+        first_session.close()
+
+
 def test_bound_source_duplicate_replay_expires_stale_signal_once(client, db):
     """A replay must not renew or expose a VALID-looking expired ledger row."""
     provider, feed, key = _provider(db, "source-expiry-replay")
