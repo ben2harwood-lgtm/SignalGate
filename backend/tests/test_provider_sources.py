@@ -397,6 +397,11 @@ def test_provider_source_concurrent_replay_freshness_postgresql(
         # observe absence, then lose to the database uniqueness constraint.
         def competitor():
             with SessionLocal() as second:
+                # A Future timeout does not terminate a DB-blocked worker:
+                # bound waits inside PostgreSQL to ensure CI can fail cleanly.
+                connection = second.connection()
+                connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+                connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
                 original_scalar = second.scalar
 
                 def observe_precheck(statement, *scalar_args, **scalar_kwargs):
@@ -496,6 +501,11 @@ def test_provider_source_rolled_back_creator_allows_fresh_competitor_postgresql(
 
         def competitor():
             with SessionLocal() as second:
+                # A Future timeout does not terminate a DB-blocked worker:
+                # bound waits inside PostgreSQL to ensure CI can fail cleanly.
+                connection = second.connection()
+                connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+                connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
                 original_scalar = second.scalar
 
                 def observe_precheck(statement, *scalar_args, **scalar_kwargs):
