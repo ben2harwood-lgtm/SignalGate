@@ -2005,6 +2005,7 @@ def check_broadcast_recipient_feed_binding() -> None:
     signal = {
         "id": "SIG-0123456789ABCDEF",
         "parser_status": "VALID", "status": "VALID",
+        "newly_created": True,
         "symbol": "XAUUSD", "direction": "BUY", "entry_type": "MARKET",
         "initial_stop_loss": 1.0, "tp1": 2.0,
         "created_at": at(),
@@ -2117,6 +2118,28 @@ def check_broadcast_recipient_feed_binding() -> None:
         assert "card sent to" not in result.lower()
         assert sent == ["900000000011"]
         assert rendered_expiries[-1] == 23
+
+        # A replayed or ambiguous creation receipt never authorises a new
+        # subscriber lookup/card, even while the original signal is VALID.
+        for replay_receipt in (
+            dict(signal, newly_created=False),
+            dict(signal, newly_created=None),
+            dict(signal, newly_created=1),
+            dict(signal, newly_created="true"),
+            {k: v for k, v in signal.items() if k != "newly_created"},
+        ):
+            response_signal = replay_receipt
+            sent.clear()
+            before = len(lookups)
+            result = asyncio.run(
+                handlers._create_and_broadcast(
+                    update, context, "XAUUSD BUY SL 1 TP1 2"
+                )
+            )
+            assert not sent and len(lookups) == before, replay_receipt
+            assert "already recorded" in result.lower()
+            assert "no new subscriber card was sent" in result.lower()
+        response_signal = signal
 
         # An empty consented subscriber list must not become a delivery claim.
         response_signal = signal
@@ -2351,6 +2374,7 @@ def check_broadcast_failure_logs_are_private() -> None:
         return {
             "id": "SIG-OFFLINE",
             "parser_status": "VALID", "status": "VALID",
+            "newly_created": True,
             "symbol": "XAUUSD", "direction": "BUY", "entry_type": "MARKET",
             "initial_stop_loss": 1.0, "tp1": 2.0,
             "created_at": created.isoformat(timespec="microseconds"),

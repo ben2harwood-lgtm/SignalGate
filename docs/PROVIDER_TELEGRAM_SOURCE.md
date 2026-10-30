@@ -154,8 +154,18 @@ Telegram delivery or external acceptance evidence.
 
 ## Broadcast recipient ownership and source rebinds (offline guard)
 
-Signal creation returns a persisted provider/feed/source identity. Before
-broadcasting subscriber cards, the bot checks that identity against the
+Signal creation returns a persisted provider/feed/source identity and a
+transaction-derived `newly_created` flag. Hosted card submission requires
+`newly_created: true` from the authenticated backend response; a prior
+same-message creation, a unique-key insert race or a missing/ill-typed marker
+cannot authorise a second subscriber lookup/send. This is a fail-closed
+creation-time gate, **not** durable proof of Telegram delivery. A crash between
+persistence and card submission can leave zero deliveries; a replay will not
+blindly resend them. Operators must reconcile such cases with provider
+history and subscribers before any manual resend.
+The hosted route requires a nonempty stable `source_message_id` to prevent
+the caller from defeating replay identity by omitting it.
+Before broadcasting subscriber cards, the bot checks that identity against the
 original Telegram binding; the separately queried recipient list must carry
 matching binding/provider/feed identifiers. An HTTP 200 recipient response
 containing an error `detail` is refused even if its scope identifiers match.
@@ -374,8 +384,9 @@ delivery or external acceptance receipt.
 Backend signal-creation results are also untrusted. Even when the parser
 returns `VALID`, a persisted signal receipt must have ledger `status: VALID`
 to authorise a new subscriber card. The backend may return an existing signal
-for a duplicate source message; if its state has since become `EXPIRED`,
-it must not be re-broadcast. Missing, malformed, rejected or expired status
+for a duplicate source message; its `newly_created: false` creation receipt
+refuses *all* repeated subscriber cards, even while still VALID. If the
+state has since become `EXPIRED`, it is also not broadcastable. Missing, malformed, rejected or expired status
 receipts fail closed before recipient lookup, with provider-history guidance.
 The hosted Telegram signal route also refreshes expiry on duplicate-source
 responses. A previously VALID signal past its deadline becomes EXPIRED before

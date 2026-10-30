@@ -251,6 +251,7 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
     assert signal["provider_id"] == provider.id
     assert signal["feed_id"] == feed.id
     assert signal["parser_status"] == "VALID"
+    assert signal["newly_created"] is True
     assert signal["source"] == f"FEED:{feed.id}:TELEGRAM_BINDING:{binding['binding_id']}"
 
     blocked = client.post(
@@ -262,6 +263,7 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
         },
     )
     assert blocked.status_code == 200
+    assert blocked.json()["newly_created"] is True
     assert blocked.json()["parser_status"] == "REJECTED"
     assert "not enabled" in (blocked.json()["parser_error"] or "").lower()
 
@@ -275,6 +277,7 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
     )
     assert duplicate.status_code == 200
     assert duplicate.json()["id"] == signal["id"]
+    assert duplicate.json()["newly_created"] is False
 
     conflict = client.post(
         "/provider-sources/telegram/signals",
@@ -286,6 +289,66 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
     )
     assert conflict.status_code == 409
 
+
+
+
+def test_bound_source_creation_marker_requires_id_and_closes_insert_race(
+    client, db, monkeypatch
+):
+    """Only an inserted signal earns a fresh marker, even after unique-key races."""
+    provider, feed, key = _provider(db, "source-race-marker")
+    invite = _source_invite(client, provider, feed, key)
+    binding = _connect(client, invite, "9371").json()
+    payload = {
+        "telegram_user_id": "9371",
+        "raw_text": EUR_BUY,
+        "source_message_id": "9371:durable-id",
+    }
+    # A missing/empty message identity cannot bypass hosted replay protection.
+    for invalid in ({k: v for k, v in payload.items() if k != "source_message_id"},
+                    {**payload, "source_message_id": ""}):
+        response = client.post("/provider-sources/telegram/signals", json=invalid)
+        assert response.status_code == 422
+    assert db.query(models.Signal).count() == 0
+
+    initial = client.post("/provider-sources/telegram/signals", json=payload)
+    assert initial.status_code == 200, initial.text
+    assert initial.json()["newly_created"] is True
+    assert client.post(
+        "/provider-sources/telegram/signals", json=payload
+    ).json()["newly_created"] is False
+
+    # Simulate two workers: the first unique-key precheck observes a stale
+    # absence even though the competing worker already committed the row.
+    # The database uniqueness constraint must still return replay=False.
+    scalar = db.scalar
+    saw_stale_precheck = False
+
+    def stale_precheck(statement, *args, **kwargs):
+        nonlocal saw_stale_precheck
+        if (not saw_stale_precheck
+                and "signals.source_message_id" in str(statement)):
+            saw_stale_precheck = True
+            return None
+        return scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db, "scalar", stale_precheck)
+    raced, freshly_created = crud.create_signal_with_freshness(
+        db,
+        raw_text=EUR_BUY,
+        source=f"TELEGRAM_BINDING:{binding['binding_id']}",
+        source_message_id=payload["source_message_id"],
+        provider_id=provider.id,
+        feed_id=feed.id,
+    )
+    assert saw_stale_precheck
+    assert raced.id == initial.json()["id"]
+    assert freshly_created is False
+    db.commit()
+    assert db.query(models.Signal).filter(
+        models.Signal.source == initial.json()["source"],
+        models.Signal.source_message_id == payload["source_message_id"],
+    ).count() == 1
 
 
 def test_bound_source_duplicate_replay_expires_stale_signal_once(client, db):
@@ -308,6 +371,7 @@ def test_bound_source_duplicate_replay_expires_stale_signal_once(client, db):
     signal_id = first.json()["id"]
     source = first.json()["source"]
     assert first.json()["status"] == "VALID"
+    assert first.json()["newly_created"] is True
 
     # The deadline can elapse before any other route has refreshed the row.
     signal = db.get(models.Signal, signal_id)
@@ -320,6 +384,7 @@ def test_bound_source_duplicate_replay_expires_stale_signal_once(client, db):
         replay = client.post("/provider-sources/telegram/signals", json=payload)
         assert replay.status_code == 200, replay.text
         assert replay.json()["id"] == signal_id
+        assert replay.json()["newly_created"] is False
         assert replay.json()["source"] == source
         assert replay.json()["parser_status"] == "VALID"
         assert replay.json()["status"] == "EXPIRED"

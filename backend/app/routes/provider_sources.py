@@ -22,6 +22,7 @@ from ..schemas import (
     ProviderSourceInviteCreate,
     ProviderSourceInviteOut,
     ProviderSourceSignalCreate,
+    ProviderSourceSignalOut,
     SignalOut,
 )
 from ..security import ProviderPrincipal, require_provider_principal, require_registration
@@ -339,19 +340,19 @@ def telegram_provider_source_extract(
 
 @router.post(
     "/provider-sources/telegram/signals",
-    response_model=SignalOut,
+    response_model=ProviderSourceSignalOut,
 )
 def telegram_provider_source_signal(
     payload: ProviderSourceSignalCreate,
     db: Session = Depends(get_db),
     _bot: str = Depends(require_registration),
-) -> SignalOut:
+) -> ProviderSourceSignalOut:
     resolved = crud.get_telegram_provider_source(db, payload.telegram_user_id)
     if resolved is None:
         raise HTTPException(status_code=403, detail="Telegram provider source not connected")
     binding, provider, feed = resolved
     try:
-        signal = crud.create_signal(
+        signal, newly_created = crud.create_signal_with_freshness(
             db,
             raw_text=payload.raw_text,
             source=f"TELEGRAM_BINDING:{binding.id}",
@@ -370,7 +371,12 @@ def telegram_provider_source_signal(
     # treat this response as authority to broadcast another subscriber card.
     crud.refresh_signal_expiry(db, signal)
     db.commit()
-    return SignalOut.model_validate(signal)
+    # The flag comes from the same database insert/unique-conflict decision
+    # that established signal identity; never infer it from created_at.
+    return ProviderSourceSignalOut(
+        **SignalOut.model_validate(signal).model_dump(),
+        newly_created=newly_created,
+    )
 
 
 def _is_direct_telegram_user_id(value: str) -> bool:

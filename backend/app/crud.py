@@ -1368,15 +1368,15 @@ class SignalReplayConflict(ValueError):
     """Same provider-source message id was reused with different content."""
 
 
-def create_signal(
+def create_signal_with_freshness(
     db: Session,
     raw_text: str,
     source: str = "TELEGRAM_ADMIN_TEST",
     source_message_id: Optional[str] = None,
     provider_id: Optional[str] = None,
     feed_id: Optional[str] = None,
-) -> models.Signal:
-    """Store + deterministically parse a signal. Always creates a ledger row.
+) -> tuple[models.Signal, bool]:
+    """Store and parse a signal; report whether this call inserted its ledger row.
 
     Hosted provider signals are explicitly tenant-bound. The persisted source
     namespace includes the feed id so the legacy replay uniqueness constraint
@@ -1427,7 +1427,7 @@ def create_signal(
                 existing.id,
                 {"source": source, "source_message_id": source_message_id},
             )
-            return existing
+            return existing, False
 
     expiry_minutes = (
         feed.expiry_minutes
@@ -1508,7 +1508,7 @@ def create_signal(
             existing.id,
             {"source": source, "source_message_id": source_message_id, "raced": True},
         )
-        return existing
+        return existing, False
 
     add_audit(
         db,
@@ -1525,6 +1525,26 @@ def create_signal(
 
     # Every signal gets a performance ledger row, valid or not.
     ledger.create_ledger_for_signal(db, signal)
+    return signal, True
+
+
+def create_signal(
+    db: Session,
+    raw_text: str,
+    source: str = "TELEGRAM_ADMIN_TEST",
+    source_message_id: Optional[str] = None,
+    provider_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
+) -> models.Signal:
+    """Store a signal, preserving the row-only contract for other callers."""
+    signal, _created = create_signal_with_freshness(
+        db,
+        raw_text=raw_text,
+        source=source,
+        source_message_id=source_message_id,
+        provider_id=provider_id,
+        feed_id=feed_id,
+    )
     return signal
 
 

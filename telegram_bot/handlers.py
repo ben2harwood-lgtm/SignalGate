@@ -983,6 +983,16 @@ async def _create_and_broadcast(
                 "changed. No subscriber card was sent; check provider history."
             )
 
+    # A replay returns the same ledger row, but never a second authority to
+    # submit subscriber cards. Missing or malformed creation proof fails closed.
+    # After an ambiguous POST/send, reconcile with history; no blind resend.
+    if source and signal.get("newly_created") is not True:
+        return (
+            "This source message was already recorded or its creation status "
+            "could not be confirmed. No new subscriber card was sent; check "
+            "provider history and subscriber delivery before any manual resend."
+        )
+
     # The same HTTP 200 that confirmed persistence can contain malformed
     # presentation fields. Never broadcast a forged safety/price line.
     if not _safe_trade_card_signal(signal):
