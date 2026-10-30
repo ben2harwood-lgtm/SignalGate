@@ -903,6 +903,9 @@ async def _create_and_broadcast(
                 "telegram_user_id": str(user_id),
                 "raw_text": raw_text,
                 "source_message_id": f"{chat_id}:{message_id}",
+                "expected_binding_id": source["binding_id"],
+                "expected_provider_id": source["provider_id"],
+                "expected_feed_id": source["feed_id"],
             },
             headers=_registration_headers(),
         )
