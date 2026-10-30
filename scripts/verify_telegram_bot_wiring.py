@@ -2068,6 +2068,14 @@ def check_broadcast_recipient_feed_binding() -> None:
             900000000011,
         )
     )
+    # A persisted expiry interval is a duration from signal creation, not a
+    # live countdown at the later moment Telegram delivers the card.
+    from keyboards import format_trade_card
+    for window in (5, 23):
+        displayed = format_trade_card(signal, window)
+        assert f"Expiry window: {window} minutes after signal creation" in displayed
+        assert "Expires in:" not in displayed
+
     def capture_card(_signal, minutes):
         rendered_expiries.append(minutes)
         return "OFFLINE-TRADE-CARD"
