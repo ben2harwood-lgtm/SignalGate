@@ -112,7 +112,7 @@ def format_trade_card(signal: Dict[str, Any], expiry_minutes: int) -> str:
         [
             "Demo mode only.",
             "Split-ticket partial mode: ON",
-            f"Expires in: {expiry_minutes} minutes",
+            f"Expiry window: {expiry_minutes} minutes after signal creation",
             "",
             "Approve this demo trade?",
         ]

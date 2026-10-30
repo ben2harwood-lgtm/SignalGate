@@ -499,14 +499,20 @@ def connect_telegram_provider_source(
 def get_telegram_provider_source(
     db: Session,
     telegram_user_id: str,
+    *,
+    lock_for_update: bool = False,
 ) -> Optional[tuple[models.ProviderSourceBinding, models.Provider, models.Feed]]:
-    binding = db.scalar(
-        select(models.ProviderSourceBinding).where(
-            models.ProviderSourceBinding.source_type == "TELEGRAM",
-            models.ProviderSourceBinding.external_identity == str(telegram_user_id),
-            models.ProviderSourceBinding.status == "ACTIVE",
-        )
+    binding_query = select(models.ProviderSourceBinding).where(
+        models.ProviderSourceBinding.source_type == "TELEGRAM",
+        models.ProviderSourceBinding.external_identity == str(telegram_user_id),
+        models.ProviderSourceBinding.status == "ACTIVE",
     )
+    # Only signal creation pins the active source row until its commit.
+    # PostgreSQL SELECT FOR UPDATE serializes a concurrent source rebind,
+    # preventing a stale A->B snapshot between scope validation and insert.
+    if lock_for_update and db.get_bind().dialect.name == "postgresql":
+        binding_query = binding_query.with_for_update()
+    binding = db.scalar(binding_query)
     if binding is None:
         return None
     provider = db.get(models.Provider, binding.provider_id)
@@ -1368,15 +1374,15 @@ class SignalReplayConflict(ValueError):
     """Same provider-source message id was reused with different content."""
 
 
-def create_signal(
+def create_signal_with_freshness(
     db: Session,
     raw_text: str,
     source: str = "TELEGRAM_ADMIN_TEST",
     source_message_id: Optional[str] = None,
     provider_id: Optional[str] = None,
     feed_id: Optional[str] = None,
-) -> models.Signal:
-    """Store + deterministically parse a signal. Always creates a ledger row.
+) -> tuple[models.Signal, bool]:
+    """Store and parse a signal; report whether this call inserted its ledger row.
 
     Hosted provider signals are explicitly tenant-bound. The persisted source
     namespace includes the feed id so the legacy replay uniqueness constraint
@@ -1427,7 +1433,7 @@ def create_signal(
                 existing.id,
                 {"source": source, "source_message_id": source_message_id},
             )
-            return existing
+            return existing, False
 
     expiry_minutes = (
         feed.expiry_minutes
@@ -1508,7 +1514,7 @@ def create_signal(
             existing.id,
             {"source": source, "source_message_id": source_message_id, "raced": True},
         )
-        return existing
+        return existing, False
 
     add_audit(
         db,
@@ -1525,6 +1531,26 @@ def create_signal(
 
     # Every signal gets a performance ledger row, valid or not.
     ledger.create_ledger_for_signal(db, signal)
+    return signal, True
+
+
+def create_signal(
+    db: Session,
+    raw_text: str,
+    source: str = "TELEGRAM_ADMIN_TEST",
+    source_message_id: Optional[str] = None,
+    provider_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
+) -> models.Signal:
+    """Store a signal, preserving the row-only contract for other callers."""
+    signal, _created = create_signal_with_freshness(
+        db,
+        raw_text=raw_text,
+        source=source,
+        source_message_id=source_message_id,
+        provider_id=provider_id,
+        feed_id=feed_id,
+    )
     return signal
 
 

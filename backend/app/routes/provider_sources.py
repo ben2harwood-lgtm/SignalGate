@@ -6,6 +6,8 @@ actions resolve to the persisted provider/feed binding.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
@@ -20,6 +22,7 @@ from ..schemas import (
     ProviderSourceInviteCreate,
     ProviderSourceInviteOut,
     ProviderSourceSignalCreate,
+    ProviderSourceSignalOut,
     SignalOut,
 )
 from ..security import ProviderPrincipal, require_provider_principal, require_registration
@@ -34,7 +37,19 @@ def _provider_binding_out(
     binding,
     provider,
     feed,
+    *,
+    effective_expiry: bool = False,
+    default_expiry_minutes: Optional[int] = None,
 ) -> ProviderSourceBindingOut:
+    expiry_minutes = feed.expiry_minutes
+    if effective_expiry and expiry_minutes is None:
+        # Match crud.create_signal: an operator-managed DB setting overrides
+        # the environment default when a feed has no explicit expiry.
+        expiry_minutes = (
+            default_expiry_minutes
+            if default_expiry_minutes is not None
+            else settings.default_signal_expiry_minutes
+        )
     return ProviderSourceBindingOut(
         binding_id=binding.id,
         provider_id=provider.id,
@@ -42,7 +57,7 @@ def _provider_binding_out(
         provider_display_name=provider.brand_display_name,
         feed_id=feed.id,
         feed_name=feed.name,
-        expiry_minutes=feed.expiry_minutes,
+        expiry_minutes=expiry_minutes,
         source_type=binding.source_type,
         status=binding.status,
     )
@@ -220,7 +235,18 @@ def telegram_provider_source_status(
     if resolved is None:
         raise HTTPException(status_code=404, detail="Telegram provider source not connected")
     binding, provider, feed = resolved
-    return _provider_binding_out(binding, provider, feed)
+    effective_default = crud.get_setting_int(
+        db,
+        "default_signal_expiry_minutes",
+        settings.default_signal_expiry_minutes,
+    )
+    return _provider_binding_out(
+        binding,
+        provider,
+        feed,
+        effective_expiry=True,
+        default_expiry_minutes=effective_default,
+    )
 
 
 @router.post(
@@ -229,6 +255,9 @@ def telegram_provider_source_status(
 )
 def telegram_provider_source_extract(
     telegram_user_id: str,
+    expected_binding_id: str,
+    expected_provider_id: str,
+    expected_feed_id: str,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     _bot: str = Depends(require_registration),
@@ -237,6 +266,18 @@ def telegram_provider_source_extract(
     if resolved is None:
         raise HTTPException(status_code=403, detail="Telegram provider source not connected")
     binding, provider, feed = resolved
+    # The bot's earlier status may have belonged to another tenant. Refuse
+    # stale screenshots BEFORE invoking the extractor or recording its audit.
+    # A rebinding reuses the binding ID, so compare provider and feed too.
+    if (
+        expected_binding_id != binding.id
+        or expected_provider_id != provider.id
+        or expected_feed_id != feed.id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Telegram provider source changed; capture a new screenshot",
+        )
 
     if not (file.content_type or "").startswith("image/"):
         raise HTTPException(
@@ -255,6 +296,25 @@ def telegram_provider_source_extract(
         image_bytes,
         mime=file.content_type or "image/png",
     )
+    # An A-to-B source rebind may commit while image extraction is running.
+    # Avoid holding a database lock across extractor/model I/O. Re-read the
+    # authoritative binding after I/O, then serialize through the audit commit.
+    # Expiring the ORM identity map avoids reusing the pre-extraction snapshot.
+    db.expire_all()
+    current = crud.get_telegram_provider_source(
+        db, telegram_user_id, lock_for_update=True
+    )
+    if (
+        current is None
+        or current[0].id != expected_binding_id
+        or current[1].id != expected_provider_id
+        or current[2].id != expected_feed_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Telegram provider source changed; capture a new screenshot",
+        )
+    binding, provider, feed = current
     parsed = (
         parse_signal(
             extracted.raw_text,
@@ -314,19 +374,35 @@ def telegram_provider_source_extract(
 
 @router.post(
     "/provider-sources/telegram/signals",
-    response_model=SignalOut,
+    response_model=ProviderSourceSignalOut,
 )
 def telegram_provider_source_signal(
     payload: ProviderSourceSignalCreate,
     db: Session = Depends(get_db),
     _bot: str = Depends(require_registration),
-) -> SignalOut:
-    resolved = crud.get_telegram_provider_source(db, payload.telegram_user_id)
+) -> ProviderSourceSignalOut:
+    # Hold a PostgreSQL binding-row lock through signal creation/commit.
+    # Otherwise a rebind after the expected-scope check could still persist
+    # the prior source's private raw text under a newly bound tenant.
+    resolved = crud.get_telegram_provider_source(
+        db, payload.telegram_user_id, lock_for_update=True
+    )
     if resolved is None:
         raise HTTPException(status_code=403, detail="Telegram provider source not connected")
     binding, provider, feed = resolved
+    # A rebind between bot status and this POST must fail BEFORE the raw
+    # screenshot/text enters the newly bound provider's signal ledger.
+    if (
+        payload.expected_binding_id != binding.id
+        or payload.expected_provider_id != provider.id
+        or payload.expected_feed_id != feed.id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Telegram provider source changed; capture a new signal",
+        )
     try:
-        signal = crud.create_signal(
+        signal, newly_created = crud.create_signal_with_freshness(
             db,
             raw_text=payload.raw_text,
             source=f"TELEGRAM_BINDING:{binding.id}",
@@ -340,8 +416,29 @@ def telegram_provider_source_signal(
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Idempotent source-message replay may return a previously VALID row whose
+    # deadline has elapsed. Refresh its persisted state before the bot can
+    # treat this response as authority to broadcast another subscriber card.
+    crud.refresh_signal_expiry(db, signal)
     db.commit()
-    return SignalOut.model_validate(signal)
+    # The flag comes from the same database insert/unique-conflict decision
+    # that established signal identity; never infer it from created_at.
+    return ProviderSourceSignalOut(
+        **SignalOut.model_validate(signal).model_dump(),
+        newly_created=newly_created,
+    )
+
+
+def _is_direct_telegram_user_id(value: str) -> bool:
+    """Return only canonical Telegram private-user IDs, never group/channel IDs."""
+    return (
+        isinstance(value, str)
+        and value.isascii()
+        and value.isdecimal()
+        and not value.startswith("0")
+        and len(value) <= 16
+        and int(value) <= (1 << 52) - 1
+    )
 
 
 @router.get("/provider-sources/telegram/recipients")
@@ -353,15 +450,24 @@ def telegram_provider_source_recipients(
     resolved = crud.get_telegram_provider_source(db, telegram_user_id)
     if resolved is None:
         raise HTTPException(status_code=403, detail="Telegram provider source not connected")
-    _binding, provider, feed = resolved
+    binding, provider, feed = resolved
+    # A feed or provider can be paused after its signal was stored but before
+    # Telegram fetches recipients. Never enumerate for a paused source.
+    if provider.paused or feed.paused:
+        raise HTTPException(status_code=403, detail="Provider/feed is paused")
     users = crud.list_active_users_for_feed(db, provider.id, feed.id)
     return {
+        # Bind this receipt to the exact current Telegram source and feed.
+        # The bot compares it to the previously persisted signal before send.
+        "binding_id": binding.id,
+        "provider_id": provider.id,
+        "feed_id": feed.id,
         "recipients": [
             {
                 "user_id": user.id,
                 "telegram_user_id": user.telegram_user_id,
             }
             for user in users
-            if user.telegram_user_id.lstrip("-").isdigit()
+            if _is_direct_telegram_user_id(user.telegram_user_id)
         ]
     }

@@ -126,7 +126,14 @@ class ProviderSourceBindingOut(BaseModel):
 class ProviderSourceSignalCreate(BaseModel):
     telegram_user_id: str
     raw_text: str = Field(min_length=1, max_length=4000)
-    source_message_id: Optional[str] = Field(default=None, max_length=200)
+    # Hosted broadcasts cannot be replay-safe without a stable source identity.
+    source_message_id: str = Field(min_length=1, max_length=200)
+    # Expected scope comes from the bot\x27s pre-submit source status, not from
+    # an identity header. Backend must compare it with the authoritative binding
+    # before inserting any cross-tenant signal text.
+    expected_binding_id: str = Field(min_length=1, max_length=80)
+    expected_provider_id: str = Field(min_length=1, max_length=80)
+    expected_feed_id: str = Field(min_length=1, max_length=80)
 
 
 class SubscriptionInviteCreate(BaseModel):
@@ -232,6 +239,12 @@ class SignalOut(BaseModel):
     status: str
     created_at: dt.datetime
     expires_at: Optional[dt.datetime] = None
+
+
+class ProviderSourceSignalOut(SignalOut):
+    # Only the authenticated Telegram source-creation endpoint returns this
+    # transaction-derived flag; replayed or raced requests must be False.
+    newly_created: bool
 
 
 # --- Approvals / decisions ------------------------------------------------

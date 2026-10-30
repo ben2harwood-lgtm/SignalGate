@@ -1,9 +1,12 @@
 """Tenant-bound Telegram provider source tests."""
 from __future__ import annotations
 
+import datetime as dt
 import io
 import os
 from pathlib import Path
+
+import pytest
 
 from app import crud, models, security
 
@@ -39,6 +42,15 @@ def _source_invite(client, provider, feed, key, expires_minutes=60):
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def _source_claim(binding):
+    """Constrain hosted signal creation to the original source snapshot."""
+    return {
+        "expected_binding_id": binding["binding_id"],
+        "expected_provider_id": binding["provider_id"],
+        "expected_feed_id": binding["feed_id"],
+    }
 
 
 def _connect(client, invite, telegram_user_id, headers=None):
@@ -101,6 +113,55 @@ def test_connect_status_and_one_use_semantics(client, db):
     assert db.query(models.ProviderSourceBinding).count() == 1
 
 
+def test_source_status_returns_effective_expiry_for_bot(client, db):
+    from app.config import get_settings
+
+    provider, feed, key = _provider(db, "source-expiry-default")
+    feed.expiry_minutes = 17
+    db.commit()
+    invite = _source_invite(client, provider, feed, key)
+    connected = _connect(client, invite, "9209")
+    assert connected.status_code == 200, connected.text
+
+    def read_status():
+        response = client.get(
+            "/provider-sources/telegram/status",
+            params={"telegram_user_id": "9209"},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    assert read_status()["expiry_minutes"] == 17
+
+    # With no feed override, status must report the same default used by
+    # create_signal, including a persisted operator-managed setting.
+    feed.expiry_minutes = None
+    db.commit()
+    configured_default = get_settings().default_signal_expiry_minutes
+    assert read_status()["expiry_minutes"] == configured_default
+
+    crud.set_setting(db, "default_signal_expiry_minutes", "23")
+    db.commit()
+    assert read_status()["expiry_minutes"] == 23
+
+    # The persisted signal deadline must use the same effective value that
+    # the Telegram status receipt advertises to the human approval card.
+    signal_response = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": "9209",
+            "raw_text": EUR_BUY,
+            "source_message_id": "9209:db-default-expiry",
+            **_source_claim(connected.json()),
+        },
+    )
+    assert signal_response.status_code == 200, signal_response.text
+    signal = signal_response.json()
+    created_at = dt.datetime.fromisoformat(signal["created_at"])
+    expires_at = dt.datetime.fromisoformat(signal["expires_at"])
+    assert abs((expires_at - created_at).total_seconds() - 23 * 60) < 5
+
+
 def test_rebinding_requires_a_new_provider_owned_token_and_is_audited(client, db):
     p1, f1, k1 = _provider(db, "source-a")
     p2, f2, k2 = _provider(db, "source-b")
@@ -113,6 +174,17 @@ def test_rebinding_requires_a_new_provider_owned_token_and_is_audited(client, db
     assert a.json()["binding_id"] == b.json()["binding_id"]
     assert b.json()["provider_id"] == p2.id
     assert b.json()["feed_id"] == f2.id
+    # A recipient lookup after rebind must identify the NEW tenant/feed,
+    # never silently return that list as if it belonged to the old source.
+    scoped = client.get(
+        "/provider-sources/telegram/recipients",
+        params={"telegram_user_id": "9202"},
+    )
+    assert scoped.status_code == 200
+    assert scoped.json()["binding_id"] == b.json()["binding_id"]
+    assert scoped.json()["provider_id"] == p2.id
+    assert scoped.json()["feed_id"] == f2.id
+    assert scoped.json()["provider_id"] != p1.id
 
     db.expire_all()
     binding = db.get(models.ProviderSourceBinding, b.json()["binding_id"])
@@ -163,6 +235,124 @@ def test_provider_cannot_manage_other_provider_source_objects(client, db):
     assert cross_binding_revoke.status_code == 404
 
 
+def test_rebind_refuses_stale_source_claim_before_cross_tenant_signal_write(client, db):
+    """An A snapshot may not be stored under B after a source identity rebind."""
+    p1, f1, k1 = _provider(db, "stale-create-a")
+    p2, f2, k2 = _provider(db, "stale-create-b")
+    old = _connect(client, _source_invite(client, p1, f1, k1), "9374")
+    assert old.status_code == 200, old.text
+    a_scope = _source_claim(old.json())
+    new = _connect(client, _source_invite(client, p2, f2, k2), "9374")
+    assert new.status_code == 200, new.text
+    # Rebind reuses the same binding ID, so feed and provider must ALSO match.
+    assert old.json()["binding_id"] == new.json()["binding_id"]
+    assert a_scope["expected_feed_id"] != new.json()["feed_id"]
+
+    source_text = "EURUSD BUY SL 1.0800 TP1 1.0900"
+    payload = {
+        "telegram_user_id": "9374",
+        "raw_text": source_text,
+        "source_message_id": "9374:stale-preview",
+        **a_scope,
+    }
+    stale = client.post("/provider-sources/telegram/signals", json=payload)
+    assert stale.status_code == 409, stale.text
+    assert db.query(models.Signal).count() == 0
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "SIGNAL_CREATED"
+    ).count() == 0
+
+    # A missing scope cannot become an implicit trust-the-current-source mode.
+    missing = {k: v for k, v in payload.items() if not k.startswith("expected_")}
+    refused = client.post("/provider-sources/telegram/signals", json=missing)
+    assert refused.status_code == 422, refused.text
+    assert db.query(models.Signal).count() == 0
+
+    # Current B binding still works and preserves its own provider/feed.
+    current = client.post(
+        "/provider-sources/telegram/signals",
+        json={**payload, **_source_claim(new.json())},
+    )
+    assert current.status_code == 200, current.text
+    assert current.json()["provider_id"] == p2.id
+    assert current.json()["feed_id"] == f2.id
+    assert current.json()["newly_created"] is True
+    assert db.query(models.Signal).count() == 1
+
+
+def test_hosted_signal_post_pins_source_binding(client, db, monkeypatch):
+    """The write route must request a locked source snapshot, not a plain GET."""
+    provider, feed, key = _provider(db, "source-post-lock")
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), "9381"
+    )
+    assert connected.status_code == 200, connected.text
+    observed = []
+    original = crud.get_telegram_provider_source
+
+    def checked_source(session, telegram_user_id, **options):
+        observed.append(options.get("lock_for_update"))
+        return original(session, telegram_user_id, **options)
+
+    monkeypatch.setattr(crud, "get_telegram_provider_source", checked_source)
+    submitted = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": "9381",
+            "raw_text": EUR_BUY,
+            "source_message_id": "9381:lock-contract",
+            **_source_claim(connected.json()),
+        },
+    )
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["newly_created"] is True
+    assert observed == [True]
+
+
+def test_source_binding_lock_serializes_postgresql_rebind(client, db):
+    """A competing source rebind must wait until the signal transaction ends."""
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("PostgreSQL row-level lock proof")
+
+    from sqlalchemy import update
+    from sqlalchemy.exc import DBAPIError
+
+    from app.database import SessionLocal
+
+    provider, feed, key = _provider(db, "source-lock-rebind")
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), "9382"
+    )
+    assert connected.status_code == 200, connected.text
+    binding_id = connected.json()["binding_id"]
+    statement = (
+        update(models.ProviderSourceBinding)
+        .where(models.ProviderSourceBinding.id == binding_id)
+        .values(status="REVOKED")
+    )
+    with SessionLocal() as creator:
+        source = crud.get_telegram_provider_source(
+            creator, "9382", lock_for_update=True
+        )
+        assert source is not None and source[0].id == binding_id
+        with SessionLocal() as rebind:
+            rebind.connection().exec_driver_sql(
+                "SET LOCAL lock_timeout = '1500ms'"
+            )
+            with pytest.raises(DBAPIError) as blocked:
+                rebind.execute(statement)
+            assert getattr(blocked.value.orig, "pgcode", None) == "55P03"
+            rebind.rollback()
+        creator.commit()
+
+    # Once the source-creation transaction commits, a rebind can proceed.
+    # Roll it back so this test never leaves a revoked source behind.
+    with SessionLocal() as rebind:
+        rebind.execute(statement)
+        rebind.rollback()
+    assert crud.get_telegram_provider_source(db, "9382") is not None
+
+
 def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client, db):
     provider, feed, key = _provider(db, "source-policy")
     crud.update_feed_policy(
@@ -184,6 +374,7 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
             "telegram_user_id": "9204",
             "raw_text": EUR_BUY,
             "source_message_id": "chat:101",
+            **_source_claim(binding),
         },
     )
     assert valid.status_code == 200, valid.text
@@ -191,6 +382,7 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
     assert signal["provider_id"] == provider.id
     assert signal["feed_id"] == feed.id
     assert signal["parser_status"] == "VALID"
+    assert signal["newly_created"] is True
     assert signal["source"] == f"FEED:{feed.id}:TELEGRAM_BINDING:{binding['binding_id']}"
 
     blocked = client.post(
@@ -199,9 +391,11 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
             "telegram_user_id": "9204",
             "raw_text": GBPJPY_SELL,
             "source_message_id": "chat:102",
+            **_source_claim(binding),
         },
     )
     assert blocked.status_code == 200
+    assert blocked.json()["newly_created"] is True
     assert blocked.json()["parser_status"] == "REJECTED"
     assert "not enabled" in (blocked.json()["parser_error"] or "").lower()
 
@@ -211,10 +405,12 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
             "telegram_user_id": "9204",
             "raw_text": EUR_BUY,
             "source_message_id": "chat:101",
+            **_source_claim(binding),
         },
     )
     assert duplicate.status_code == 200
     assert duplicate.json()["id"] == signal["id"]
+    assert duplicate.json()["newly_created"] is False
 
     conflict = client.post(
         "/provider-sources/telegram/signals",
@@ -222,9 +418,328 @@ def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client,
             "telegram_user_id": "9204",
             "raw_text": "EURUSD BUY SL 1.0790 TP1 1.0910",
             "source_message_id": "chat:101",
+            **_source_claim(binding),
         },
     )
     assert conflict.status_code == 409
+
+
+
+
+def test_bound_source_creation_marker_requires_id_and_closes_insert_race(
+    client, db, monkeypatch
+):
+    """Only an inserted signal earns a fresh marker, even after unique-key races."""
+    provider, feed, key = _provider(db, "source-race-marker")
+    invite = _source_invite(client, provider, feed, key)
+    binding = _connect(client, invite, "9371").json()
+    payload = {
+        "telegram_user_id": "9371",
+        "raw_text": EUR_BUY,
+        "source_message_id": "9371:durable-id",
+        **_source_claim(binding),
+    }
+    # A missing/empty message identity cannot bypass hosted replay protection.
+    for invalid in ({k: v for k, v in payload.items() if k != "source_message_id"},
+                    {**payload, "source_message_id": ""}):
+        response = client.post("/provider-sources/telegram/signals", json=invalid)
+        assert response.status_code == 422
+    assert db.query(models.Signal).count() == 0
+
+    initial = client.post("/provider-sources/telegram/signals", json=payload)
+    assert initial.status_code == 200, initial.text
+    assert initial.json()["newly_created"] is True
+    assert client.post(
+        "/provider-sources/telegram/signals", json=payload
+    ).json()["newly_created"] is False
+
+    # Simulate two workers: the first unique-key precheck observes a stale
+    # absence even though the competing worker already committed the row.
+    # The database uniqueness constraint must still return replay=False.
+    scalar = db.scalar
+    saw_stale_precheck = False
+
+    def stale_precheck(statement, *args, **kwargs):
+        nonlocal saw_stale_precheck
+        if (not saw_stale_precheck
+                and "signals.source_message_id" in str(statement)):
+            saw_stale_precheck = True
+            return None
+        return scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db, "scalar", stale_precheck)
+    raced, freshly_created = crud.create_signal_with_freshness(
+        db,
+        raw_text=EUR_BUY,
+        source=f"TELEGRAM_BINDING:{binding['binding_id']}",
+        source_message_id=payload["source_message_id"],
+        provider_id=provider.id,
+        feed_id=feed.id,
+    )
+    assert saw_stale_precheck
+    assert raced.id == initial.json()["id"]
+    assert freshly_created is False
+    db.commit()
+    assert db.query(models.Signal).filter(
+        models.Signal.source == initial.json()["source"],
+        models.Signal.source_message_id == payload["source_message_id"],
+    ).count() == 1
+
+
+
+@pytest.mark.parametrize(
+    "competing_raw_text, expect_conflict",
+    [
+        (EUR_BUY, False),
+        ("EURUSD BUY SL 1.0750 TP1 1.0900", True),
+    ],
+    ids=["identical-message-replay", "conflicting-message-content"],
+)
+def test_provider_source_concurrent_replay_freshness_postgresql(
+    client, db, competing_raw_text, expect_conflict
+):
+    """Real two-connection races: replay is not fresh; changed text conflicts."""
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires two independent PostgreSQL transactions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from app.database import SessionLocal
+
+    provider, feed, key = _provider(db, "source-concurrent-freshness")
+    invite = _source_invite(client, provider, feed, key)
+    binding = _connect(client, invite, "9372")
+    assert binding.status_code == 200, binding.text
+    args = {
+        "raw_text": EUR_BUY,
+        "source": f"TELEGRAM_BINDING:{binding.json()['binding_id']}",
+        "source_message_id": "9372:one-message",
+        "provider_id": provider.id,
+        "feed_id": feed.id,
+    }
+    precheck_completed = Event()
+    first_session = SessionLocal()
+    try:
+        first, first_fresh = crud.create_signal_with_freshness(
+            first_session, **args
+        )
+        assert first_fresh is True
+        first_id = first.id
+        # Leave this first insert uncommitted. The second transaction must
+        # observe absence, then lose to the database uniqueness constraint.
+        def competitor():
+            with SessionLocal() as second:
+                # A Future timeout does not terminate a DB-blocked worker:
+                # bound waits inside PostgreSQL to ensure CI can fail cleanly.
+                connection = second.connection()
+                connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+                connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+                original_scalar = second.scalar
+
+                def observe_precheck(statement, *scalar_args, **scalar_kwargs):
+                    value = original_scalar(
+                        statement, *scalar_args, **scalar_kwargs
+                    )
+                    if (
+                        not precheck_completed.is_set()
+                        and "signals.source_message_id" in str(statement)
+                    ):
+                        assert value is None
+                        precheck_completed.set()
+                    return value
+
+                second.scalar = observe_precheck
+                if expect_conflict:
+                    # The same source/message ID with different text must
+                    # fail even when both workers observed an empty precheck.
+                    with pytest.raises(crud.SignalReplayConflict):
+                        crud.create_signal_with_freshness(
+                            second, **{**args, "raw_text": competing_raw_text}
+                        )
+                    second.commit()
+                    return None, False
+                competing, fresh = crud.create_signal_with_freshness(
+                    second, **{**args, "raw_text": competing_raw_text}
+                )
+                second.commit()
+                return competing.id, fresh
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(competitor)
+            try:
+                assert precheck_completed.wait(timeout=10), (
+                    "Competing PostgreSQL transaction did not reach precheck"
+                )
+            finally:
+                # Unblock the uniqueness check even if the assertion fails.
+                first_session.commit()
+            competitor_id, competitor_fresh = future.result(timeout=20)
+
+        db.expire_all()
+        if expect_conflict:
+            assert competitor_id is None and competitor_fresh is False
+            assert db.query(models.AuditLog).filter(
+                models.AuditLog.event_type == "SIGNAL_REPLAY_CONFLICT",
+                models.AuditLog.entity_id == first_id,
+            ).count() == 1
+        else:
+            assert competitor_id == first_id
+            assert competitor_fresh is False
+        assert db.query(models.Signal).filter(
+            models.Signal.source == f"FEED:{feed.id}:{args['source']}",
+            models.Signal.source_message_id == args["source_message_id"],
+        ).count() == 1
+    finally:
+        first_session.close()
+
+
+
+def test_provider_source_rolled_back_creator_allows_fresh_competitor_postgresql(
+    client, db
+):
+    """A failed creator must not suppress a competing, newly committed signal.
+
+    Two real database transactions must agree that only a durable insert earns
+    the fresh marker. The first worker inserts but aborts without committing;
+    the competing worker must insert successfully and remain broadcastable.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from app.database import SessionLocal
+
+    provider, feed, key = _provider(db, "source-rolled-back-creator")
+    invite = _source_invite(client, provider, feed, key)
+    binding = _connect(client, invite, "9373")
+    assert binding.status_code == 200, binding.text
+    args = {
+        "raw_text": EUR_BUY,
+        "source": f"TELEGRAM_BINDING:{binding.json()['binding_id']}",
+        "source_message_id": "9373:aborted-creator",
+        "provider_id": provider.id,
+        "feed_id": feed.id,
+    }
+    precheck_completed = Event()
+    first_session = SessionLocal()
+    try:
+        uncommitted, initially_fresh = crud.create_signal_with_freshness(
+            first_session, **args
+        )
+        assert initially_fresh is True
+        assert uncommitted.id
+
+        def competitor():
+            with SessionLocal() as second:
+                # A Future timeout does not terminate a DB-blocked worker:
+                # bound waits inside PostgreSQL to ensure CI can fail cleanly.
+                connection = second.connection()
+                connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+                connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+                original_scalar = second.scalar
+
+                def observe_precheck(statement, *scalar_args, **scalar_kwargs):
+                    value = original_scalar(
+                        statement, *scalar_args, **scalar_kwargs
+                    )
+                    if (
+                        not precheck_completed.is_set()
+                        and "signals.source_message_id" in str(statement)
+                    ):
+                        assert value is None
+                        precheck_completed.set()
+                    return value
+
+                second.scalar = observe_precheck
+                created, fresh = crud.create_signal_with_freshness(
+                    second, **args
+                )
+                second.commit()
+                return created.id, fresh
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(competitor)
+            try:
+                assert precheck_completed.wait(timeout=10), (
+                    "Competing PostgreSQL creator did not reach precheck"
+                )
+            finally:
+                # Simulate process failure before its transaction commits.
+                # Unblock the competing insert even if the assertion fails.
+                first_session.rollback()
+            committed_id, committed_fresh = future.result(timeout=20)
+
+        assert committed_fresh is True
+        db.expire_all()
+        stored = db.query(models.Signal).filter(
+            models.Signal.source == f"FEED:{feed.id}:{args['source']}",
+            models.Signal.source_message_id == args["source_message_id"],
+        ).all()
+        assert len(stored) == 1
+        assert stored[0].id == committed_id
+        assert db.query(models.AuditLog).filter(
+            models.AuditLog.event_type == "SIGNAL_CREATED",
+            models.AuditLog.entity_id == committed_id,
+        ).count() == 1
+    finally:
+        first_session.rollback()
+        first_session.close()
+
+
+def test_bound_source_duplicate_replay_expires_stale_signal_once(client, db):
+    """A replay must not renew or expose a VALID-looking expired ledger row."""
+    provider, feed, key = _provider(db, "source-expiry-replay")
+    crud.update_feed_policy(
+        db, feed, {"allowed_symbols": ["EURUSD"], "expiry_minutes": 11}
+    )
+    db.commit()
+    invite = _source_invite(client, provider, feed, key)
+    connected = _connect(client, invite, "9360")
+    assert connected.status_code == 200, connected.text
+    payload = {
+        "telegram_user_id": "9360",
+        "raw_text": EUR_BUY,
+        "source_message_id": "9360:replay",
+        **_source_claim(connected.json()),
+    }
+    first = client.post("/provider-sources/telegram/signals", json=payload)
+    assert first.status_code == 200, first.text
+    signal_id = first.json()["id"]
+    source = first.json()["source"]
+    assert first.json()["status"] == "VALID"
+    assert first.json()["newly_created"] is True
+
+    # The deadline can elapse before any other route has refreshed the row.
+    signal = db.get(models.Signal, signal_id)
+    expired_at = crud.utcnow() - dt.timedelta(minutes=2)
+    signal.expires_at = expired_at
+    db.commit()
+    assert signal.status == "VALID"
+
+    for _ in range(2):
+        replay = client.post("/provider-sources/telegram/signals", json=payload)
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["id"] == signal_id
+        assert replay.json()["newly_created"] is False
+        assert replay.json()["source"] == source
+        assert replay.json()["parser_status"] == "VALID"
+        assert replay.json()["status"] == "EXPIRED"
+
+    db.expire_all()
+    stored = db.get(models.Signal, signal_id)
+    assert stored.status == "EXPIRED"
+    assert stored.expires_at == expired_at  # replay must not renew expiry
+    assert db.query(models.Signal).filter(
+        models.Signal.source == source,
+        models.Signal.source_message_id == payload["source_message_id"],
+    ).count() == 1
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "SIGNAL_EXPIRED",
+        models.AuditLog.entity_id == signal_id,
+    ).count() == 1
 
 
 def test_bound_source_recipients_are_only_that_feeds_consented_subscribers(client, db):
@@ -233,10 +748,21 @@ def test_bound_source_recipients_are_only_that_feeds_consented_subscribers(clien
     u1 = register_user(client, "9205", "feed_a", "Feed A")
     u2 = register_user(client, "9206", "feed_b", "Feed B")
     u3 = register_user(client, "not-a-chat-id", "non_numeric", "Non Numeric")
+    max_user = register_user(client, "4503599627370495", "max_direct_id", "Max Direct")
+    invalid_users = [
+        register_user(client, value, f"invalid_direct_{i}", "Invalid Direct")
+        for i, value in enumerate((
+            "-1001234567890", "0", "09205", "4503599627370496",
+            "12345678901234567", "１２３４",
+        ))
+    ]
 
     crud.subscribe_user_to_feed(db, p1, f1, db.get(models.User, u1["id"]))
     crud.subscribe_user_to_feed(db, p2, f2, db.get(models.User, u2["id"]))
     crud.subscribe_user_to_feed(db, p1, f1, db.get(models.User, u3["id"]))
+    crud.subscribe_user_to_feed(db, p1, f1, db.get(models.User, max_user["id"]))
+    for invalid_user in invalid_users:
+        crud.subscribe_user_to_feed(db, p1, f1, db.get(models.User, invalid_user["id"]))
     db.commit()
 
     invite = _source_invite(client, p1, f1, k1)
@@ -247,8 +773,59 @@ def test_bound_source_recipients_are_only_that_feeds_consented_subscribers(clien
         params={"telegram_user_id": "9207"},
     )
     assert response.status_code == 200
+    assert response.json()["provider_id"] == p1.id
+    assert response.json()["feed_id"] == f1.id
     ids = {x["telegram_user_id"] for x in response.json()["recipients"]}
-    assert ids == {"9205"}
+    assert ids == {"9205", "4503599627370495"}
+
+
+def test_bound_source_recipients_refuse_pause_after_source_connect(client, db):
+    """A pause between signal storage and recipient lookup cannot broadcast."""
+    provider, feed, key = _provider(db, "recipients-pause")
+    crud.update_feed_policy(db, feed, {"allowed_symbols": ["EURUSD"]})
+    db.commit()
+    subscriber = register_user(client, "9358", "paused_user", "Paused User")
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber["id"])
+    )
+    db.commit()
+    invite = _source_invite(client, provider, feed, key)
+    connected = _connect(client, invite, "9359")
+    assert connected.status_code == 200, connected.text
+    stored = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": "9359",
+            "raw_text": EUR_BUY,
+            "source_message_id": "9359:1",
+            **_source_claim(connected.json()),
+        },
+    )
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["parser_status"] == "VALID"
+    assert stored.json()["provider_id"] == provider.id
+    assert stored.json()["feed_id"] == feed.id
+
+    def lookup():
+        return client.get(
+            "/provider-sources/telegram/recipients",
+            params={"telegram_user_id": "9359"},
+        )
+
+    before = lookup()
+    assert before.status_code == 200
+    assert [r["telegram_user_id"] for r in before.json()["recipients"]] == ["9358"]
+    for paused_scope in (feed, provider):
+        paused_scope.paused = True
+        db.commit()
+        denied = lookup()
+        assert denied.status_code == 403
+        assert "paused" in denied.json()["detail"].lower()
+        paused_scope.paused = False
+        db.commit()
+    after = lookup()
+    assert after.status_code == 200
+    assert [r["telegram_user_id"] for r in after.json()["recipients"]] == ["9358"]
 
 
 def test_bound_source_extract_uses_feed_allowlist(client, db):
@@ -256,12 +833,12 @@ def test_bound_source_extract_uses_feed_allowlist(client, db):
     crud.update_feed_policy(db, feed, {"allowed_symbols": ["EURUSD"]})
     db.commit()
     invite = _source_invite(client, provider, feed, key)
-    _connect(client, invite, "9208")
+    connected = _connect(client, invite, "9208").json()
 
     os.environ.pop("FAKE_EXTRACTOR_TEXT", None)
     rejected = client.post(
         "/provider-sources/telegram/extract",
-        params={"telegram_user_id": "9208"},
+        params={"telegram_user_id": "9208", **_source_claim(connected)},
         files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
     )
     assert rejected.status_code == 200
@@ -273,11 +850,130 @@ def test_bound_source_extract_uses_feed_allowlist(client, db):
     db.commit()
     accepted = client.post(
         "/provider-sources/telegram/extract",
-        params={"telegram_user_id": "9208"},
+        params={"telegram_user_id": "9208", **_source_claim(connected)},
         files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
     )
     assert accepted.status_code == 200
     assert accepted.json()["parser_status"] == "VALID"
+
+
+def test_rebind_refuses_stale_screenshot_scope_before_extraction(client, db, monkeypatch):
+    """Do not parse source A's private image using a rebound provider B feed."""
+    provider_a, feed_a, key_a = _provider(db, "image-rebind-a")
+    provider_b, feed_b, key_b = _provider(db, "image-rebind-b")
+    original = _connect(
+        client, _source_invite(client, provider_a, feed_a, key_a), "9391"
+    ).json()
+    rebound = _connect(
+        client, _source_invite(client, provider_b, feed_b, key_b), "9391"
+    ).json()
+    assert original["binding_id"] == rebound["binding_id"]
+    assert original["feed_id"] != rebound["feed_id"]
+
+    def forbidden_extractor():
+        raise AssertionError("stale screenshot reached the image extractor")
+
+    before = db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count()
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            "app.routes.provider_sources.get_extractor", forbidden_extractor
+        )
+        stale = client.post(
+            "/provider-sources/telegram/extract",
+            params={"telegram_user_id": "9391", **_source_claim(original)},
+            files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+        )
+        assert stale.status_code == 409, stale.text
+
+        omitted = client.post(
+            "/provider-sources/telegram/extract",
+            params={"telegram_user_id": "9391"},
+            files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+        )
+        assert omitted.status_code == 422, omitted.text
+
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count() == before
+    accepted = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": "9391", **_source_claim(rebound)},
+        files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count() == before + 1
+
+
+
+def test_rebind_during_extraction_refuses_result_and_audit_postgresql(
+    client, db, monkeypatch
+):
+    """A separate PostgreSQL writer can rebind the source during extractor I/O."""
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from types import SimpleNamespace
+
+    from app.database import SessionLocal
+
+    provider_a, feed_a, key_a = _provider(db, "extract-inflight-a")
+    provider_b, feed_b, _key_b = _provider(db, "extract-inflight-b")
+    original = _connect(
+        client, _source_invite(client, provider_a, feed_a, key_a), "9392"
+    ).json()
+    calls = []
+
+    class RebindingExtractor:
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG
+            assert mime == "image/png"
+            # The route already resolved provider A. A separate transaction
+            # now rebinds the same Telegram source row before extraction ends.
+            with SessionLocal() as writer:
+                # Do not deadlock the suite if extraction accidentally holds
+                # a binding row lock while invoking this synchronous writer.
+                # A Python/pytest timeout cannot cancel a blocked DB query.
+                connection = writer.connection()
+                connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+                connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+                bound = writer.get(
+                    models.ProviderSourceBinding, original["binding_id"]
+                )
+                assert bound is not None
+                assert bound.provider_id == provider_a.id
+                bound.provider_id = provider_b.id
+                bound.feed_id = feed_b.id
+                writer.commit()
+            calls.append("rebound")
+            return SimpleNamespace(
+                raw_text=EUR_BUY, engine="offline-test",
+                readable=True, confidence="HIGH", notes="",
+            )
+
+    before = db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count()
+    monkeypatch.setattr(
+        "app.routes.provider_sources.get_extractor", lambda: RebindingExtractor()
+    )
+    refused = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": "9392", **_source_claim(original)},
+        files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert calls == ["rebound"], "Extraction never reached the in-flight rebind"
+    assert refused.status_code == 409, refused.text
+    db.expire_all()
+    bound = db.get(models.ProviderSourceBinding, original["binding_id"])
+    assert bound.provider_id == provider_b.id
+    assert bound.feed_id == feed_b.id
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count() == before, "Rebound source produced an extraction audit"
 
 
 def test_unbound_or_revoked_source_cannot_extract_create_or_broadcast(client, db):
@@ -289,6 +985,7 @@ def test_unbound_or_revoked_source_cannot_extract_create_or_broadcast(client, db
                     "telegram_user_id": "9209",
                     "raw_text": EUR_BUY,
                     "source_message_id": "1",
+                    **_source_claim({"binding_id": "ABSENT", "provider_id": "ABSENT", "feed_id": "ABSENT"}),
                 }
             },
         ),
@@ -324,6 +1021,7 @@ def test_unbound_or_revoked_source_cannot_extract_create_or_broadcast(client, db
             "telegram_user_id": "9210",
             "raw_text": EUR_BUY,
             "source_message_id": "1",
+            **_source_claim(connected),
         },
     )
     assert denied.status_code == 403
@@ -354,6 +1052,7 @@ def test_hosted_source_calls_require_bot_registration_secret(client, db):
                 "telegram_user_id": "9211",
                 "raw_text": EUR_BUY,
                 "source_message_id": "1",
+                **_source_claim(allowed.json()),
             },
         )
         assert no_secret.status_code == 401
@@ -363,6 +1062,7 @@ def test_hosted_source_calls_require_bot_registration_secret(client, db):
                 "telegram_user_id": "9211",
                 "raw_text": EUR_BUY,
                 "source_message_id": "1",
+                **_source_claim(allowed.json()),
             },
             headers={"X-Registration-API-Key": "r" * 40},
         )
