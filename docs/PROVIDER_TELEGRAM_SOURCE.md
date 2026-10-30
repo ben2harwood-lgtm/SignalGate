@@ -190,7 +190,8 @@ Offline coverage simulates source status at five minutes and persisted signal
 expiry at 23 minutes, plus fail-closed malformed receipts. The displayed
 card explicitly calls this the expiry window measured **from signal creation**,
 not an "expires in" countdown. Telegram transport or replay latency can reduce
-the remaining approval time. This is an\nisolated synthetic Telegram guard; no actual recipient delivery, MT5 broker-demo,
+the remaining approval time. This is an
+isolated synthetic Telegram guard; no actual recipient delivery, MT5 broker-demo,
 independent pentest or release acceptance is inferred.
 
 This is an offline-tested cross-tenant guard, **not** a guarantee of atomic
