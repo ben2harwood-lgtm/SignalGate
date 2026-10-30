@@ -2575,6 +2575,7 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
             )
             return {
                 "id": "SIG-A", "parser_status": "VALID", "status": "VALID",
+                "newly_created": True,
                 # Match the real SignalOut market fields: the new anti-spoof
                 # guard must not mask this source-rebinding regression.
                 "symbol": "EURUSD", "direction": "BUY", "entry_type": "MARKET",
