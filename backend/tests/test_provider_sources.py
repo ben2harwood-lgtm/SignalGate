@@ -456,6 +456,96 @@ def test_provider_source_concurrent_replay_freshness_postgresql(
         first_session.close()
 
 
+
+def test_provider_source_rolled_back_creator_allows_fresh_competitor_postgresql(
+    client, db
+):
+    """A failed creator must not suppress a competing, newly committed signal.
+
+    Two real database transactions must agree that only a durable insert earns
+    the fresh marker. The first worker inserts but aborts without committing;
+    the competing worker must insert successfully and remain broadcastable.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from app.database import SessionLocal
+
+    provider, feed, key = _provider(db, "source-rolled-back-creator")
+    invite = _source_invite(client, provider, feed, key)
+    binding = _connect(client, invite, "9373")
+    assert binding.status_code == 200, binding.text
+    args = {
+        "raw_text": EUR_BUY,
+        "source": f"TELEGRAM_BINDING:{binding.json()['binding_id']}",
+        "source_message_id": "9373:aborted-creator",
+        "provider_id": provider.id,
+        "feed_id": feed.id,
+    }
+    precheck_completed = Event()
+    first_session = SessionLocal()
+    try:
+        uncommitted, initially_fresh = crud.create_signal_with_freshness(
+            first_session, **args
+        )
+        assert initially_fresh is True
+        assert uncommitted.id
+
+        def competitor():
+            with SessionLocal() as second:
+                original_scalar = second.scalar
+
+                def observe_precheck(statement, *scalar_args, **scalar_kwargs):
+                    value = original_scalar(
+                        statement, *scalar_args, **scalar_kwargs
+                    )
+                    if (
+                        not precheck_completed.is_set()
+                        and "signals.source_message_id" in str(statement)
+                    ):
+                        assert value is None
+                        precheck_completed.set()
+                    return value
+
+                second.scalar = observe_precheck
+                created, fresh = crud.create_signal_with_freshness(
+                    second, **args
+                )
+                second.commit()
+                return created.id, fresh
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(competitor)
+            try:
+                assert precheck_completed.wait(timeout=10), (
+                    "Competing PostgreSQL creator did not reach precheck"
+                )
+            finally:
+                # Simulate process failure before its transaction commits.
+                # Unblock the competing insert even if the assertion fails.
+                first_session.rollback()
+            committed_id, committed_fresh = future.result(timeout=20)
+
+        assert committed_fresh is True
+        db.expire_all()
+        stored = db.query(models.Signal).filter(
+            models.Signal.source == f"FEED:{feed.id}:{args['source']}",
+            models.Signal.source_message_id == args["source_message_id"],
+        ).all()
+        assert len(stored) == 1
+        assert stored[0].id == committed_id
+        assert db.query(models.AuditLog).filter(
+            models.AuditLog.event_type == "SIGNAL_CREATED",
+            models.AuditLog.entity_id == committed_id,
+        ).count() == 1
+    finally:
+        first_session.rollback()
+        first_session.close()
+
+
 def test_bound_source_duplicate_replay_expires_stale_signal_once(client, db):
     """A replay must not renew or expose a VALID-looking expired ledger row."""
     provider, feed, key = _provider(db, "source-expiry-replay")
