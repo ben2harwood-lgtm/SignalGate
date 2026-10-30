@@ -161,11 +161,16 @@ extractor; a stale A snapshot after an A-to-B rebind receives HTTP 409 and a
 missing scope receives HTTP 422. Binding IDs are reused on rebind, so testing
 the ID alone would not protect tenant/feed policy. This stops the *initial*
 stale-request path from parsing an A screenshot under B's feed or recording an
-extraction audit for B. The read does not hold a lock across an image/model
-extraction; a mid-extraction rebind is **not** proven atomic. Preview
-confirmation and final signal creation independently recheck identity. Tests
-are synthetic FastAPI/offline-bot checks, not real Telegram delivery or MT5
-broker-demo acceptance.
+extraction audit for B. The initial read does not hold a lock across
+image/model I/O. After extraction returns, the backend expires its old ORM
+snapshot and rechecks the current binding, using PostgreSQL `FOR UPDATE` to
+serialize source changes until the extraction audit commits. An in-flight
+A-to-B rebind therefore refuses the result with HTTP 409 and records no
+extraction audit. This cannot undo image bytes already handed to an extractor
+before the rebind, or provide a PostgreSQL row-lock guarantee on SQLite.
+Preview confirmation and final signal creation independently recheck identity.
+Tests are synthetic FastAPI/offline-bot and PostgreSQL transaction checks,
+not real Telegram delivery or MT5 broker-demo acceptance.
 
 ## Broadcast recipient ownership and source rebinds (offline guard)
 

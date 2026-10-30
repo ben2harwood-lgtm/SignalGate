@@ -908,6 +908,68 @@ def test_rebind_refuses_stale_screenshot_scope_before_extraction(client, db, mon
     ).count() == before + 1
 
 
+
+def test_rebind_during_extraction_refuses_result_and_audit_postgresql(
+    client, db, monkeypatch
+):
+    """A separate PostgreSQL writer can rebind the source during extractor I/O."""
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from types import SimpleNamespace
+
+    from app.database import SessionLocal
+
+    provider_a, feed_a, key_a = _provider(db, "extract-inflight-a")
+    provider_b, feed_b, _key_b = _provider(db, "extract-inflight-b")
+    original = _connect(
+        client, _source_invite(client, provider_a, feed_a, key_a), "9392"
+    ).json()
+    calls = []
+
+    class RebindingExtractor:
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG
+            assert mime == "image/png"
+            # The route already resolved provider A. A separate transaction
+            # now rebinds the same Telegram source row before extraction ends.
+            with SessionLocal() as writer:
+                bound = writer.get(
+                    models.ProviderSourceBinding, original["binding_id"]
+                )
+                assert bound is not None
+                assert bound.provider_id == provider_a.id
+                bound.provider_id = provider_b.id
+                bound.feed_id = feed_b.id
+                writer.commit()
+            calls.append("rebound")
+            return SimpleNamespace(
+                raw_text=EUR_BUY, engine="offline-test",
+                readable=True, confidence="HIGH", notes="",
+            )
+
+    before = db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count()
+    monkeypatch.setattr(
+        "app.routes.provider_sources.get_extractor", lambda: RebindingExtractor()
+    )
+    refused = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": "9392", **_source_claim(original)},
+        files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert calls == ["rebound"], "Extraction never reached the in-flight rebind"
+    assert refused.status_code == 409, refused.text
+    db.expire_all()
+    bound = db.get(models.ProviderSourceBinding, original["binding_id"])
+    assert bound.provider_id == provider_b.id
+    assert bound.feed_id == feed_b.id
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count() == before, "Rebound source produced an extraction audit"
+
+
 def test_unbound_or_revoked_source_cannot_extract_create_or_broadcast(client, db):
     for path, kwargs in (
         (

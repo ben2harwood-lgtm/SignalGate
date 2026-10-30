@@ -296,6 +296,25 @@ def telegram_provider_source_extract(
         image_bytes,
         mime=file.content_type or "image/png",
     )
+    # An A-to-B source rebind may commit while image extraction is running.
+    # Avoid holding a database lock across extractor/model I/O. Re-read the
+    # authoritative binding after I/O, then serialize through the audit commit.
+    # Expiring the ORM identity map avoids reusing the pre-extraction snapshot.
+    db.expire_all()
+    current = crud.get_telegram_provider_source(
+        db, telegram_user_id, lock_for_update=True
+    )
+    if (
+        current is None
+        or current[0].id != expected_binding_id
+        or current[1].id != expected_provider_id
+        or current[2].id != expected_feed_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Telegram provider source changed; capture a new screenshot",
+        )
+    binding, provider, feed = current
     parsed = (
         parse_signal(
             extracted.raw_text,
