@@ -132,9 +132,11 @@ def _persisted_signal_expiry_minutes(signal: Dict[str, Any]) -> Optional[int]:
     minutes = round(seconds / 60)
     if not 1 <= minutes <= 1440 or abs(seconds - minutes * 60) > 5:
         return None
-    # A VALID status can outlive the actual persisted deadline (or arrive
-    # late from a replay). Never offer an already-expired YES/NO card.
-    if timestamps[1] <= dt.datetime.now(dt.timezone.utc):
+    # A VALID status is not authority to broadcast a stale or future-dated
+    # receipt. Permit minor backend/bot clock skew, but never let an
+    # implausibly future creation timestamp extend a human approval window.
+    now = dt.datetime.now(dt.timezone.utc)
+    if timestamps[0] > now + dt.timedelta(minutes=1) or timestamps[1] <= now:
         return None
     return minutes
 
