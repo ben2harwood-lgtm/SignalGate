@@ -195,7 +195,10 @@ expiry at 23 minutes, plus fail-closed malformed receipts. The displayed
 card explicitly calls this the expiry window measured **from signal creation**,
 not an "expires in" countdown. The bot rechecks the persisted deadline
 after recipient lookup and before each hosted subscriber send; if it expires
-mid-batch, further sends stop and the provider sees the count already submitted.
+mid-batch, further sends stop and the provider sees the number of
+Telegram API-acknowledged card submissions rather than a claim that messages
+were delivered. A zero count means no successful API acknowledgement; it does
+not establish that subscribers received nothing after a transport error.
 A Telegram send in progress may still complete after expiry: this is not an
 atomic revocation guarantee. Transport or replay latency can reduce the
 remaining approval time. A Telegram transport error does not prove that a

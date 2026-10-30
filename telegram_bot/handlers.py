@@ -1028,8 +1028,9 @@ async def _create_and_broadcast(
                 )
             return (
                 f"Signal {signal['id']} created, but its expiry could no longer "
-                f"be confirmed before further card delivery. Cards sent: {sent}; "
-                "check provider history."
+                f"be confirmed before further card delivery. Telegram accepted "
+                f"{sent} card submission(s); further sends stopped. Delivery "
+                "is not confirmed; check provider history before any manual resend."
             )
         try:
             await context.bot.send_message(

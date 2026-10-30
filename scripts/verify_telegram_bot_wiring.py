@@ -2131,7 +2131,9 @@ def check_broadcast_recipient_feed_binding() -> None:
             )
         assert deadline.call_count == 2
         assert len(lookups) == before + 1 and not sent
-        assert "cards sent: 0" in result.lower()
+        assert "telegram accepted 0 card submission(s)" in result.lower()
+        assert "further sends stopped" in result.lower()
+        assert "cards sent:" not in result.lower()
 
         # Also recheck each send within a multi-subscriber batch. A card
         # already submitted is reported accurately, but no next send begins.
@@ -2155,7 +2157,9 @@ def check_broadcast_recipient_feed_binding() -> None:
         assert len(sent) == 1 and sent[0] in (
             "900000000011", "900000000012"
         )
-        assert "cards sent: 1" in result.lower()
+        assert "telegram accepted 1 card submission(s)" in result.lower()
+        assert "further sends stopped" in result.lower()
+        assert "cards sent:" not in result.lower()
 
         # The backend may still say VALID after the persisted expiry passed.
         # A valid five-minute interval wholly in the past is not broadcastable.
