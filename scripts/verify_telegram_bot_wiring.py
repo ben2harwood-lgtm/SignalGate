@@ -8,6 +8,7 @@ any backend, broker, user account, internet access or real credentials.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import os
 from pathlib import Path
 import sys
@@ -1989,6 +1990,12 @@ def check_overlapping_screenshot_attempts_fail_closed() -> None:
 
 def check_broadcast_recipient_feed_binding() -> None:
     """A source rebind cannot send feed A's signal to feed B's recipients."""
+    created = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+
+    def at(minutes=0, seconds=0):
+        return (created + dt.timedelta(minutes=minutes, seconds=seconds)).isoformat(
+            timespec="microseconds"
+        )
     source = {
         "binding_id": "BINDING-A",
         "provider_id": "PROVIDER-A",
@@ -2000,8 +2007,8 @@ def check_broadcast_recipient_feed_binding() -> None:
         "parser_status": "VALID", "status": "VALID",
         "symbol": "XAUUSD", "direction": "BUY", "entry_type": "MARKET",
         "initial_stop_loss": 1.0, "tp1": 2.0,
-        "created_at": "2026-10-29T12:00:00.123456",
-        "expires_at": "2026-10-29T12:05:00.123456",
+        "created_at": at(),
+        "expires_at": at(5),
         "provider_id": "PROVIDER-A",
         "feed_id": "FEED-A",
         "source": "FEED:FEED-A:TELEGRAM_BINDING:BINDING-A",
@@ -2098,7 +2105,7 @@ def check_broadcast_recipient_feed_binding() -> None:
 
         # Stale status advertises 5 minutes; the persisted signal has 23.
         # No recipient may be shown the obsolete pre-creation duration.
-        response_signal = dict(signal, expires_at="2026-10-29T12:23:00.123456")
+        response_signal = dict(signal, expires_at=at(23))
         sent.clear()
         result = asyncio.run(
             handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
@@ -2107,13 +2114,24 @@ def check_broadcast_recipient_feed_binding() -> None:
         assert sent == ["900000000011"]
         assert rendered_expiries[-1] == 23
 
+        # The backend may still say VALID after the persisted expiry passed.
+        # A valid five-minute interval wholly in the past is not broadcastable.
+        response_signal = dict(signal, created_at=at(-7), expires_at=at(-2))
+        sent.clear()
+        before = len(lookups)
+        result = asyncio.run(
+            handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
+        )
+        assert not sent and len(lookups) == before
+        assert "expiry receipt could not be confirmed" in result.lower()
+
         invalid_expiry = (
             dict(signal, created_at=None),
             dict(signal, expires_at=None),
             dict(signal, created_at=True),
-            dict(signal, expires_at="2026-10-29T12:04:30.123456"),
-            dict(signal, expires_at="2026-10-29T12:00:00.123456"),
-            dict(signal, expires_at="2026-10-30T13:00:00.123456"),
+            dict(signal, expires_at=at(4, 30)),
+            dict(signal, expires_at=at()),
+            dict(signal, expires_at=at(1500)),
             dict(signal, expires_at="not a timestamp"),
             {k: v for k, v in signal.items() if k != "created_at"},
             {k: v for k, v in signal.items() if k != "expires_at"},
@@ -2247,6 +2265,7 @@ def check_broadcast_failure_logs_are_private() -> None:
     secret = "OFFLINE-TELEGRAM-BOT-TOKEN-NOT-FOR-LOGS"
     warnings = []
     sends = []
+    created = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
 
     async def source_status(_user_id):
         return {
@@ -2264,8 +2283,10 @@ def check_broadcast_failure_logs_are_private() -> None:
             "parser_status": "VALID", "status": "VALID",
             "symbol": "XAUUSD", "direction": "BUY", "entry_type": "MARKET",
             "initial_stop_loss": 1.0, "tp1": 2.0,
-            "created_at": "2026-10-29T12:00:00.123456",
-            "expires_at": "2026-10-29T12:05:00.123456",
+            "created_at": created.isoformat(timespec="microseconds"),
+            "expires_at": (created + dt.timedelta(minutes=5)).isoformat(
+                timespec="microseconds"
+            ),
             "provider_id": "PROVIDER-OFFLINE",
             "feed_id": "FEED-OFFLINE",
             "source": "FEED:FEED-OFFLINE:TELEGRAM_BINDING:BINDING-OFFLINE",
@@ -2414,6 +2435,7 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
     )
 
     async def exercise() -> None:
+        created = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
         source = dict(source_a)
         response_override = None
         source_reads = 0
@@ -2439,8 +2461,10 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
                 # guard must not mask this source-rebinding regression.
                 "symbol": "EURUSD", "direction": "BUY", "entry_type": "MARKET",
                 "initial_stop_loss": 1.05, "tp1": 1.07,
-                "created_at": "2026-10-29T12:00:00.123456",
-                "expires_at": "2026-10-29T12:05:00.123456",
+                "created_at": created.isoformat(timespec="microseconds"),
+                "expires_at": (created + dt.timedelta(minutes=5)).isoformat(
+                    timespec="microseconds"
+                ),
                 "provider_id": "PROVIDER-A", "feed_id": "FEED-A",
                 "source": "FEED:FEED-A:TELEGRAM_BINDING:BINDING-A",
             }

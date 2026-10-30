@@ -185,7 +185,9 @@ card expiry policy duration is derived from persisted signal `created_at` and
 `expires_at` (UTC ISO-8601), rather than the preceding source-status policy.
 An operator's expiry-policy update between status GET and signal creation POST
 therefore cannot make the bot show the stale policy duration. Missing, malformed,
-inconsistent or implausible timestamps refuse the card before recipient lookup.
+inconsistent, implausible or already-expired timestamps refuse the card before
+recipient lookup. The bot evaluates the persisted deadline against its UTC clock
+and fails closed on stale receipts; host clock synchronisation is required.
 Offline coverage simulates source status at five minutes and persisted signal
 expiry at 23 minutes, plus fail-closed malformed receipts. The displayed
 card explicitly calls this the expiry window measured **from signal creation**,

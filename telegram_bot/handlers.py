@@ -132,6 +132,10 @@ def _persisted_signal_expiry_minutes(signal: Dict[str, Any]) -> Optional[int]:
     minutes = round(seconds / 60)
     if not 1 <= minutes <= 1440 or abs(seconds - minutes * 60) > 5:
         return None
+    # A VALID status can outlive the actual persisted deadline (or arrive
+    # late from a replay). Never offer an already-expired YES/NO card.
+    if timestamps[1] <= dt.datetime.now(dt.timezone.utc):
+        return None
     return minutes
 
 
