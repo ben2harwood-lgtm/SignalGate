@@ -1011,6 +1011,15 @@ async def _create_and_broadcast(
         )
     sent = 0
     for recipient_chat_id in recipients:
+        # Recipient lookup and Telegram sends are awaited: the persisted
+        # expiry can elapse after our pre-lookup check. Refuse to start each
+        # subsequent hosted send once that original deadline has passed.
+        if source and _persisted_signal_expiry_minutes(signal) is None:
+            return (
+                f"Signal {signal['id']} created, but its expiry could no longer "
+                f"be confirmed before further card delivery. Cards sent: {sent}; "
+                "check provider history."
+            )
         try:
             await context.bot.send_message(
                 chat_id=recipient_chat_id,
