@@ -2027,7 +2027,11 @@ def check_broadcast_recipient_feed_binding() -> None:
     async def source_status(_user_id):
         return source
 
-    async def post(_path, **_kwargs):
+    async def post(_path, **kwargs):
+        claim = kwargs["json"]
+        assert {k: claim["expected_" + k] for k in ("binding_id", "provider_id", "feed_id")} == {
+            k: source[k] for k in ("binding_id", "provider_id", "feed_id")
+        }, "Hosted signal creation must bind the original source snapshot"
         return response_signal
 
     async def get(path, **_kwargs):
