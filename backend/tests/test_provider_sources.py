@@ -833,12 +833,12 @@ def test_bound_source_extract_uses_feed_allowlist(client, db):
     crud.update_feed_policy(db, feed, {"allowed_symbols": ["EURUSD"]})
     db.commit()
     invite = _source_invite(client, provider, feed, key)
-    _connect(client, invite, "9208")
+    connected = _connect(client, invite, "9208").json()
 
     os.environ.pop("FAKE_EXTRACTOR_TEXT", None)
     rejected = client.post(
         "/provider-sources/telegram/extract",
-        params={"telegram_user_id": "9208"},
+        params={"telegram_user_id": "9208", **_source_claim(connected)},
         files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
     )
     assert rejected.status_code == 200
@@ -850,11 +850,62 @@ def test_bound_source_extract_uses_feed_allowlist(client, db):
     db.commit()
     accepted = client.post(
         "/provider-sources/telegram/extract",
-        params={"telegram_user_id": "9208"},
+        params={"telegram_user_id": "9208", **_source_claim(connected)},
         files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
     )
     assert accepted.status_code == 200
     assert accepted.json()["parser_status"] == "VALID"
+
+
+def test_rebind_refuses_stale_screenshot_scope_before_extraction(client, db, monkeypatch):
+    """Do not parse source A's private image using a rebound provider B feed."""
+    provider_a, feed_a, key_a = _provider(db, "image-rebind-a")
+    provider_b, feed_b, key_b = _provider(db, "image-rebind-b")
+    original = _connect(
+        client, _source_invite(client, provider_a, feed_a, key_a), "9391"
+    ).json()
+    rebound = _connect(
+        client, _source_invite(client, provider_b, feed_b, key_b), "9391"
+    ).json()
+    assert original["binding_id"] == rebound["binding_id"]
+    assert original["feed_id"] != rebound["feed_id"]
+
+    def forbidden_extractor():
+        raise AssertionError("stale screenshot reached the image extractor")
+
+    before = db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count()
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            "app.routes.provider_sources.get_extractor", forbidden_extractor
+        )
+        stale = client.post(
+            "/provider-sources/telegram/extract",
+            params={"telegram_user_id": "9391", **_source_claim(original)},
+            files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+        )
+        assert stale.status_code == 409, stale.text
+
+        omitted = client.post(
+            "/provider-sources/telegram/extract",
+            params={"telegram_user_id": "9391"},
+            files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+        )
+        assert omitted.status_code == 422, omitted.text
+
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count() == before
+    accepted = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": "9391", **_source_claim(rebound)},
+        files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count() == before + 1
 
 
 def test_unbound_or_revoked_source_cannot_extract_create_or_broadcast(client, db):

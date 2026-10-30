@@ -1326,9 +1326,21 @@ async def _preview_screenshot(
     ):
         return
     if source:
+        scope = _source_scope(source)
+        if scope is None:
+            _clear_pending_screenshot_preview(context)
+            await update.message.reply_text(
+                "Provider source could not be verified. Nothing was extracted."
+            )
+            return
         url = f"{config.backend_base_url}/provider-sources/telegram/extract"
         headers = _registration_headers()
-        params = {"telegram_user_id": str(user_id)}
+        # The backend must reject a stale A snapshot after an A-to-B rebind,
+        # before processing A's private screenshot using B's feed policy.
+        params = {
+            "telegram_user_id": str(user_id),
+            **{f"expected_{field}": value for field, value in scope.items()},
+        }
     else:
         if config.require_license:
             # The earlier photo permission check is not authority after a

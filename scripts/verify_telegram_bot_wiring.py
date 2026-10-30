@@ -2552,9 +2552,19 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
         "tp1": 1.07, "confidence": "HIGH", "engine": "offline",
     }
     original_client = httpx.AsyncClient
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(200, json=extracted)
-    )
+
+    def extract_from_original_scope(request):
+        assert request.method == "POST"
+        assert request.url.path == "/provider-sources/telegram/extract"
+        assert dict(request.url.params) == {
+            "telegram_user_id": "123456",
+            "expected_binding_id": "BINDING-A",
+            "expected_provider_id": "PROVIDER-A",
+            "expected_feed_id": "FEED-A",
+        }, "Bot failed to pin screenshot extraction to its source snapshot"
+        return httpx.Response(200, json=extracted)
+
+    transport = httpx.MockTransport(extract_from_original_scope)
 
     async def exercise() -> None:
         created = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)

@@ -152,6 +152,21 @@ pending tokens; the private candidate stays available for a private correction.
 The protection has synthetic offline positive/negative coverage, not real
 Telegram delivery or external acceptance evidence.
 
+## Screenshot extraction source snapshot (offline guard)
+
+Hosted screenshot extraction sends the bot's expected binding/provider/feed identity
+along with the Telegram user ID. The backend compares **all three** against
+its current authenticated source binding **before** invoking the image
+extractor; a stale A snapshot after an A-to-B rebind receives HTTP 409 and a
+missing scope receives HTTP 422. Binding IDs are reused on rebind, so testing
+the ID alone would not protect tenant/feed policy. This stops the *initial*
+stale-request path from parsing an A screenshot under B's feed or recording an
+extraction audit for B. The read does not hold a lock across an image/model
+extraction; a mid-extraction rebind is **not** proven atomic. Preview
+confirmation and final signal creation independently recheck identity. Tests
+are synthetic FastAPI/offline-bot checks, not real Telegram delivery or MT5
+broker-demo acceptance.
+
 ## Broadcast recipient ownership and source rebinds (offline guard)
 
 Signal creation returns a persisted provider/feed/source identity and a

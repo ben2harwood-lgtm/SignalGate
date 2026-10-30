@@ -255,6 +255,9 @@ def telegram_provider_source_status(
 )
 def telegram_provider_source_extract(
     telegram_user_id: str,
+    expected_binding_id: str,
+    expected_provider_id: str,
+    expected_feed_id: str,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     _bot: str = Depends(require_registration),
@@ -263,6 +266,18 @@ def telegram_provider_source_extract(
     if resolved is None:
         raise HTTPException(status_code=403, detail="Telegram provider source not connected")
     binding, provider, feed = resolved
+    # The bot's earlier status may have belonged to another tenant. Refuse
+    # stale screenshots BEFORE invoking the extractor or recording its audit.
+    # A rebinding reuses the binding ID, so compare provider and feed too.
+    if (
+        expected_binding_id != binding.id
+        or expected_provider_id != provider.id
+        or expected_feed_id != feed.id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Telegram provider source changed; capture a new screenshot",
+        )
 
     if not (file.content_type or "").startswith("image/"):
         raise HTTPException(
