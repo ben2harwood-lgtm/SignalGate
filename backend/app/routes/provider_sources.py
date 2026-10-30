@@ -347,7 +347,12 @@ def telegram_provider_source_signal(
     db: Session = Depends(get_db),
     _bot: str = Depends(require_registration),
 ) -> ProviderSourceSignalOut:
-    resolved = crud.get_telegram_provider_source(db, payload.telegram_user_id)
+    # Hold a PostgreSQL binding-row lock through signal creation/commit.
+    # Otherwise a rebind after the expected-scope check could still persist
+    # the prior source's private raw text under a newly bound tenant.
+    resolved = crud.get_telegram_provider_source(
+        db, payload.telegram_user_id, lock_for_update=True
+    )
     if resolved is None:
         raise HTTPException(status_code=403, detail="Telegram provider source not connected")
     binding, provider, feed = resolved

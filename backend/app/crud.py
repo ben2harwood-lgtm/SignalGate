@@ -499,14 +499,20 @@ def connect_telegram_provider_source(
 def get_telegram_provider_source(
     db: Session,
     telegram_user_id: str,
+    *,
+    lock_for_update: bool = False,
 ) -> Optional[tuple[models.ProviderSourceBinding, models.Provider, models.Feed]]:
-    binding = db.scalar(
-        select(models.ProviderSourceBinding).where(
-            models.ProviderSourceBinding.source_type == "TELEGRAM",
-            models.ProviderSourceBinding.external_identity == str(telegram_user_id),
-            models.ProviderSourceBinding.status == "ACTIVE",
-        )
+    binding_query = select(models.ProviderSourceBinding).where(
+        models.ProviderSourceBinding.source_type == "TELEGRAM",
+        models.ProviderSourceBinding.external_identity == str(telegram_user_id),
+        models.ProviderSourceBinding.status == "ACTIVE",
     )
+    # Only signal creation pins the active source row until its commit.
+    # PostgreSQL SELECT FOR UPDATE serializes a concurrent source rebind,
+    # preventing a stale A->B snapshot between scope validation and insert.
+    if lock_for_update and db.get_bind().dialect.name == "postgresql":
+        binding_query = binding_query.with_for_update()
+    binding = db.scalar(binding_query)
     if binding is None:
         return None
     provider = db.get(models.Provider, binding.provider_id)

@@ -168,8 +168,14 @@ The hosted route also requires the bot's exact expected `binding_id`,
 three with the authoritative current binding **before** creating a signal.
 A source A-to-B rebind during the bot/backend request must not persist source
 A's private text under tenant B, even if subsequent card checks would refuse
-broadcast. Omitted or stale expected scope fails closed; this is not authority
-to bypass backend bot authentication and does not remove mid-transaction races.
+broadcast. Omitted or stale expected scope fails closed. On PostgreSQL the
+signal-creation route additionally locks the binding row until the database
+transaction completes: a concurrent rebind waits for the old signal commit,
+or, if it committed first, the new scope is seen and the stale claim rejected.
+A separate two-session PostgreSQL lock regression proves this serialization;
+SQLite cannot establish equivalent row-lock behavior. This is not authority
+to bypass backend bot authentication, nor does it make Telegram delivery
+or subscriber revocation atomic.
 The hosted route requires a nonempty stable `source_message_id` to prevent
 the caller from defeating replay identity by omitting it.
 Before broadcasting subscriber cards, the bot checks that identity against the

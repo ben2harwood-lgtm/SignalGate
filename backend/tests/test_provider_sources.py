@@ -280,6 +280,79 @@ def test_rebind_refuses_stale_source_claim_before_cross_tenant_signal_write(clie
     assert db.query(models.Signal).count() == 1
 
 
+def test_hosted_signal_post_pins_source_binding(client, db, monkeypatch):
+    """The write route must request a locked source snapshot, not a plain GET."""
+    provider, feed, key = _provider(db, "source-post-lock")
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), "9381"
+    )
+    assert connected.status_code == 200, connected.text
+    observed = []
+    original = crud.get_telegram_provider_source
+
+    def checked_source(session, telegram_user_id, **options):
+        observed.append(options.get("lock_for_update"))
+        return original(session, telegram_user_id, **options)
+
+    monkeypatch.setattr(crud, "get_telegram_provider_source", checked_source)
+    submitted = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": "9381",
+            "raw_text": EUR_BUY,
+            "source_message_id": "9381:lock-contract",
+            **_source_claim(connected.json()),
+        },
+    )
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["newly_created"] is True
+    assert observed == [True]
+
+
+def test_source_binding_lock_serializes_postgresql_rebind(client, db):
+    """A competing source rebind must wait until the signal transaction ends."""
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("PostgreSQL row-level lock proof")
+
+    from sqlalchemy import update
+    from sqlalchemy.exc import DBAPIError
+
+    from app.database import SessionLocal
+
+    provider, feed, key = _provider(db, "source-lock-rebind")
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), "9382"
+    )
+    assert connected.status_code == 200, connected.text
+    binding_id = connected.json()["binding_id"]
+    statement = (
+        update(models.ProviderSourceBinding)
+        .where(models.ProviderSourceBinding.id == binding_id)
+        .values(status="REVOKED")
+    )
+    with SessionLocal() as creator:
+        source = crud.get_telegram_provider_source(
+            creator, "9382", lock_for_update=True
+        )
+        assert source is not None and source[0].id == binding_id
+        with SessionLocal() as rebind:
+            rebind.connection().exec_driver_sql(
+                "SET LOCAL lock_timeout = '1500ms'"
+            )
+            with pytest.raises(DBAPIError) as blocked:
+                rebind.execute(statement)
+            assert getattr(blocked.value.orig, "pgcode", None) == "55P03"
+            rebind.rollback()
+        creator.commit()
+
+    # Once the source-creation transaction commits, a rebind can proceed.
+    # Roll it back so this test never leaves a revoked source behind.
+    with SessionLocal() as rebind:
+        rebind.execute(statement)
+        rebind.rollback()
+    assert crud.get_telegram_provider_source(db, "9382") is not None
+
+
 def test_bound_source_signal_uses_tenant_feed_policy_and_replay_identity(client, db):
     provider, feed, key = _provider(db, "source-policy")
     crud.update_feed_policy(
