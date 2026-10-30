@@ -198,7 +198,13 @@ after recipient lookup and before each hosted subscriber send; if it expires
 mid-batch, further sends stop and the provider sees the count already submitted.
 A Telegram send in progress may still complete after expiry: this is not an
 atomic revocation guarantee. Transport or replay latency can reduce the
-remaining approval time. This is an isolated synthetic Telegram guard; no actual recipient delivery, MT5 broker-demo,
+remaining approval time. A Telegram transport error does not prove that a
+subscriber card was not accepted: the bot does not automatically retry, and
+its provider summary distinguishes API-accepted card submissions from
+unconfirmed attempts, including expiry-interrupted batches. Operators must
+confirm uncertain delivery with affected subscribers before manually resending.
+Counts are not proof of actual Telegram delivery.
+This is an isolated synthetic Telegram guard; no actual recipient delivery, MT5 broker-demo,
 independent pentest or release acceptance is inferred.
 
 This is an offline-tested cross-tenant guard, **not** a guarantee of atomic

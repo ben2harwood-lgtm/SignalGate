@@ -1010,11 +1010,22 @@ async def _create_and_broadcast(
             "confirmed. No subscriber card was sent; check provider history."
         )
     sent = 0
+    # A send_message exception can arrive after Telegram accepted the card.
+    # Treat these as unknown outcomes, not proof of non-delivery.
+    uncertain = 0
     for recipient_chat_id in recipients:
         # Recipient lookup and Telegram sends are awaited: the persisted
         # expiry can elapse after our pre-lookup check. Refuse to start each
         # subsequent hosted send once that original deadline has passed.
         if source and _persisted_signal_expiry_minutes(signal) is None:
+            if uncertain:
+                return (
+                    f"Signal {signal['id']} created, but its expiry could no longer "
+                    "be confirmed before further card delivery. "
+                    f"Telegram accepted {sent} card submission(s); "
+                    f"{uncertain} send attempt(s) have an unknown delivery outcome. "
+                    "Further sends stopped. Check with subscribers before any resend."
+                )
             return (
                 f"Signal {signal['id']} created, but its expiry could no longer "
                 f"be confirmed before further card delivery. Cards sent: {sent}; "
@@ -1028,9 +1039,17 @@ async def _create_and_broadcast(
             )
             sent += 1
         except Exception as exc:  # noqa: BLE001
+            uncertain += 1
             # Telegram transport exceptions can contain bot-token URLs and
             # recipient chat IDs. Log only the safe exception class.
             logger.warning("send card failed: %s", type(exc).__name__)
+    if uncertain:
+        return (
+            f"Signal {signal['id']} created. Telegram accepted {sent} card "
+            f"submission(s); {uncertain} send attempt(s) have unknown outcomes. "
+            "An error does not prove non-delivery. Check with affected subscribers "
+            "before any manual resend; no automatic retry was attempted."
+        )
     return f"Signal {signal['id']} created and card sent to {sent} subscriber(s)."
 
 

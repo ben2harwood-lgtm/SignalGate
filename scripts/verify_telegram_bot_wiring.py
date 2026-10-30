@@ -2374,12 +2374,36 @@ def check_broadcast_failure_logs_are_private() -> None:
         summary = asyncio.run(
             handlers._create_and_broadcast(update, context, "XAUUSD BUY SL 1 TP1 2")
         )
+        assert sends == [failed_chat, good_chat], (
+            "An unconfirmed send must not trigger a blind retry or block another recipient"
+        )
+        assert "telegram accepted 1 card submission(s)" in summary.lower()
+        assert "1 send attempt(s) have unknown outcomes" in summary.lower()
+        assert "no automatic retry was attempted" in summary.lower()
+        assert "card sent to 1 subscriber(s)" not in summary.lower()
 
-    assert sends == [failed_chat, good_chat], "One failed send stopped the next recipient"
-    assert summary == "Signal SIG-OFFLINE created and card sent to 1 subscriber(s)."
-    assert warnings == ["send card failed: RuntimeError"], (
+        # Expiry after an ambiguous first send must not falsely claim that no
+        # subscriber received a card; no second send starts after expiry.
+        sends.clear()
+        with patch.object(
+            handlers, "_persisted_signal_expiry_minutes",
+            side_effect=[5, 5, None],
+        ) as deadline:
+            expired = asyncio.run(
+                handlers._create_and_broadcast(
+                    update, context, "XAUUSD BUY SL 1 TP1 2"
+                )
+            )
+        assert deadline.call_count == 3
+        assert sends == [failed_chat]
+        assert "telegram accepted 0 card submission(s)" in expired.lower()
+        assert "1 send attempt(s) have an unknown delivery outcome" in expired.lower()
+        assert "further sends stopped" in expired.lower()
+    assert warnings == ["send card failed: RuntimeError"] * 2, (
         "A transport error leaked Telegram recipient or exception details"
     )
+    assert secret not in summary and secret not in expired
+    assert failed_chat not in summary and failed_chat not in expired
     assert all(secret not in item for item in warnings)
     assert all(failed_chat not in item and good_chat not in item for item in warnings)
 
