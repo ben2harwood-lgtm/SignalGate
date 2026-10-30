@@ -1938,7 +1938,11 @@ def check_overlapping_screenshot_attempts_fail_closed() -> None:
             if asyncio.current_task().get_name() == "old-extraction":
                 entered.set()
                 await release.wait()
-            return {"feed_id": "OFFLINE"}
+            return {
+                "binding_id": "BINDING-OFFLINE",
+                "provider_id": "PROVIDER-OFFLINE",
+                "feed_id": "OFFLINE",
+            }
 
         async def reply_text(text, **_kwargs):
             replies.append(text)
@@ -1952,6 +1956,12 @@ def check_overlapping_screenshot_attempts_fail_closed() -> None:
 
         def respond(request):
             requests.append(request.url.path)
+            assert dict(request.url.params) == {
+                "telegram_user_id": "12345",
+                "expected_binding_id": "BINDING-OFFLINE",
+                "expected_provider_id": "PROVIDER-OFFLINE",
+                "expected_feed_id": "OFFLINE",
+            }, "Delayed screenshot extraction lost its source snapshot"
             return httpx.Response(
                 200, json={
                     "parser_status": "VALID",
