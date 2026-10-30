@@ -188,8 +188,9 @@ therefore cannot make the bot show the stale policy duration. Missing, malformed
 inconsistent or implausible timestamps refuse the card before recipient lookup.
 Offline coverage simulates source status at five minutes and persisted signal
 expiry at 23 minutes, plus fail-closed malformed receipts. The displayed
-duration is not a real-time remaining-duration guarantee on replay. This is an
-isolated synthetic Telegram guard; no actual recipient delivery, MT5 broker-demo,
+card explicitly calls this the expiry window measured **from signal creation**,
+not an "expires in" countdown. Telegram transport or replay latency can reduce
+the remaining approval time. This is an\nisolated synthetic Telegram guard; no actual recipient delivery, MT5 broker-demo,
 independent pentest or release acceptance is inferred.
 
 This is an offline-tested cross-tenant guard, **not** a guarantee of atomic
