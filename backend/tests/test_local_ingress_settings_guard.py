@@ -196,7 +196,7 @@ def test_hosted_demo_accepts_valid_https_base_url_without_connecting(
         ("ea_api_key", "admin_api_key", ""),
         ("ea_api_key", "registration_api_key", ""),
         ("admin_api_key", "registration_api_key", ""),
-        ("ea_api_key", "admin_api_key", " \\t"),
+        ("ea_api_key", "admin_api_key", " \t"),
     ],
 )
 def test_hosted_demo_rejects_reused_service_secrets_without_leaking_values(
