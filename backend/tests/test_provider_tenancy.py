@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from app import crud, models, security
 
-from .conftest import register_user
+from .conftest import ADMIN_HEADERS, register_user
 
 VALID = "XAUUSD BUY SL 2343 TP1 2353"
 
@@ -216,7 +216,7 @@ def test_provider_recipient_lookup_omits_group_and_invalid_chat_ids(client, db):
         security.settings.require_license = False
 
     # Local-demo fallback also supplies the same allowlisted private-user IDs.
-    local_reply = client.get("/signals/recipients")
+    local_reply = client.get("/signals/recipients", headers=ADMIN_HEADERS)
     assert local_reply.status_code == 200, local_reply.text
     assert [r["telegram_user_id"] for r in local_reply.json()["recipients"]] == [
         allowed["telegram_user_id"]
