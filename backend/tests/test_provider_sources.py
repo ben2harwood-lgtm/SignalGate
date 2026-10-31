@@ -121,6 +121,7 @@ def test_source_invite_concurrent_claim_or_revoke_postgresql(
     from threading import Event
     from time import sleep
 
+    from sqlalchemy import event
     from app.database import SessionLocal
 
     provider, feed, key = _provider(db, f"source-once-{competing_action}")
@@ -128,7 +129,8 @@ def test_source_invite_concurrent_claim_or_revoke_postgresql(
     invite = _source_invite(client, provider, feed, key)
     invite_id = invite["invite_id"]
     token = invite["connection_token"]
-    worker_ready = Event()
+    invite_read_started = Event()
+    invite_read_finished = Event()
 
     def competitor():
         with SessionLocal() as second:
@@ -137,7 +139,21 @@ def test_source_invite_concurrent_claim_or_revoke_postgresql(
             connection = second.connection()
             connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
             connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
-            worker_ready.set()
+
+            def observe_sql(_conn, _cursor, statement, _params, _ctx, _many):
+                if "FROM provider_source_invites" in statement:
+                    invite_read_started.set()
+
+            event.listen(connection, "before_cursor_execute", observe_sql)
+            original_scalar = second.scalar
+
+            def observe_scalar(statement, *args, **kwargs):
+                value = original_scalar(statement, *args, **kwargs)
+                if "provider_source_invites" in str(statement):
+                    invite_read_finished.set()
+                return value
+
+            second.scalar = observe_scalar
             try:
                 if competing_action == "connect":
                     crud.connect_telegram_provider_source(second, token, "98002")
@@ -156,14 +172,20 @@ def test_source_invite_concurrent_claim_or_revoke_postgresql(
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(competitor)
             try:
-                assert worker_ready.wait(timeout=5)
-                # Let the competing transaction reach the invite read before
-                # releasing the first one. Both writes ultimately commit only
-                # in the vulnerable implementation.
+                assert invite_read_started.wait(timeout=5), (
+                    "Competing PostgreSQL transaction did not reach invite SELECT"
+                )
+                # A missing FOR UPDATE lets the second worker read PENDING
+                # before the first commit, even if a later UPDATE/audit blocks.
+                # Prove that the invite SELECT itself is held by our row lock.
                 sleep(0.2)
+                assert not invite_read_finished.is_set(), (
+                    "Competing invite read escaped the uncommitted row lock"
+                )
             finally:
                 first.commit()
             outcome = future.result(timeout=18)
+            assert invite_read_finished.is_set()
 
     expected = (
         "Source invite is no longer active"
