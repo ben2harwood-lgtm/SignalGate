@@ -208,6 +208,92 @@ def test_source_invite_concurrent_claim_or_revoke_postgresql(
         assert bindings[0].external_identity == "98001"
 
 
+def test_distinct_invites_first_binding_serializes_postgresql(client, db):
+    """Two provider invites cannot concurrently INSERT the same new source.
+
+    The unique constraint prevents duplicate committed rows but does not
+    serialize the first, previously absent identity. Both valid invitations
+    should complete without an unhandled integrity error. No broker is used.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from time import sleep
+
+    from sqlalchemy import event
+    from app.database import SessionLocal
+
+    first_provider, first_feed, first_key = _provider(db, "first-new-identity")
+    next_provider, next_feed, next_key = _provider(db, "second-new-identity")
+    first_invite = _source_invite(client, first_provider, first_feed, first_key)
+    next_invite = _source_invite(client, next_provider, next_feed, next_key)
+    first_invite_id, next_invite_id = first_invite["invite_id"], next_invite["invite_id"]
+    next_provider_id = next_provider.id
+    identity = "98004"
+    lock_started, lock_finished = Event(), Event()
+
+    def competing_first_binding():
+        with SessionLocal() as second:
+            connection = second.connection()
+            connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+
+            def before_sql(_conn, _cursor, statement, _params, _ctx, _many):
+                if "pg_advisory_xact_lock" in statement:
+                    lock_started.set()
+
+            def after_sql(_conn, _cursor, statement, _params, _ctx, _many):
+                if "pg_advisory_xact_lock" in statement:
+                    lock_finished.set()
+
+            event.listen(connection, "before_cursor_execute", before_sql)
+            event.listen(connection, "after_cursor_execute", after_sql)
+            crud.connect_telegram_provider_source(
+                second, next_invite["connection_token"], identity
+            )
+            second.commit()
+            return "ACCEPTED"
+
+    with SessionLocal() as first:
+        crud.connect_telegram_provider_source(
+            first, first_invite["connection_token"], identity
+        )
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(competing_first_binding)
+            try:
+                assert lock_started.wait(timeout=5), (
+                    "Competing first-bind did not attempt the identity lock"
+                )
+                sleep(0.2)
+                assert not lock_finished.is_set(), (
+                    "Second first-bind escaped the uncommitted source-identity lock"
+                )
+            finally:
+                first.commit()
+            assert future.result(timeout=18) == "ACCEPTED"
+
+    assert lock_finished.is_set()
+    with SessionLocal() as check:
+        first_stored = check.get(models.ProviderSourceInvite, first_invite_id)
+        next_stored = check.get(models.ProviderSourceInvite, next_invite_id)
+        assert first_stored.status == next_stored.status == "ACCEPTED"
+        assert first_stored.accepted_telegram_user_id == identity
+        assert next_stored.accepted_telegram_user_id == identity
+        bindings = check.query(models.ProviderSourceBinding).filter(
+            models.ProviderSourceBinding.source_type == "TELEGRAM",
+            models.ProviderSourceBinding.external_identity == identity,
+        ).all()
+        assert len(bindings) == 1
+        assert bindings[0].provider_id == next_provider_id
+        assert bindings[0].status == "ACTIVE"
+        assert check.query(models.AuditLog).filter(
+            models.AuditLog.entity_id == bindings[0].id,
+            models.AuditLog.event_type == "PROVIDER_SOURCE_CONNECTED",
+        ).count() == 2
+
+
 def test_rebind_blocks_stale_provider_revocation_postgresql(client, db):
     """A previously owning provider cannot revoke a newly rebound source.
 
