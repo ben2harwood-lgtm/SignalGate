@@ -190,10 +190,14 @@ def test_provider_recipient_lookup_omits_group_and_invalid_chat_ids(client, db):
         "0", "045", "4503599627370496",  # zero, padded, beyond 52-bit bound
         "12345678901234567", "１２３４",  # too long, non-ASCII digits
     )
-    for idx, chat_id in enumerate((allowed["telegram_user_id"], *invalid_ids)):
-        row = allowed if idx == 0 else register_user(
-            client, chat_id, f"invalid_private_{idx}", "Invalid"
-        )
+    # Registration uses a separate TestClient DB session. Complete all HTTP
+    # writes before opening the fixture session's subscription transaction,
+    # otherwise SQLite reports a fixture-induced "database is locked".
+    users = [allowed] + [
+        register_user(client, chat_id, f"invalid_private_{idx}", "Invalid")
+        for idx, chat_id in enumerate(invalid_ids, start=1)
+    ]
+    for row in users:
         crud.subscribe_user_to_feed(db, provider, feed, db.get(models.User, row["id"]))
     db.commit()
 
