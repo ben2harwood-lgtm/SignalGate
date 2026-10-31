@@ -25,9 +25,39 @@ python ../scripts/init_db.py          # create tables + seed settings
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+**Local identity-header authentication is loopback-only by configuration.** When
+`REQUIRE_LICENSE=false`, startup now refuses explicitly non-loopback
+`BACKEND_HOST` or `BACKEND_BASE_URL` values, including public domains and
+all-interface binds. Keep both pointed at `127.0.0.1`, `::1` or `localhost`.
+This remains a **partial** issue #108 defence. In addition to
+configuration checks, local-demo HTTP requests are now refused before route
+dispatch unless the actual ASGI-bound server address **and** request `Host`
+are both loopback. This catches a direct `uvicorn --host 0.0.0.0` override
+and ordinary reverse proxies retaining the public `Host`, even if
+`BACKEND_HOST` was configured safely. TestClient checks are **synthetic** and
+do not prove real listener or proxy isolation.
+
+**Never publish the local identity-header API externally.** A reverse proxy
+that rewrites `Host` to loopback can still conceal its public exposure; custom
+ASGI servers may not supply a trusted bound address. Use the separate licensed
+HTTPS/PostgreSQL configuration for a controlled hosted demo only after
+independent ingress/security and other external gate acceptance. No MT5 broker,
+customer, production or live trading acceptance is inferred.
+
 Check it: open http://127.0.0.1:8000/health → should show
 `{"status":"ok","demo_only_mode":true,"admin_paused":false}`.
 Interactive API docs: http://127.0.0.1:8000/docs
+
+**Database bootstrap safety:** `scripts/init_db.py` and
+`scripts/seed_settings.py` preflight the current configuration **before
+importing the database engine**. With `REQUIRE_LICENSE=false`, they refuse
+PostgreSQL (`postgres://` or `postgresql://`), non-file SQLite, and
+`DEMO_ONLY_MODE=false`; they accept only file-backed local SQLite.
+A correctly configured `REQUIRE_LICENSE=true` hosted invocation still checks
+the current Alembic migration state before seeding. Neither script is a hosted
+schema migration tool; use the reviewed Alembic process for hosted upgrades.
+
+This is a **partial** mitigation of [issue #108](https://github.com/ben2harwood-lgtm/SignalGate/issues/108), alongside the separately proposed direct `init_db()` guard (#125) and local HTTP ingress refusal (#126). These checks do **not** prove reverse-proxy/public-network isolation or external acceptance. Retain `REQUIRE_LICENSE=false` only on an actually private loopback demo.
 
 ## 2. Telegram bot (Terminal 2)
 
@@ -76,4 +106,8 @@ python -m pytest -q
 
 - `scripts/init_db.py` — create tables + seed settings.
 - `scripts/seed_settings.py` — (re)seed default settings only.
-- `scripts/reset_local_db.py` — drop everything and recreate (LOCAL ONLY).
+- `scripts/reset_local_db.py` — **destructive LOCAL demo reset only**. Stop the local backend and bot first, then run from `backend/`:
+  ```bash
+  python ../scripts/reset_local_db.py --confirm-local-demo-reset
+  ```
+  Even with the explicit confirmation flag, reset refuses hosted/licensed or non-demo mode, PostgreSQL, memory/URI SQLite, alternate paths, driver-normalized symbolic-link aliases, multiply linked/non-regular database files, shared-writable target directories (POSIX), and previously imported/cached database engines. Launch in a fresh CLI process from an operator-owned private checkout. This is a guard against common local aliases, **not a guarantee against concurrent path replacement by a process running as the same OS user**; do not reset untrusted or customer databases. Never use this as a migration/backup substitute or public ingress/MT5/external acceptance proof.

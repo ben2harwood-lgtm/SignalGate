@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Generator
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings, sqlalchemy_driver_url
@@ -76,9 +78,29 @@ def init_db() -> None:
     Hosted mode never calls create_all(). It refuses to start unless PostgreSQL
     is already at the single reviewed Alembic head.
     """
-    from . import models  # noqa: F401
-
     if settings.require_license:
         _assert_hosted_schema_current()
         return
+
+    # The local identity-header mode must never create an unversioned schema
+    # on PostgreSQL, even when init_db() is called directly outside the
+    # FastAPI lifespan or the separately guarded bootstrap CLIs.
+    # Check the already-created engine as well as configured settings so
+    # configuration drift cannot silently choose another database.
+    try:
+        configured_url = make_url(sqlalchemy_driver_url(settings.database_url))
+    except (ArgumentError, TypeError, ValueError):
+        raise RuntimeError(
+            "Local demo database initialization requires matching SQLite settings."
+        ) from None
+    if (
+        configured_url.get_backend_name() != "sqlite"
+        or engine.url.get_backend_name() != "sqlite"
+        or configured_url != engine.url
+    ):
+        raise RuntimeError(
+            "Local demo database initialization requires matching SQLite settings."
+        )
+
+    from . import models  # noqa: F401
     Base.metadata.create_all(bind=engine)

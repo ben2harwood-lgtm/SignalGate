@@ -198,10 +198,21 @@ def test_read_only_preflight_against_real_fastapi_routes(client, db, monkeypatch
     def backend_transport(request):
         calls.append((request.method, request.url.path))
         assert request.method == "GET", "preflight must never mutate app state"
+        # In this offline MockTransport, the remote HTTPS URL is a fixture
+        # label, NOT the actual ASGI listener. Route the request to the
+        # existing loopback TestClient and let it supply its own local Host.
+        # Forwarding the fictional public Host would correctly be refused by
+        # the production local-identity ingress guard; no proxy exemption is
+        # introduced in application code.
+        synthetic_headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() != "host"
+        }
         response = client.request(
             request.method,
             request.url.path,
-            headers=dict(request.headers),
+            headers=synthetic_headers,
         )
         return httpx.Response(
             status_code=response.status_code,

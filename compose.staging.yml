@@ -23,6 +23,8 @@ services:
       DATABASE_URL: postgresql://signalgate:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/signalgate
       REQUIRE_LICENSE: "true"
       DEMO_ONLY_MODE: "true"
+      # Bind within the container bridge; host publishing stays loopback-only.
+      BACKEND_HOST: "0.0.0.0"
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
