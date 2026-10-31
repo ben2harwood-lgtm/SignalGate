@@ -190,6 +190,34 @@ def test_hosted_demo_accepts_valid_https_base_url_without_connecting(
     settings.registration_api_key = "r" * 40
     settings.validate_startup()
 
+@pytest.mark.parametrize(
+    ("source_key", "target_key", "suffix"),
+    [
+        ("ea_api_key", "admin_api_key", ""),
+        ("ea_api_key", "registration_api_key", ""),
+        ("admin_api_key", "registration_api_key", ""),
+        ("ea_api_key", "admin_api_key", " \\t"),
+    ],
+)
+def test_hosted_demo_rejects_reused_service_secrets_without_leaking_values(
+    monkeypatch, source_key, target_key, suffix
+):
+    # Pure startup-settings preflight: no database, broker or network access.
+    settings = _local_settings(monkeypatch)
+    settings.require_license = True
+    settings.database_url = "postgresql://synthetic:fake@localhost/demo"
+    settings.backend_base_url = "https://staging.example.invalid"
+    settings.ea_api_key = "e" * 40
+    settings.admin_api_key = "a" * 40
+    settings.registration_api_key = "r" * 40
+    copied_secret = getattr(settings, source_key)
+    setattr(settings, target_key, copied_secret + suffix)
+
+    with pytest.raises(RuntimeError, match="distinct EA_API_KEY") as error:
+        settings.validate_startup()
+    assert copied_secret not in str(error.value)
+
+
 def test_real_asgi_startup_refuses_advertised_public_local_auth_before_db(monkeypatch):
     # The SQLite/Postgres fixture owns its synthetic per-test schema. This
     # assertion concerns actual ASGI startup order, not fixture construction.

@@ -37,7 +37,9 @@ Hosted startup must preserve:
   malformed port, query, fragment, backslash or control whitespace; a reverse-proxy
   path prefix is permitted); this is configuration validation, **not** proof of
   public-edge TLS or private network ingress;
-- strong independent admin, registration/bot and EA service secrets;
+- strong independent admin, registration/bot and EA service secrets; the
+  `EA_API_KEY`, `ADMIN_API_KEY` and `REGISTRATION_API_KEY` values must be
+  distinct (including after trimming surrounding whitespace), or startup refuses;
 - versioned Alembic schema at the exact current head.
 
 Provider/customer credentials are additional tenant/account credentials; do not reuse service secrets as provider/customer identity.

@@ -280,6 +280,12 @@ class Settings:
                 raise RuntimeError(
                     f"Hosted mode requires a strong {name} (minimum 32 characters)."
                 )
+        # Service credentials protect different authority domains. A single
+        # otherwise-strong secret must not authenticate as multiple roles.
+        if len({value.strip() for value in required.values()}) != len(required):
+            raise RuntimeError(
+                "Hosted mode requires distinct EA_API_KEY, ADMIN_API_KEY and REGISTRATION_API_KEY."
+            )
 
     def validate_cli_bootstrap(self) -> None:
         """Fail closed for standalone database bootstrap commands.
