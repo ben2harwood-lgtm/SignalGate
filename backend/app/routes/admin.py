@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -67,6 +67,7 @@ def list_users(
 @router.post("/users/{telegram_user_id}/issue_license")
 def issue_license(
     telegram_user_id: str,
+    response: Response,
     db: Session = Depends(get_db),
     _admin: str = Depends(require_admin),
 ) -> dict:
@@ -74,6 +75,7 @@ def issue_license(
     user = _get_user_or_404(db, telegram_user_id)
     key = crud.issue_license(db, user)
     db.commit()
+    response.headers["Cache-Control"] = "no-store"
     return {"user_id": user.id, "telegram_user_id": user.telegram_user_id, "license_key": key}
 
 
