@@ -218,6 +218,48 @@ def test_hosted_demo_rejects_reused_service_secrets_without_leaking_values(
     assert copied_secret not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    ("key", "bad_value"),
+    [
+        ("REQUIRE_LICENSE", ""),
+        ("REQUIRE_LICENSE", "ture"),
+        ("REQUIRE_LICENSE", "synthetic-secret-not-a-boolean"),
+        ("DEMO_ONLY_MODE", ""),
+        ("DEMO_ONLY_MODE", "tru"),
+    ],
+)
+def test_security_mode_flags_refuse_invalid_booleans_before_startup(
+    monkeypatch, key, bad_value
+):
+    # Configuration is parsed without creating the database, opening a
+    # listener, contacting Telegram or reaching a demo broker.
+    _local_settings(monkeypatch)
+    monkeypatch.setenv(key, bad_value)
+    with pytest.raises(RuntimeError, match=rf"^{key} requires an explicit boolean") as error:
+        Settings()
+    if bad_value:
+        assert bad_value not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "expected"),
+    [
+        ("REQUIRE_LICENSE", " TRUE ", True),
+        ("REQUIRE_LICENSE", "off", False),
+        ("REQUIRE_LICENSE", "0", False),
+        ("DEMO_ONLY_MODE", "YES", True),
+        ("DEMO_ONLY_MODE", "false", False),
+    ],
+)
+def test_security_mode_flags_preserve_explicit_boolean_spellings(
+    monkeypatch, key, value, expected
+):
+    _local_settings(monkeypatch)
+    monkeypatch.setenv(key, value)
+    parsed = Settings()
+    assert getattr(parsed, key.lower()) == expected
+
+
 def test_real_asgi_startup_refuses_advertised_public_local_auth_before_db(monkeypatch):
     # The SQLite/Postgres fixture owns its synthetic per-test schema. This
     # assertion concerns actual ASGI startup order, not fixture construction.

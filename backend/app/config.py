@@ -100,11 +100,23 @@ def local_demo_http_ingress_is_loopback(server: object, host_header: Optional[st
         return False
 
 
-def _get_bool(key: str, default: bool) -> bool:
+def _get_bool(key: str, default: bool, *, strict: bool = False) -> bool:
     raw = os.getenv(key)
     if raw is None:
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    if strict:
+        # In particular, a mistyped REQUIRE_LICENSE must never silently
+        # downgrade a hosted deployment to local identity-header auth.
+        # Do not echo the raw environment value: it may contain secrets.
+        raise RuntimeError(
+            f"{key} requires an explicit boolean (true/false, 1/0, yes/no or on/off)."
+        )
+    return False
 
 
 def _get_float(key: str, default: float) -> float:
@@ -172,11 +184,11 @@ class Settings:
         # HOSTED MULTI-CUSTOMER: when true, an EA must present a valid, ACTIVE
         # customer license_key to receive commands; the local user_id fallback
         # is disabled. Defaults False so the local demo keeps working unchanged.
-        self.require_license: bool = _get_bool("REQUIRE_LICENSE", False)
+        self.require_license: bool = _get_bool("REQUIRE_LICENSE", False, strict=True)
 
         # SAFETY: demo-only mode defaults to True and should never be flipped
         # off for v1. Live trading is explicitly unsupported.
-        self.demo_only_mode: bool = _get_bool("DEMO_ONLY_MODE", True)
+        self.demo_only_mode: bool = _get_bool("DEMO_ONLY_MODE", True, strict=True)
 
         self.default_signal_expiry_minutes: int = _get_int(
             "DEFAULT_SIGNAL_EXPIRY_MINUTES", 5

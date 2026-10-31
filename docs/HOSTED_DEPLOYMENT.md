@@ -31,6 +31,9 @@ Hosted startup must preserve:
 
 - `DEMO_ONLY_MODE=true`;
 - `REQUIRE_LICENSE=true`;
+- both security-mode flags must have a recognised boolean value (case-insensitive
+  `true/false`, `1/0`, `yes/no` or `on/off`); empty/unknown values refuse
+  startup instead of silently falling back to unlicensed local identity headers;
 - PostgreSQL (the parsed `DATABASE_URL` dialect must be PostgreSQL; malformed,
   SQLite and other SQL dialects are refused at startup without printing the URL);
 - HTTPS public base URL with a parseable hostname (no embedded credentials,
