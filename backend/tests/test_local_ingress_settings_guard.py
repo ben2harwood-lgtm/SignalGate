@@ -95,6 +95,53 @@ def test_hosted_demo_ingress_still_uses_licensed_secret_and_https_gates(monkeypa
     Settings().validate_startup()
 
 
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "sqlite:///./wrong-hosted.db",
+        "sqlite+pysqlite:///./wrong-hosted.db",
+        "mysql+pymysql://synthetic:never-expose@localhost/demo",
+        "mssql+pyodbc://synthetic:never-expose@localhost/demo",
+        "not-a-database-url",
+    ],
+)
+def test_hosted_demo_rejects_non_postgresql_or_malformed_database_url(
+    monkeypatch, database_url
+):
+    settings = _local_settings(monkeypatch)
+    settings.require_license = True
+    settings.backend_base_url = "https://staging.example.invalid"
+    settings.database_url = database_url
+    settings.ea_api_key = "e" * 40
+    settings.admin_api_key = "a" * 40
+    settings.registration_api_key = "r" * 40
+
+    with pytest.raises(RuntimeError, match="Hosted mode requires PostgreSQL") as error:
+        settings.validate_startup()
+    assert "never-expose" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "postgres://synthetic:fake@localhost/demo",
+        "postgresql://synthetic:fake@localhost/demo",
+        "postgresql+psycopg2://synthetic:fake@localhost/demo",
+    ],
+)
+def test_hosted_demo_allows_postgresql_dialects_without_connecting(
+    monkeypatch, database_url
+):
+    settings = _local_settings(monkeypatch)
+    settings.require_license = True
+    settings.backend_base_url = "https://staging.example.invalid"
+    settings.database_url = database_url
+    settings.ea_api_key = "e" * 40
+    settings.admin_api_key = "a" * 40
+    settings.registration_api_key = "r" * 40
+    settings.validate_startup()
+
+
 def test_real_asgi_startup_refuses_advertised_public_local_auth_before_db(monkeypatch):
     # The SQLite/Postgres fixture owns its synthetic per-test schema. This
     # assertion concerns actual ASGI startup order, not fixture construction.

@@ -219,8 +219,22 @@ class Settings:
                 )
             return
 
-        if self.database_url.startswith("sqlite"):
-            raise RuntimeError("Hosted mode requires PostgreSQL; SQLite is not supported.")
+        # The hosted contract is PostgreSQL-only. A 'not sqlite' prefix
+        # check can accidentally accept another SQL backend or malformed URL.
+        # Never include the URL in the error: it may contain credentials.
+        from sqlalchemy.engine import make_url
+        from sqlalchemy.exc import ArgumentError
+
+        try:
+            backend_name = make_url(
+                sqlalchemy_driver_url(self.database_url)
+            ).get_backend_name()
+        except (ArgumentError, TypeError, ValueError):
+            backend_name = None
+        if backend_name != "postgresql":
+            raise RuntimeError(
+                "Hosted mode requires PostgreSQL; invalid or unsupported DATABASE_URL."
+            )
         if not self.backend_base_url.lower().startswith("https://"):
             raise RuntimeError("Hosted mode requires an HTTPS BACKEND_BASE_URL.")
 

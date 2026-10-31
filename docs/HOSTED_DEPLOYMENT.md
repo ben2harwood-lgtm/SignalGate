@@ -31,7 +31,8 @@ Hosted startup must preserve:
 
 - `DEMO_ONLY_MODE=true`;
 - `REQUIRE_LICENSE=true`;
-- PostgreSQL;
+- PostgreSQL (the parsed `DATABASE_URL` dialect must be PostgreSQL; malformed,
+  SQLite and other SQL dialects are refused at startup without printing the URL);
 - HTTPS public base URL;
 - strong independent admin, registration/bot and EA service secrets;
 - versioned Alembic schema at the exact current head.
