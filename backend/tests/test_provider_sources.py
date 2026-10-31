@@ -5,6 +5,8 @@ import io
 import os
 from pathlib import Path
 
+import pytest
+
 from app import crud, models, security
 
 from .conftest import register_user
@@ -99,6 +101,89 @@ def test_connect_status_and_one_use_semantics(client, db):
     assert replay.status_code == 400
     db.expire_all()
     assert db.query(models.ProviderSourceBinding).count() == 1
+
+
+
+@pytest.mark.parametrize("competing_action", ["connect", "revoke"])
+def test_source_invite_concurrent_claim_or_revoke_postgresql(
+    client, db, competing_action
+):
+    """Only one claimant wins, and a concurrent revoke cannot undo acceptance.
+
+    These are two distinct PostgreSQL transactions. The first has accepted
+    an invite but has not committed; the second starts while that row is
+    still locked. Neither synthetic client ever contacts Telegram or MT5.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from time import sleep
+
+    from app.database import SessionLocal
+
+    provider, feed, key = _provider(db, f"source-once-{competing_action}")
+    provider_id = provider.id
+    invite = _source_invite(client, provider, feed, key)
+    invite_id = invite["invite_id"]
+    token = invite["connection_token"]
+    worker_ready = Event()
+
+    def competitor():
+        with SessionLocal() as second:
+            # A future timeout cannot terminate a PostgreSQL lock waiter:
+            # bound waits at the database level even if this test regresses.
+            connection = second.connection()
+            connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            worker_ready.set()
+            try:
+                if competing_action == "connect":
+                    crud.connect_telegram_provider_source(second, token, "98002")
+                else:
+                    crud.revoke_provider_source_invite(
+                        second, provider_id, invite_id
+                    )
+            except ValueError as exc:
+                second.rollback()
+                return str(exc)
+            second.commit()
+            return "UNEXPECTED_SUCCESS"
+
+    with SessionLocal() as first:
+        crud.connect_telegram_provider_source(first, token, "98001")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(competitor)
+            try:
+                assert worker_ready.wait(timeout=5)
+                # Let the competing transaction reach the invite read before
+                # releasing the first one. Both writes ultimately commit only
+                # in the vulnerable implementation.
+                sleep(0.2)
+            finally:
+                first.commit()
+            outcome = future.result(timeout=18)
+
+    expected = (
+        "Source invite is no longer active"
+        if competing_action == "connect"
+        else "Accepted source invite cannot be revoked"
+    )
+    assert outcome == expected
+    with SessionLocal() as check:
+        stored = check.get(models.ProviderSourceInvite, invite_id)
+        assert stored.status == "ACCEPTED"
+        assert stored.accepted_telegram_user_id == "98001"
+        bindings = (
+            check.query(models.ProviderSourceBinding)
+            .filter(models.ProviderSourceBinding.external_identity.in_(
+                ["98001", "98002"]
+            ))
+            .all()
+        )
+        assert len(bindings) == 1
+        assert bindings[0].external_identity == "98001"
 
 
 def test_rebinding_requires_a_new_provider_owned_token_and_is_audited(client, db):
