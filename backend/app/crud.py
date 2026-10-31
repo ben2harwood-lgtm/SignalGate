@@ -381,12 +381,16 @@ def revoke_provider_source_invite(
     provider_id: str,
     invite_id: str,
 ) -> models.ProviderSourceInvite:
-    invite = db.scalar(
-        select(models.ProviderSourceInvite).where(
-            models.ProviderSourceInvite.id == invite_id,
-            models.ProviderSourceInvite.provider_id == provider_id,
-        )
+    # Serialise revocation against one-time acceptance on the SAME invite row.
+    # Without the lock, both transactions can read PENDING and commit
+    # contradictory outcomes (an accepted binding with a revoked invite).
+    invite_query = select(models.ProviderSourceInvite).where(
+        models.ProviderSourceInvite.id == invite_id,
+        models.ProviderSourceInvite.provider_id == provider_id,
     )
+    if db.get_bind().dialect.name == "postgresql":
+        invite_query = invite_query.with_for_update()
+    invite = db.scalar(invite_query)
     if invite is None:
         raise ValueError("Source invite not found")
     if invite.status == "ACCEPTED":
@@ -414,11 +418,16 @@ def connect_telegram_provider_source(
     models.Feed,
 ]:
     token_hash = hash_provider_source_token(raw_token)
-    invite = db.scalar(
-        select(models.ProviderSourceInvite).where(
-            models.ProviderSourceInvite.token_hash == token_hash
-        )
+    # One-time tokens must be claimed atomically. Two PostgreSQL sessions can
+    # otherwise read PENDING before either commits, creating TWO active source
+    # bindings from a token whose row ultimately records only the last caller.
+    # Hold the invite row lock through the route's commit, including its audit.
+    invite_query = select(models.ProviderSourceInvite).where(
+        models.ProviderSourceInvite.token_hash == token_hash
     )
+    if db.get_bind().dialect.name == "postgresql":
+        invite_query = invite_query.with_for_update()
+    invite = db.scalar(invite_query)
     if invite is None or not secrets.compare_digest(token_hash, invite.token_hash):
         raise ValueError("Source invite not found")
     if invite.status != "PENDING":
