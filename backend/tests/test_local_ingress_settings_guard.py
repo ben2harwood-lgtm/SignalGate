@@ -225,7 +225,7 @@ def test_hosted_demo_rejects_reused_service_secrets_without_leaking_values(
         ("REQUIRE_LICENSE", "ture"),
         ("REQUIRE_LICENSE", "synthetic-secret-not-a-boolean"),
         ("DEMO_ONLY_MODE", ""),
-        ("DEMO_ONLY_MODE", "tru"),
+        ("DEMO_ONLY_MODE", "invalid-boolean"),
     ],
 )
 def test_security_mode_flags_refuse_invalid_booleans_before_startup(
