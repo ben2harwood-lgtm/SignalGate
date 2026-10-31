@@ -208,6 +208,100 @@ def test_source_invite_concurrent_claim_or_revoke_postgresql(
         assert bindings[0].external_identity == "98001"
 
 
+def test_rebind_blocks_stale_provider_revocation_postgresql(client, db):
+    """A previously owning provider cannot revoke a newly rebound source.
+
+    This interleaves separate PostgreSQL transactions; a stale owner attempts
+    to revoke while the new provider's rebind remains uncommitted. It does not
+    send Telegram messages, connect to a broker, or execute an order.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from time import sleep
+
+    from sqlalchemy import event
+    from app.database import SessionLocal
+
+    old_provider, old_feed, old_key = _provider(db, "stale-binding-owner")
+    new_provider, new_feed, new_key = _provider(db, "new-binding-owner")
+    old_id, new_id, new_feed_id = old_provider.id, new_provider.id, new_feed.id
+    old_invite = _source_invite(client, old_provider, old_feed, old_key)
+    original = _connect(client, old_invite, "98003")
+    assert original.status_code == 200, original.text
+    binding_id = original.json()["binding_id"]
+    new_invite = _source_invite(client, new_provider, new_feed, new_key)
+
+    binding_read_started = Event()
+    binding_read_finished = Event()
+
+    def stale_owner_revoke():
+        with SessionLocal() as competing:
+            connection = competing.connection()
+            connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+
+            def observe_sql(_conn, _cursor, statement, _params, _ctx, _many):
+                if "FROM provider_source_bindings" in statement:
+                    binding_read_started.set()
+
+            event.listen(connection, "before_cursor_execute", observe_sql)
+            original_scalar = competing.scalar
+
+            def observe_scalar(statement, *args, **kwargs):
+                result = original_scalar(statement, *args, **kwargs)
+                if "provider_source_bindings" in str(statement):
+                    binding_read_finished.set()
+                return result
+
+            competing.scalar = observe_scalar
+            try:
+                crud.revoke_provider_source_binding(competing, old_id, binding_id)
+            except ValueError as exc:
+                competing.rollback()
+                return str(exc)
+            competing.commit()
+            return "UNEXPECTED_SUCCESS"
+
+    with SessionLocal() as first:
+        crud.connect_telegram_provider_source(
+            first, new_invite["connection_token"], "98003"
+        )
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(stale_owner_revoke)
+            try:
+                assert binding_read_started.wait(timeout=5), (
+                    "Stale revoke did not reach the binding SELECT"
+                )
+                sleep(0.2)
+                assert not binding_read_finished.is_set(), (
+                    "Stale revoke read the old owner despite an in-flight rebind"
+                )
+            finally:
+                first.commit()
+            outcome = future.result(timeout=18)
+
+    assert outcome == "Source binding not found"
+    assert binding_read_finished.is_set()
+    with SessionLocal() as check:
+        binding = check.get(models.ProviderSourceBinding, binding_id)
+        assert binding.provider_id == new_id
+        assert binding.feed_id == new_feed_id
+        assert binding.external_identity == "98003"
+        assert binding.status == "ACTIVE"
+        assert (
+            check.query(models.AuditLog)
+            .filter(
+                models.AuditLog.entity_id == binding_id,
+                models.AuditLog.event_type == "PROVIDER_SOURCE_REVOKED",
+            )
+            .count()
+            == 0
+        )
+
+
 def test_rebinding_requires_a_new_provider_owned_token_and_is_audited(client, db):
     p1, f1, k1 = _provider(db, "source-a")
     p2, f2, k2 = _provider(db, "source-b")

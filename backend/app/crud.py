@@ -457,12 +457,16 @@ def connect_telegram_provider_source(
         raise ValueError("Invite provider/feed is not active")
 
     external_identity = str(telegram_user_id)
-    binding = db.scalar(
-        select(models.ProviderSourceBinding).where(
-            models.ProviderSourceBinding.source_type == "TELEGRAM",
-            models.ProviderSourceBinding.external_identity == external_identity,
-        )
+    # Invite-row locking alone protects one TOKEN, not an existing source
+    # binding when another provider token concurrently rebinds that identity.
+    # Serialise rebind with provider-owned revocation on PostgreSQL.
+    binding_query = select(models.ProviderSourceBinding).where(
+        models.ProviderSourceBinding.source_type == "TELEGRAM",
+        models.ProviderSourceBinding.external_identity == external_identity,
     )
+    if db.get_bind().dialect.name == "postgresql":
+        binding_query = binding_query.with_for_update()
+    binding = db.scalar(binding_query)
     previous = None
     if binding is None:
         binding = models.ProviderSourceBinding(
@@ -553,12 +557,15 @@ def revoke_provider_source_binding(
     provider_id: str,
     binding_id: str,
 ) -> models.ProviderSourceBinding:
-    binding = db.scalar(
-        select(models.ProviderSourceBinding).where(
-            models.ProviderSourceBinding.id == binding_id,
-            models.ProviderSourceBinding.provider_id == provider_id,
-        )
+    # An old provider must not revoke a binding that has concurrently moved
+    # to a new provider. The locked SELECT rechecks provider_id after waiting.
+    binding_query = select(models.ProviderSourceBinding).where(
+        models.ProviderSourceBinding.id == binding_id,
+        models.ProviderSourceBinding.provider_id == provider_id,
     )
+    if db.get_bind().dialect.name == "postgresql":
+        binding_query = binding_query.with_for_update()
+    binding = db.scalar(binding_query)
     if binding is None:
         raise ValueError("Source binding not found")
     binding.status = "REVOKED"
