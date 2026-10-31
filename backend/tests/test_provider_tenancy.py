@@ -179,3 +179,41 @@ def test_provider_command_carries_feed_and_account_ownership(client, db):
     finally:
         security.settings.registration_api_key = old_registration
         security.settings.require_license = False
+
+
+def test_provider_recipient_lookup_omits_group_and_invalid_chat_ids(client, db):
+    """Match the bot's private-user contract; one malformed ID must not stop all delivery."""
+    provider, feed, raw_key = _provider_fixture(db, "recipient-private")
+    allowed = register_user(client, "4503599627370495", "direct_ok", "Direct")
+    invalid_ids = (
+        "-1001234567890",  # group/channel chat, never a direct subscriber
+        "0", "045", "4503599627370496",  # zero, padded, beyond 52-bit bound
+        "12345678901234567", "１２３４",  # too long, non-ASCII digits
+    )
+    for idx, chat_id in enumerate((allowed["telegram_user_id"], *invalid_ids)):
+        row = allowed if idx == 0 else register_user(
+            client, chat_id, f"invalid_private_{idx}", "Invalid"
+        )
+        crud.subscribe_user_to_feed(db, provider, feed, db.get(models.User, row["id"]))
+    db.commit()
+
+    security.settings.require_license = True
+    try:
+        response = client.get(
+            "/signals/recipients",
+            params={"feed_id": feed.id},
+            headers=_headers(provider, raw_key),
+        )
+        assert response.status_code == 200, response.text
+        assert [r["telegram_user_id"] for r in response.json()["recipients"]] == [
+            allowed["telegram_user_id"]
+        ]
+    finally:
+        security.settings.require_license = False
+
+    # Local-demo fallback also supplies the same allowlisted private-user IDs.
+    local_reply = client.get("/signals/recipients")
+    assert local_reply.status_code == 200, local_reply.text
+    assert [r["telegram_user_id"] for r in local_reply.json()["recipients"]] == [
+        allowed["telegram_user_id"]
+    ]

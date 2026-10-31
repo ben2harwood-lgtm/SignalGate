@@ -175,7 +175,14 @@ def signal_recipients(
                 "telegram_user_id": user.telegram_user_id,
             }
             for user in users
-            if user.telegram_user_id.lstrip("-").isdigit()
+            if (
+                isinstance(user.telegram_user_id, str)
+                and user.telegram_user_id.isascii()
+                and user.telegram_user_id.isdecimal()
+                and not user.telegram_user_id.startswith("0")
+                and len(user.telegram_user_id) <= 16
+                and int(user.telegram_user_id) <= (1 << 52) - 1
+            )
         ]
     }
 
