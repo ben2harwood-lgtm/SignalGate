@@ -33,7 +33,10 @@ Hosted startup must preserve:
 - `REQUIRE_LICENSE=true`;
 - PostgreSQL (the parsed `DATABASE_URL` dialect must be PostgreSQL; malformed,
   SQLite and other SQL dialects are refused at startup without printing the URL);
-- HTTPS public base URL;
+- HTTPS public base URL with a parseable hostname (no embedded credentials,
+  malformed port, query, fragment, backslash or control whitespace; a reverse-proxy
+  path prefix is permitted); this is configuration validation, **not** proof of
+  public-edge TLS or private network ingress;
 - strong independent admin, registration/bot and EA service secrets;
 - versioned Alembic schema at the exact current head.
 

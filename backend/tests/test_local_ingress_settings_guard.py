@@ -142,6 +142,54 @@ def test_hosted_demo_allows_postgresql_dialects_without_connecting(
     settings.validate_startup()
 
 
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://",
+        "https:///missing-authority",
+        "https://operator:synthetic-secret@demo.example.invalid",
+        "https://demo.example.invalid:invalid-port",
+        "https://demo.example.invalid?token=synthetic-secret",
+        "https://demo.example.invalid/#synthetic-secret",
+        "https://demo.example.invalid\\untrusted",
+        "https://demo.example.invalid\r\nX-Leak: synthetic-secret",
+        " https://demo.example.invalid",
+        "https://demo.example.invalid ",
+    ],
+)
+def test_hosted_demo_rejects_invalid_or_credentialled_https_base_url(
+    monkeypatch, base_url
+):
+    settings = _local_settings(monkeypatch)
+    settings.require_license = True
+    settings.database_url = "postgresql://synthetic:fake@localhost/demo"
+    settings.backend_base_url = base_url
+    settings.ea_api_key = "e" * 40
+    settings.admin_api_key = "a" * 40
+    settings.registration_api_key = "r" * 40
+
+    with pytest.raises(RuntimeError, match="HTTPS BACKEND_BASE_URL") as error:
+        settings.validate_startup()
+    assert "synthetic-secret" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    ["https://demo.example.invalid", "https://demo.example.invalid:8443/api"],
+)
+def test_hosted_demo_accepts_valid_https_base_url_without_connecting(
+    monkeypatch, base_url
+):
+    settings = _local_settings(monkeypatch)
+    settings.require_license = True
+    settings.database_url = "postgresql://synthetic:fake@localhost/demo"
+    settings.backend_base_url = base_url
+    settings.ea_api_key = "e" * 40
+    settings.admin_api_key = "a" * 40
+    settings.registration_api_key = "r" * 40
+    settings.validate_startup()
+
 def test_real_asgi_startup_refuses_advertised_public_local_auth_before_db(monkeypatch):
     # The SQLite/Postgres fixture owns its synthetic per-test schema. This
     # assertion concerns actual ASGI startup order, not fixture construction.

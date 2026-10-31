@@ -235,7 +235,30 @@ class Settings:
             raise RuntimeError(
                 "Hosted mode requires PostgreSQL; invalid or unsupported DATABASE_URL."
             )
-        if not self.backend_base_url.lower().startswith("https://"):
+        # A scheme prefix alone also accepts empty hosts, userinfo containing
+        # credentials, malformed ports and URLs with query parameters. Refuse
+        # such operator configuration before any hosted database I/O, without
+        # including the URL (which may contain secrets) in the error.
+        try:
+            base = urlsplit(self.backend_base_url)
+            _ = base.port
+            valid_https_base = (
+                base.scheme == "https"
+                and bool(base.netloc)
+                and bool(base.hostname)
+                and base.username is None
+                and base.password is None
+                and not base.query
+                and not base.fragment
+                and "\\" not in self.backend_base_url
+                and not any(
+                    ord(char) <= 32 or ord(char) == 127
+                    for char in self.backend_base_url
+                )
+            )
+        except (TypeError, ValueError):
+            valid_https_base = False
+        if not valid_https_base:
             raise RuntimeError("Hosted mode requires an HTTPS BACKEND_BASE_URL.")
 
         weak = {
