@@ -21,6 +21,14 @@ logger = logging.getLogger("signalgate")
 request_logger = logging.getLogger("signalgate.request")
 settings = get_settings()
 
+# Local identity-header auth has no trusted reverse-proxy configuration.
+# Refuse common proxy forwarding metadata before dispatch. A proxy that strips
+# all such headers can still conceal external access: issue #108 remains HOLD.
+_LOCAL_DEMO_PROXY_HEADERS = frozenset({
+    "forwarded", "via", "x-real-ip", "x-original-host",
+    "x-envoy-external-address", "cf-connecting-ip", "true-client-ip",
+})
+
 _REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}", re.ASCII)
 
 
@@ -87,15 +95,20 @@ def create_app() -> FastAPI:
     async def _request_observability(request: Request, call_next):
         # Uvicorn may be invoked with --host independently of BACKEND_HOST.
         # Reject nonlocal actual ASGI listeners and nonlocal Host values before
-        # dispatching any route that trusts local identity headers. This cannot
-        # identify a reverse proxy that rewrites Host to loopback; local mode
-        # must still never be exposed through an external proxy.
+        # dispatching any route that trusts local identity headers. Refuse
+        # forwarding metadata even when a proxy rewrites Host to loopback.
+        # This is not a complete proxy boundary: a proxy can strip metadata.
         started = time.perf_counter()
         host_values = request.headers.getlist("host")
         if not settings.require_license and (
             len(host_values) != 1
             or not local_demo_http_ingress_is_loopback(
                 request.scope.get("server"), host_values[0]
+            )
+            or any(
+                name.lower() in _LOCAL_DEMO_PROXY_HEADERS
+                or name.lower().startswith("x-forwarded-")
+                for name in request.headers
             )
         ):
             # Denials are security-relevant, even when no route is reached.

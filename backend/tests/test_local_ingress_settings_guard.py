@@ -193,6 +193,61 @@ def test_local_ingress_refuses_external_host_even_on_loopback_listener(client):
 
 
 @pytest.mark.parametrize(
+    ("proxy_header", "proxy_value"),
+    [
+        ("Forwarded", "for=192.0.2.22;host=public.example.invalid"),
+        ("X-Forwarded-For", "192.0.2.22"),
+        ("X-Forwarded-Host", "public.example.invalid"),
+        ("X-Forwarded-Proto", "https"),
+        ("X-Forwarded-Port", "443"),
+        ("X-Real-IP", "192.0.2.22"),
+        ("X-Original-Host", "public.example.invalid"),
+        ("X-Envoy-External-Address", "192.0.2.22"),
+        ("CF-Connecting-IP", "192.0.2.22"),
+        ("True-Client-IP", "192.0.2.22"),
+        ("Via", "1.1 public-proxy"),
+    ],
+)
+def test_local_ingress_refuses_forwarded_proxy_metadata_despite_loopback_host(
+    client, caplog, proxy_header, proxy_value
+):
+    # A common proxy can rewrite Host to 127.0.0.1 and still leak its
+    # forwarding headers to Uvicorn. Reject before the local-auth route runs.
+    # This is synthetic: a proxy stripping all headers remains issue #108.
+    caplog.set_level(logging.WARNING, logger="signalgate.request")
+    response = client.get(
+        "/livez",
+        headers={
+            "Host": "127.0.0.1:8000",
+            proxy_header: proxy_value,
+            "X-Request-Id": "untrusted-proxy-marker",
+        },
+    )
+    assert response.status_code == 403
+    assert response.text == "Local demo ingress refused"
+    assert response.headers["X-Request-Id"] != "untrusted-proxy-marker"
+    events = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "signalgate.request"
+        and "LOCAL_DEMO_INGRESS_REFUSED" in record.getMessage()
+    ]
+    assert len(events) == 1
+    logged = json.dumps(events[0])
+    assert proxy_value not in logged
+    assert "untrusted-proxy-marker" not in logged
+
+
+def test_hosted_routes_do_not_apply_local_proxy_metadata_refusal(client, monkeypatch):
+    # The hosted listener has its own authenticated/proxy deployment boundary.
+    monkeypatch.setattr(main_module.settings, "require_license", True)
+    response = client.get(
+        "/livez", headers={"X-Forwarded-For": "192.0.2.22"}
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
     "host_values",
     [
         [("Host", "127.0.0.1:8000"), ("Host", "public.example.invalid")],

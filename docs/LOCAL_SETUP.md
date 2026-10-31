@@ -34,12 +34,16 @@ configuration checks, local-demo HTTP requests are now refused before route
 dispatch unless the actual ASGI-bound server address **and** request `Host`
 are both loopback. This catches a direct `uvicorn --host 0.0.0.0` override
 and ordinary reverse proxies retaining the public `Host`, even if
-`BACKEND_HOST` was configured safely. TestClient checks are **synthetic** and
-do not prove real listener or proxy isolation.
+`BACKEND_HOST` was configured safely. Local mode also refuses common proxy
+forwarding headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-IP` and related
+metadata) even when `Host` is rewritten to loopback. TestClient checks are
+**synthetic** and do not prove real listener or proxy isolation.
 
 **Never publish the local identity-header API externally.** A reverse proxy
-that rewrites `Host` to loopback can still conceal its public exposure; custom
-ASGI servers may not supply a trusted bound address. Use the separate licensed
+that rewrites `Host` to loopback **and strips forwarding metadata** can still
+conceal its public exposure; custom ASGI servers may not supply a trusted bound
+address. Neither application-layer header check authenticates the original
+client IP; keep issue #108 open until real-network ingress assurance. Use the separate licensed
 HTTPS/PostgreSQL configuration for a controlled hosted demo only after
 independent ingress/security and other external gate acceptance. No MT5 broker,
 customer, production or live trading acceptance is inferred.
