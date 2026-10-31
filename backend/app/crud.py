@@ -457,6 +457,20 @@ def connect_telegram_provider_source(
         raise ValueError("Invite provider/feed is not active")
 
     external_identity = str(telegram_user_id)
+    # A row-level FOR UPDATE cannot lock an identity that has no binding yet.
+    # Serialize first bindings made with DIFFERENT valid provider invites,
+    # before looking up or inserting the unique (source_type, identity) row.
+    # This transaction-scoped advisory lock is distinct from the audit lock;
+    # the database unique constraint remains the final integrity backstop.
+    if db.get_bind().dialect.name == "postgresql":
+        lock_material = f"provider-source:TELEGRAM:{external_identity}".encode("utf-8")
+        identity_lock_key = int.from_bytes(
+            hashlib.sha256(lock_material).digest()[:8], "big", signed=True
+        )
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:identity_lock_key)"),
+            {"identity_lock_key": identity_lock_key},
+        )
     # Invite-row locking alone protects one TOKEN, not an existing source
     # binding when another provider token concurrently rebinds that identity.
     # Serialise rebind with provider-owned revocation on PostgreSQL.
