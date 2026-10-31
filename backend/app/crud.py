@@ -381,12 +381,16 @@ def revoke_provider_source_invite(
     provider_id: str,
     invite_id: str,
 ) -> models.ProviderSourceInvite:
-    invite = db.scalar(
-        select(models.ProviderSourceInvite).where(
-            models.ProviderSourceInvite.id == invite_id,
-            models.ProviderSourceInvite.provider_id == provider_id,
-        )
+    # Serialise revocation against one-time acceptance on the SAME invite row.
+    # Without the lock, both transactions can read PENDING and commit
+    # contradictory outcomes (an accepted binding with a revoked invite).
+    invite_query = select(models.ProviderSourceInvite).where(
+        models.ProviderSourceInvite.id == invite_id,
+        models.ProviderSourceInvite.provider_id == provider_id,
     )
+    if db.get_bind().dialect.name == "postgresql":
+        invite_query = invite_query.with_for_update()
+    invite = db.scalar(invite_query)
     if invite is None:
         raise ValueError("Source invite not found")
     if invite.status == "ACCEPTED":
@@ -414,11 +418,16 @@ def connect_telegram_provider_source(
     models.Feed,
 ]:
     token_hash = hash_provider_source_token(raw_token)
-    invite = db.scalar(
-        select(models.ProviderSourceInvite).where(
-            models.ProviderSourceInvite.token_hash == token_hash
-        )
+    # One-time tokens must be claimed atomically. Two PostgreSQL sessions can
+    # otherwise read PENDING before either commits, creating TWO active source
+    # bindings from a token whose row ultimately records only the last caller.
+    # Hold the invite row lock through the route's commit, including its audit.
+    invite_query = select(models.ProviderSourceInvite).where(
+        models.ProviderSourceInvite.token_hash == token_hash
     )
+    if db.get_bind().dialect.name == "postgresql":
+        invite_query = invite_query.with_for_update()
+    invite = db.scalar(invite_query)
     if invite is None or not secrets.compare_digest(token_hash, invite.token_hash):
         raise ValueError("Source invite not found")
     if invite.status != "PENDING":
@@ -448,12 +457,30 @@ def connect_telegram_provider_source(
         raise ValueError("Invite provider/feed is not active")
 
     external_identity = str(telegram_user_id)
-    binding = db.scalar(
-        select(models.ProviderSourceBinding).where(
-            models.ProviderSourceBinding.source_type == "TELEGRAM",
-            models.ProviderSourceBinding.external_identity == external_identity,
+    # A row-level FOR UPDATE cannot lock an identity that has no binding yet.
+    # Serialize first bindings made with DIFFERENT valid provider invites,
+    # before looking up or inserting the unique (source_type, identity) row.
+    # This transaction-scoped advisory lock is distinct from the audit lock;
+    # the database unique constraint remains the final integrity backstop.
+    if db.get_bind().dialect.name == "postgresql":
+        lock_material = f"provider-source:TELEGRAM:{external_identity}".encode("utf-8")
+        identity_lock_key = int.from_bytes(
+            hashlib.sha256(lock_material).digest()[:8], "big", signed=True
         )
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:identity_lock_key)"),
+            {"identity_lock_key": identity_lock_key},
+        )
+    # Invite-row locking alone protects one TOKEN, not an existing source
+    # binding when another provider token concurrently rebinds that identity.
+    # Serialise rebind with provider-owned revocation on PostgreSQL.
+    binding_query = select(models.ProviderSourceBinding).where(
+        models.ProviderSourceBinding.source_type == "TELEGRAM",
+        models.ProviderSourceBinding.external_identity == external_identity,
     )
+    if db.get_bind().dialect.name == "postgresql":
+        binding_query = binding_query.with_for_update()
+    binding = db.scalar(binding_query)
     previous = None
     if binding is None:
         binding = models.ProviderSourceBinding(
@@ -544,12 +571,15 @@ def revoke_provider_source_binding(
     provider_id: str,
     binding_id: str,
 ) -> models.ProviderSourceBinding:
-    binding = db.scalar(
-        select(models.ProviderSourceBinding).where(
-            models.ProviderSourceBinding.id == binding_id,
-            models.ProviderSourceBinding.provider_id == provider_id,
-        )
+    # An old provider must not revoke a binding that has concurrently moved
+    # to a new provider. The locked SELECT rechecks provider_id after waiting.
+    binding_query = select(models.ProviderSourceBinding).where(
+        models.ProviderSourceBinding.id == binding_id,
+        models.ProviderSourceBinding.provider_id == provider_id,
     )
+    if db.get_bind().dialect.name == "postgresql":
+        binding_query = binding_query.with_for_update()
+    binding = db.scalar(binding_query)
     if binding is None:
         raise ValueError("Source binding not found")
     binding.status = "REVOKED"
