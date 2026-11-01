@@ -88,7 +88,10 @@ def test_populated_source_epoch_migration_on_temporary_postgresql() -> None:
     url = os.environ.get("SIGNALGATE_TEST_DATABASE_URL")
     if not url or sa.engine.make_url(url).get_backend_name() != "postgresql":
         pytest.skip("No dedicated PostgreSQL test URL; never use DATABASE_URL")
-    engine = sa.create_engine(url)
+    # SQLAlchemy 2.1 defaults to psycopg, but hosted CI installs psycopg2.
+    from app.config import sqlalchemy_driver_url
+
+    engine = sa.create_engine(sqlalchemy_driver_url(url))
     try:
         with engine.begin() as conn:
             _exercise_populated_migration(conn, postgres=True)
