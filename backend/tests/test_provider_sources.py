@@ -1498,3 +1498,109 @@ def test_revoke_then_same_feed_reconnect_refuses_stale_preview(client, db):
     assert db.query(models.AuditLog).filter(
         models.AuditLog.event_type == "SIGNAL_CREATED"
     ).count() == 0
+
+
+def test_a_to_b_to_a_rebind_refuses_original_preview(client, db):
+    """Rebinding A -> B -> A must not resurrect the original A authorisation.
+
+    Two distinct one-time A invitations bracket a valid B invitation. No
+    Telegram message, model, customer data or broker call is involved.
+    """
+    provider_a, feed_a, key_a = _provider(db, "source-aba-a")
+    provider_b, feed_b, key_b = _provider(db, "source-aba-b")
+    telegram_id = "9420"
+
+    first = _connect(
+        client, _source_invite(client, provider_a, feed_a, key_a), telegram_id
+    )
+    assert first.status_code == 200, first.text
+    first_claim = _source_claim(first.json())
+
+    rebound_b = _connect(
+        client, _source_invite(client, provider_b, feed_b, key_b), telegram_id
+    )
+    assert rebound_b.status_code == 200, rebound_b.text
+    assert rebound_b.json()["provider_id"] == provider_b.id
+    assert rebound_b.json()["feed_id"] == feed_b.id
+
+    rebound_a = _connect(
+        client, _source_invite(client, provider_a, feed_a, key_a), telegram_id
+    )
+    assert rebound_a.status_code == 200, rebound_a.text
+    assert rebound_a.json()["binding_id"] == first.json()["binding_id"]
+    assert rebound_a.json()["provider_id"] == first.json()["provider_id"]
+    assert rebound_a.json()["feed_id"] == first.json()["feed_id"]
+
+    # Matching old scope identifiers must not re-authorise old A content.
+    stale = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": "9420:before-a-b-a",
+            **first_claim,
+        },
+    )
+    assert stale.status_code == 409, stale.text
+    assert db.query(models.Signal).count() == 0
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "SIGNAL_CREATED"
+    ).count() == 0
+
+
+def test_same_feed_reconnect_refuses_stale_screenshot_before_extractor(
+    client, db, monkeypatch,
+):
+    """Reconnected same-feed source cannot send an obsolete image to any model.
+
+    The offline stub would process the image if the expected-scope guard
+    misses the fresh authorisation generation. It never calls a paid model.
+    """
+    from types import SimpleNamespace
+    from app.routes import provider_sources
+
+    provider, feed, key = _provider(db, "source-stale-image")
+    telegram_id = "9421"
+    first = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert first.status_code == 200, first.text
+    old_scope = _source_claim(first.json())
+    revoked = client.post(
+        f"/providers/me/source-bindings/{first.json()['binding_id']}/revoke",
+        headers=_headers(provider, key),
+    )
+    assert revoked.status_code == 200, revoked.text
+    rebound = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert rebound.status_code == 200, rebound.text
+
+    extracted = []
+
+    class OfflineExtractor:
+        engine = "offline-test"
+
+        def extract(self, _image, *, mime):
+            extracted.append(mime)
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="high",
+                notes="",
+                raw_text=EUR_BUY,
+            )
+
+    monkeypatch.setattr(
+        provider_sources, "get_extractor", lambda: OfflineExtractor()
+    )
+    response = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": telegram_id, **old_scope},
+        files={"file": ("signal.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert response.status_code == 409, response.text
+    assert extracted == [], "Stale image reached extractor after reconnect"
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count() == 0
