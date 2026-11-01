@@ -2556,20 +2556,28 @@ def check_signal_create_backend_errors_remain_private() -> None:
 
 
 
-def check_preview_source_rebind_blocks_confirmation() -> None:
-    """A screenshot preview for feed A cannot be confirmed/edited into feed B."""
+def check_preview_source_rebind_blocks_confirmation(
+    *, same_feed_epoch_rotation: bool = False
+) -> None:
+    """An old preview cannot be confirmed after feed rebind OR epoch-only renewal."""
     assert config.require_license is True
     source_a = {
         "binding_id": "BINDING-A", "authorization_epoch": "a" * 32, "provider_id": "PROVIDER-A",
         "provider_name": "Provider A", "feed_id": "FEED-A",
         "feed_name": "Feed A", "source_type": "TELEGRAM", "status": "ACTIVE",
     }
-    # Real backend rebinding reuses the binding ID; feed/provider still change.
-    source_b = {
-        "binding_id": "BINDING-A", "authorization_epoch": "a" * 32, "provider_id": "PROVIDER-B",
-        "provider_name": "Provider B", "feed_id": "FEED-B",
-        "feed_name": "Feed B", "source_type": "TELEGRAM", "status": "ACTIVE",
-    }
+    # The real backend reuses binding IDs. A new invite to the SAME feed
+    # must be detected from the rotated epoch alone, not from provider/feed.
+    source_b = (
+        {**source_a, "authorization_epoch": "b" * 32}
+        if same_feed_epoch_rotation
+        else {
+            "binding_id": "BINDING-A", "authorization_epoch": "a" * 32,
+            "provider_id": "PROVIDER-B", "provider_name": "Provider B",
+            "feed_id": "FEED-B", "feed_name": "Feed B",
+            "source_type": "TELEGRAM", "status": "ACTIVE",
+        }
+    )
     extracted = {
         "parser_status": "VALID", "extracted_text": "EURUSD BUY SL 1.05 TP1 1.07",
         "symbol": "EURUSD", "direction": "BUY", "initial_stop_loss": 1.05,
@@ -3997,6 +4005,7 @@ def main() -> int:
     check_preview_callback_identity_and_single_use()
     check_shared_chat_preview_callbacks_fail_closed()
     check_preview_source_rebind_blocks_confirmation()
+    check_preview_source_rebind_blocks_confirmation(same_feed_epoch_rotation=True)
     check_edit_text_bound_to_preview_across_authorisation_await()
     check_shared_chat_text_edits_fail_closed()
     check_provider_source_status_requires_active_typed_binding()
