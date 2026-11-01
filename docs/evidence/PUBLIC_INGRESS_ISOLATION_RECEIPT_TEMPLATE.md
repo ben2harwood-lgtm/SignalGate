@@ -38,6 +38,9 @@ data room, **never** in the public repository or issue comments.
 2. Use an **outside-the-backend** test principal, not just an in-process
    FastAPI TestClient. Verify both the public edge and the private upstream.
    Keep the unauthorised test principal separate from any successful control.
+   Prove that the **same target endpoint** is reachable with a separately
+   authorised synthetic control; a denial from an unrelated route, dead
+   backend or misrouted proxy is not positive proof of isolation.
 3. For each scenario, record a redacted request/response pair (status,
    side effects, session identity and timestamp), an assessor-verified routing
    observation, and any application/security log event. A 401/403 alone is
@@ -53,13 +56,25 @@ data room, **never** in the public repository or issue comments.
 
 | ID | Isolated-environment observation | Required outcome | Actual | Evidence ref |
 | --- | --- | --- | --- | --- |
-| NI-01 | Unlicensed local-identity mode advertised/bound beyond loopback, or pointed at hosted PostgreSQL | Startup or schema initialisation refuses **before** serving privileged HTTP or mutating schema | NOT_RUN | — |
+| NI-01 | Independently exercise **(a)** public configured `BACKEND_HOST`/`BACKEND_BASE_URL`, **(b)** unlicensed PostgreSQL schema initialization and **(c)** a nonloopback actual ASGI listener overridden independently of loopback configuration | **(a)** Startup refuses before DB initialization; **(b)** schema initialization refuses before any mutation; **(c)** privileged HTTP is refused before route dispatch. Record all three separately; the actual listener's network isolation still requires NI-02 | NOT_RUN | — |
 | NI-02 | Attempt direct backend/upstream access from a distinct unauthorised network principal | No reachable privileged API; verify actual firewall/listener path, not only a DNS name | NOT_RUN | — |
 | NI-03 | Through the authorised staging edge, present **identity-only** local admin/provider headers with no actual service or tenant credential | No privileged read or mutation; auth or edge denial, with no secret/user data in response | NOT_RUN | — |
 | NI-04 | On a private assessor-owned test proxy that **rewrites Host to loopback and strips all Forwarded/X-Forwarded/other proxy-origin metadata**, repeat NI-03 | Local identity must **not** become authorisation merely because the upstream appears to be loopback. If it does, **FAIL/HOLD** | NOT_RUN | — |
 | NI-05 | Send attacker-controlled forwarding/Host variants through the authorised staging edge | Spoofed/duplicate forwarding or Host data does not confer privileges or escape the actual edge policy | NOT_RUN | — |
 | NI-06 | Use a correctly scoped *synthetic* hosted Provider A credential through the normal edge | Only permitted Provider A read succeeds; mismatched/revoked key and Provider B object access fail | NOT_RUN | — |
 | NI-07 | Inspect upstream/edge request and denial logs for NI-01–06 | No secret, credential, sensitive response, raw personal data, or untrusted Host/header disclosure; trace links to tested SHA | NOT_RUN | — |
+
+**NI-01 evidence interpretation:** Configured bind/URL validation occurs in
+`backend/app/config.py::Settings.validate_startup`; unlicensed engine/schema
+validation is in `backend/app/database.py::init_db`; actual ASGI listener and
+Host rejection occurs **per HTTP request** in `backend/app/main.py`, not at
+Uvicorn startup. A Uvicorn `--host` override can therefore start while requests
+are blocked. Do **not** report that observation as a startup refusal, and do
+**not** infer isolation merely from middleware HTTP 403. The distinct
+out-of-process/network observation NI-02 is still required. Synthetic
+`backend/tests/test_local_ingress_settings_guard.py` tests establish source
+behaviour, not network acceptance. NI-01 remains **NOT_RUN** until all three
+separate assessor observations have evidence.
 
 **Critical interpretation:** NI-04 is the specific blind spot recorded in
 issue #108. A passing in-process header test or an application-only 403
