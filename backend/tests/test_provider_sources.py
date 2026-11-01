@@ -1455,9 +1455,9 @@ def test_hosted_screenshot_previews_never_return_fabricated_fake_signal(
 def test_revoke_then_same_feed_reconnect_refuses_stale_preview(client, db):
     """A new invite to the same feed must not re-authorise a staged old preview.
 
-    This broker-free security regression proves a new authorisation generation
-    invalidates the old scope even when binding, provider and feed IDs match.
-    Do not merge this branch or claim an accepted release with a failing test.
+    This broker-free regression checks both refusal of obsolete claims and
+    successful signal creation under the newly rotated authorisation.
+    It does not establish external security or MT5 demo-broker acceptance.
     """
     provider, feed, key = _provider(db, "source-epoch-reconnect")
     telegram_id = "9419"
@@ -1505,6 +1505,27 @@ def test_revoke_then_same_feed_reconnect_refuses_stale_preview(client, db):
     assert db.query(models.AuditLog).filter(
         models.AuditLog.event_type == "SIGNAL_CREATED"
     ).count() == 0
+
+    # A fresh claim from the same feed must still work; rotating the
+    # authorisation may not permanently disable legitimate source activity.
+    fresh = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": "9419:after-reconnect",
+            **_source_claim(second.json()),
+        },
+    )
+    assert fresh.status_code == 200, fresh.text
+    assert fresh.json()["newly_created"] is True
+    assert fresh.json()["parser_status"] == "VALID"
+    assert fresh.json()["provider_id"] == provider.id
+    assert fresh.json()["feed_id"] == feed.id
+    assert db.query(models.Signal).count() == 1
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "SIGNAL_CREATED"
+    ).count() == 1
 
 
 def test_a_to_b_to_a_rebind_refuses_original_preview(client, db):
