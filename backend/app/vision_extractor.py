@@ -308,7 +308,9 @@ def get_extractor():
         return ClaudeExtractor()
     if engine == "fake":
         return FakeExtractor()
-    raise ValueError(f"Unknown SIGNAL_EXTRACTOR: {engine!r} (use 'claude' or 'fake')")
+    # Never echo an untrusted configuration value in logs or traces: it might
+    # accidentally contain a secret. Invalid modes must still fail closed.
+    raise ValueError("Unknown SIGNAL_EXTRACTOR (use 'claude' or 'fake')")
 
 
 def _has_real_api_key(value: Optional[str]) -> bool:

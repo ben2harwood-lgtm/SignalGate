@@ -411,3 +411,18 @@ def test_configured_synthetic_key_still_selects_extractor_without_network(monkey
     monkeypatch.delenv("SIGNAL_EXTRACTOR", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "offline-key-not-used")
     assert get_extractor().engine == "claude"
+
+
+@pytest.mark.parametrize(
+    "invalid_engine",
+    ["offline-synthetic-secret-marker", "OTHER-ENGINE", " synthetic-secret "],
+)
+def test_unrecognised_extractor_settings_never_echo_credential_values(
+    monkeypatch, invalid_engine
+):
+    # No network/client construction: errors must remain value-free even when
+    # a credential was accidentally pasted into the engine selector.
+    monkeypatch.setenv("SIGNAL_EXTRACTOR", invalid_engine)
+    with pytest.raises(ValueError, match="Unknown SIGNAL_EXTRACTOR") as exc:
+        get_extractor()
+    assert invalid_engine.strip().lower() not in str(exc.value).lower()
