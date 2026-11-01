@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from ipaddress import ip_address
 from typing import List, Optional
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -32,11 +34,89 @@ def sqlalchemy_driver_url(database_url: str) -> str:
     return database_url
 
 
-def _get_bool(key: str, default: bool) -> bool:
+def _is_loopback_host(host: str) -> bool:
+    """Never resolve arbitrary hostnames when guarding local header auth."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _local_demo_base_url_is_loopback(value: str) -> bool:
+    """Reject externally advertised URLs without accepting deceptive hosts."""
+    try:
+        parts = urlsplit(value)
+        # Accessing .port also validates malformed port syntax.
+        _ = parts.port
+        return (
+            parts.scheme in {"http", "https"}
+            and bool(parts.netloc)
+            and parts.username is None
+            and parts.password is None
+            and not parts.query
+            and not parts.fragment
+            and _is_loopback_host(parts.hostname or "")
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+
+def local_demo_http_ingress_is_loopback(server: object, host_header: Optional[str]) -> bool:
+    """Conservatively check the actual ASGI bound endpoint and HTTP Host.
+
+    BACKEND_HOST describes the intended listener, not a manually overridden
+    Uvicorn --host. The ASGI server tuple is independent of a spoofed Host.
+    Reject unknown/non-TCP binds and nonlocal/malformed Host values instead
+    of trusting either signal alone. This is defence in depth, not a proxy
+    security boundary: a proxy rewriting Host to loopback can mask the client.
+    """
+    if (
+        not isinstance(server, (tuple, list))
+        or len(server) != 2
+        or not isinstance(server[0], str)
+        or not _is_loopback_host(server[0])
+        or not isinstance(host_header, str)
+        or not host_header
+        or any(ord(c) <= 32 or ord(c) == 127 for c in host_header)
+    ):
+        return False
+    try:
+        parsed = urlsplit("http://" + host_header)
+        _ = parsed.port  # invalid ports must fail closed
+        return (
+            parsed.netloc == host_header
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.path
+            and not parsed.query
+            and not parsed.fragment
+            and _is_loopback_host(parsed.hostname)
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _get_bool(key: str, default: bool, *, strict: bool = False) -> bool:
     raw = os.getenv(key)
     if raw is None:
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    if strict:
+        # In particular, a mistyped REQUIRE_LICENSE must never silently
+        # downgrade a hosted deployment to local identity-header auth.
+        # Do not echo the raw environment value: it may contain secrets.
+        raise RuntimeError(
+            f"{key} requires an explicit boolean (true/false, 1/0, yes/no or on/off)."
+        )
+    return False
 
 
 def _get_float(key: str, default: float) -> float:
@@ -104,11 +184,11 @@ class Settings:
         # HOSTED MULTI-CUSTOMER: when true, an EA must present a valid, ACTIVE
         # customer license_key to receive commands; the local user_id fallback
         # is disabled. Defaults False so the local demo keeps working unchanged.
-        self.require_license: bool = _get_bool("REQUIRE_LICENSE", False)
+        self.require_license: bool = _get_bool("REQUIRE_LICENSE", False, strict=True)
 
         # SAFETY: demo-only mode defaults to True and should never be flipped
         # off for v1. Live trading is explicitly unsupported.
-        self.demo_only_mode: bool = _get_bool("DEMO_ONLY_MODE", True)
+        self.demo_only_mode: bool = _get_bool("DEMO_ONLY_MODE", True, strict=True)
 
         self.default_signal_expiry_minutes: int = _get_int(
             "DEFAULT_SIGNAL_EXPIRY_MINUTES", 5
@@ -137,11 +217,78 @@ class Settings:
             )
 
         if not self.require_license:
+            # Header-only local-demo identities are never suitable for an
+            # explicitly public bind or advertised API URL. This protects
+            # normal settings-driven launches, but cannot discover a manually
+            # overridden Uvicorn bind or an undisclosed reverse proxy.
+            if (
+                not _is_loopback_host(self.backend_host)
+                or not _local_demo_base_url_is_loopback(self.backend_base_url)
+            ):
+                raise RuntimeError(
+                    "Unlicensed local demo requires loopback "
+                    "BACKEND_HOST and BACKEND_BASE_URL."
+                )
             return
 
-        if self.database_url.startswith("sqlite"):
-            raise RuntimeError("Hosted mode requires PostgreSQL; SQLite is not supported.")
-        if not self.backend_base_url.lower().startswith("https://"):
+        # The hosted contract is PostgreSQL-only. A 'not sqlite' prefix
+        # check can accidentally accept another SQL backend or malformed URL.
+        # Never include the URL in the error: it may contain credentials.
+        from sqlalchemy.engine import make_url
+        from sqlalchemy.exc import ArgumentError
+
+        try:
+            database = make_url(sqlalchemy_driver_url(self.database_url))
+            # A dialect-only URL can silently fall back to a local Unix
+            # socket/default database. Hosted tenancy needs an explicit
+            # server AND database, not just a PostgreSQL scheme.
+            # libpq/psycopg2 query parameters can override the apparent
+            # URL host or database (including selecting a Unix socket).
+            # Preserve ordinary sslmode/options, but refuse target/identity
+            # overrides that make the operator's chosen DSN ambiguous.
+            authority_overrides = {
+                "host", "hostaddr", "port", "dbname", "database",
+                "user", "password", "service",
+            }
+            valid_postgresql_target = (
+                database.get_backend_name() == "postgresql"
+                and bool(database.host)
+                and bool(database.database)
+                and not any(
+                    key.lower() in authority_overrides for key in database.query
+                )
+            )
+        except (ArgumentError, TypeError, ValueError):
+            valid_postgresql_target = False
+        if not valid_postgresql_target:
+            # Never echo the DSN: it may contain provider credentials.
+            raise RuntimeError(
+                "Hosted mode requires PostgreSQL with an explicit host and database; invalid DATABASE_URL."
+            )
+        # A scheme prefix alone also accepts empty hosts, userinfo containing
+        # credentials, malformed ports and URLs with query parameters. Refuse
+        # such operator configuration before any hosted database I/O, without
+        # including the URL (which may contain secrets) in the error.
+        try:
+            base = urlsplit(self.backend_base_url)
+            _ = base.port
+            valid_https_base = (
+                base.scheme == "https"
+                and bool(base.netloc)
+                and bool(base.hostname)
+                and base.username is None
+                and base.password is None
+                and not base.query
+                and not base.fragment
+                and "\\" not in self.backend_base_url
+                and not any(
+                    ord(char) <= 32 or ord(char) == 127
+                    for char in self.backend_base_url
+                )
+            )
+        except (TypeError, ValueError):
+            valid_https_base = False
+        if not valid_https_base:
             raise RuntimeError("Hosted mode requires an HTTPS BACKEND_BASE_URL.")
 
         weak = {
@@ -163,6 +310,45 @@ class Settings:
                 raise RuntimeError(
                     f"Hosted mode requires a strong {name} (minimum 32 characters)."
                 )
+        # Service credentials protect different authority domains. A single
+        # otherwise-strong secret must not authenticate as multiple roles.
+        if len({value.strip() for value in required.values()}) != len(required):
+            raise RuntimeError(
+                "Hosted mode requires distinct EA_API_KEY, ADMIN_API_KEY and REGISTRATION_API_KEY."
+            )
+
+    def validate_cli_bootstrap(self) -> None:
+        """Fail closed for standalone database bootstrap commands.
+
+        The unlicensed bootstrap CLI is for local file-backed SQLite only.
+        Hosted bootstrap still requires validate_startup() and the existing
+        migration check in app.database.init_db(). This is a *CLI* boundary; other partial app-level guards do not
+        establish public network or reverse-proxy isolation (issue #108).
+        """
+        self.validate_startup()
+        if self.require_license:
+            return
+
+        from sqlalchemy.engine import make_url
+        from sqlalchemy.exc import ArgumentError
+
+        try:
+            url = make_url(self.database_url)
+        except (ArgumentError, TypeError, ValueError):
+            raise RuntimeError("Refusing CLI bootstrap: invalid database URL.") from None
+
+        if (
+            url.drivername != "sqlite"
+            or url.database in (None, "", ":memory:")
+            or bool(url.query)
+            or url.host is not None
+            or url.username is not None
+            or url.password is not None
+            or url.port is not None
+        ):
+            raise RuntimeError(
+                "Refusing CLI bootstrap: unlicensed mode requires a local SQLite file."
+            )
 
     def is_admin(self, telegram_user_id: str) -> bool:
         return str(telegram_user_id) in self.admin_telegram_ids

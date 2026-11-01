@@ -92,6 +92,13 @@ class ExtractionResult:
     notes: Optional[str] = None
 
 
+def _unreadable(engine: str, reason: str) -> ExtractionResult:
+    """Refuse untrusted or malformed vision output without a parsable trade."""
+    return ExtractionResult(
+        raw_text="", engine=engine, confidence="LOW", readable=False, notes=reason,
+    )
+
+
 class FakeExtractor:
     """Deterministic extractor for tests and API-less demos.
 
@@ -118,6 +125,9 @@ class FakeExtractor:
 
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+# Bound even malformed upstream HTTP envelopes before decoding or joining text.
+MAX_VISION_HTTP_BYTES = 65536
+MAX_MODEL_JSON_CHARS = 8192
 
 
 class ClaudeExtractor:
@@ -165,38 +175,79 @@ class ClaudeExtractor:
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
+            # Compression must not be applied before our response-size bound.
+            "accept-encoding": "identity",
         }
         try:
             with httpx.Client(timeout=60.0) as http:
-                resp = http.post(ANTHROPIC_URL, headers=headers, json=body)
-                resp.raise_for_status()
-                payload = resp.json()
-        except Exception as exc:  # noqa: BLE001
-            return ExtractionResult(
-                raw_text="", engine=self.engine, confidence="LOW", readable=False,
-                notes=f"Vision API error: {exc}",
-            )
+                # http.post()/resp.json() first buffers an untrusted, unbounded
+                # HTTP body. Request identity encoding and stream raw bytes in
+                # small chunks to refuse oversized data before JSON decoding.
+                with http.stream("POST", ANTHROPIC_URL, headers=headers, json=body) as resp:
+                    resp.raise_for_status()
+                    # httpx.iter_bytes() can expand a gzip/brotli bomb before
+                    # yielding a capped chunk. Reject all content encoding
+                    # other than identity BEFORE consuming response bytes.
+                    if resp.headers.get("content-encoding", "identity").strip().lower() != "identity":
+                        return _unreadable(self.engine, "Vision service returned unsupported encoding.")
+                    response_bytes = bytearray()
+                    for chunk in resp.iter_raw(chunk_size=8192):
+                        if len(chunk) > MAX_VISION_HTTP_BYTES - len(response_bytes):
+                            return _unreadable(self.engine, "Vision service response exceeds size limit.")
+                        response_bytes.extend(chunk)
+                    payload = json.loads(response_bytes, object_pairs_hook=_reject_duplicate_json_keys)
+        except Exception:  # noqa: BLE001
+            # Never return an HTTP transport/response exception string to the bot:
+            # these strings may contain credential-bearing request details.
+            return _unreadable(self.engine, "Vision service unavailable.")
 
-        text = "".join(
-            block.get("text", "")
-            for block in payload.get("content", [])
-            if block.get("type") == "text"
-        ).strip()
-        return _parse_model_json(text, engine=self.engine)
+        # Upstream JSON is untrusted. A malformed content envelope or block
+        # must refuse the whole preview, never produce a partial parse or 500.
+        if not isinstance(payload, dict) or not isinstance(payload.get("content"), list):
+            return _unreadable(self.engine, "Vision service returned invalid content.")
+        text_parts: list[str] = []
+        text_chars = 0
+        for block in payload["content"]:
+            if not isinstance(block, dict):
+                return _unreadable(self.engine, "Vision service returned invalid content.")
+            if block.get("type") == "text":
+                value = block.get("text")
+                if not isinstance(value, str):
+                    return _unreadable(self.engine, "Vision service returned invalid content.")
+                if len(value) > MAX_MODEL_JSON_CHARS - text_chars:
+                    return _unreadable(self.engine, "Vision response exceeds preview limit.")
+                text_chars += len(value)
+                text_parts.append(value)
+        return _parse_model_json("".join(text_parts).strip(), engine=self.engine)
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Refuse ambiguous JSON rather than silently trusting the last key."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate JSON field")
+        result[key] = value
+    return result
 
 
 def _parse_model_json(text: str, engine: str) -> ExtractionResult:
-    """Leniently parse the model's JSON response into an ExtractionResult."""
+    """Fail closed on untrusted model JSON before exposing a signal preview."""
+    # The model is configured for 400 output tokens. Refuse anomalously large
+    # upstream text before JSON parsing; never spend unbounded work on it.
+    if len(text) > MAX_MODEL_JSON_CHARS:
+        return _unreadable(engine, "Vision response exceeds preview limit.")
     payload = None
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
+        payload = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
+    # Python may raise ValueError for excessively long JSON integer literals;
+    # duplicate keys are also invalid. Never expose an untrusted parse failure.
+    except (ValueError, RecursionError):
         # Try to salvage a JSON object embedded in any extra prose.
         start, end = text.find("{"), text.rfind("}")
         if start != -1 and end != -1 and end > start:
             try:
-                payload = json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
+                payload = json.loads(text[start : end + 1], object_pairs_hook=_reject_duplicate_json_keys)
+            except (ValueError, RecursionError):
                 payload = None
 
     if not isinstance(payload, dict):
@@ -206,12 +257,45 @@ def _parse_model_json(text: str, engine: str) -> ExtractionResult:
             notes="Could not parse model response.",
         )
 
+    # In particular, bool("false") is True and list.strip() raises: never
+    # trust a model's booleans, text or notes without exact type checks.
+    readable = payload.get("readable")
+    raw_text = payload.get("signal_text")
+    confidence = payload.get("confidence", "LOW")
+    notes = payload.get("notes")
+    if (
+        type(readable) is not bool
+        or not isinstance(raw_text, str)
+        or not isinstance(confidence, str)
+        or confidence.strip().upper() not in {"HIGH", "MEDIUM", "LOW"}
+        or (notes is not None and not isinstance(notes, str))
+        # Notes appear verbatim in the operator preview. Refuse controls,
+        # bidirectional formatting and line breaks that could spoof fields.
+        or (isinstance(notes, str) and (len(notes) > 2048 or not notes.isprintable()))
+    ):
+        return _unreadable(engine, "Model response has invalid field types.")
+    if not readable:
+        # Do not let a structured false/unreadable result become a valid
+        # deterministic-parser preview merely because text was also present.
+        return _unreadable(engine, "Model did not identify a readable signal.")
+
+    normalized = raw_text.strip()
+    if (
+        not normalized
+        or len(normalized) > 2048
+        # Reject Unicode line/paragraph separators, bidi formatting and
+        # invisible/control characters, including at trimmed boundaries.
+        # Signal syntax is ASCII; non-ASCII annotations belong in notes.
+        or not raw_text.isascii()
+        or not raw_text.isprintable()
+    ):
+        return _unreadable(engine, "Model returned invalid signal text.")
     return ExtractionResult(
-        raw_text=(payload.get("signal_text") or "").strip(),
+        raw_text=normalized,
         engine=engine,
-        confidence=str(payload.get("confidence", "LOW")).upper(),
-        readable=bool(payload.get("readable", False)),
-        notes=payload.get("notes"),
+        confidence=confidence.strip().upper(),
+        readable=True,
+        notes=notes,
     )
 
 
@@ -224,10 +308,13 @@ def get_extractor():
         return ClaudeExtractor()
     if engine == "fake":
         return FakeExtractor()
-    raise ValueError(f"Unknown SIGNAL_EXTRACTOR: {engine!r} (use 'claude' or 'fake')")
+    # Never echo an untrusted configuration value in logs or traces: it might
+    # accidentally contain a secret. Invalid modes must still fail closed.
+    raise ValueError("Unknown SIGNAL_EXTRACTOR (use 'claude' or 'fake')")
 
 
 def _has_real_api_key(value: Optional[str]) -> bool:
-    if not value:
-        return False
-    return value.strip().lower() not in {"replace_me", "changeme", "todo"}
+    # Whitespace-only values are absent, not valid opt-ins for a paid HTTP
+    # extractor. Hosted mode must continue to refuse its synthetic fallback.
+    normalized = (value or "").strip().lower()
+    return bool(normalized) and normalized not in {"replace_me", "changeme", "todo"}

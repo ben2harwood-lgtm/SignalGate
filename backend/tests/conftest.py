@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.main import app, seed_settings  # noqa: E402
+import app.main as main_module  # noqa: E402
 
 ADMIN_HEADERS = {"X-Admin-Id": "999"}
 PROVIDER_HEADERS = {"X-Signal-Provider-Id": "777"}
@@ -41,9 +42,18 @@ def fresh_db():
 
 
 @pytest.fixture
-def client():
-    # TestClient triggers startup events (init_db + seed) which is harmless.
-    with TestClient(app) as c:
+def client(monkeypatch):
+    # The dedicated PostgreSQL CI matrix runs the full HTTP/tenancy suite
+    # against isolated, per-test ORM tables built by fresh_db above. It is
+    # deliberately NOT an unlicensed PostgreSQL application startup: the
+    # production init_db() guard must refuse that configuration. Replace only
+    # this test fixture's lifespan schema-initialization callback, not any
+    # production setting, route, identity check, or hosted schema verifier.
+    if engine.url.get_backend_name() == "postgresql":
+        monkeypatch.setattr(main_module, "init_db", lambda: None)
+    # Combine #125 PostgreSQL test-only lifespan override with #126 loopback ingress.
+    # Neither safeguard changes production code or grants local auth on PostgreSQL.
+    with TestClient(app, base_url="http://127.0.0.1:8000") as c:
         yield c
 
 

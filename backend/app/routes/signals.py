@@ -54,6 +54,11 @@ def extract_signal(
             detail="Signal image exceeds 5 MiB limit",
         )
     extractor = get_extractor()
+    if get_settings().require_license and extractor.engine == "fake":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Synthetic screenshot extraction is unavailable in hosted mode.",
+        )
     extracted = extractor.extract(image_bytes, mime=file.content_type or "image/png")
 
     parsed = (
@@ -170,7 +175,14 @@ def signal_recipients(
                 "telegram_user_id": user.telegram_user_id,
             }
             for user in users
-            if user.telegram_user_id.lstrip("-").isdigit()
+            if (
+                isinstance(user.telegram_user_id, str)
+                and user.telegram_user_id.isascii()
+                and user.telegram_user_id.isdecimal()
+                and not user.telegram_user_id.startswith("0")
+                and len(user.telegram_user_id) <= 16
+                and int(user.telegram_user_id) <= (1 << 52) - 1
+            )
         ]
     }
 

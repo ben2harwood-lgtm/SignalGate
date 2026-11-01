@@ -51,6 +51,16 @@ provider identity or an accepted live pilot.
 
 Runs the same backend suite against PostgreSQL so locking, constraints, tenancy and database-specific behaviour are exercised on the hosted engine.
 
+The PostgreSQL route-test fixture explicitly creates and drops its own isolated
+schema. It skips only the application's `init_db()` call inside TestClient's
+lifespan in this test matrix; the unlicensed PostgreSQL configuration is **not**
+an accepted deployment/startup mode. Production `init_db()` now refuses
+non-SQLite or mismatched local-mode engine/settings before any `create_all`.
+Standalone negative tests exercise both direct calls and the real ASGI startup
+boundary using inert database substitutes; no deployed database is contacted.
+This is a partial mitigation of issue #108, **not** proof that all reverse-proxy,
+direct Uvicorn or external local-auth ingress paths are contained.
+
 ### 3. Static security
 
 Bandit scans application, Telegram bot, simulator and scripts for medium/high findings. Test fixtures are excluded from the scan.
@@ -112,6 +122,40 @@ Every provider-scoped or execution-boundary change must preserve negative covera
 - audit-chain tampering.
 
 The deterministic parser fuzz/hostile corpus remains part of the automated assurance layer.
+
+### Screenshot vision-response boundary (post-RC)
+
+The image-to-text engine is **not** trade authority. Third-party model/API
+responses are untrusted: an explicit JSON boolean `readable: true`, correctly
+typed/bounded single-line signal text, accepted confidence/notes fields, and a
+valid service content envelope are required for a parseable preview. Malformed
+responses, false/unreadable flags, and transport failures produce **empty**
+extracted text with non-sensitive operator-facing errors, never a guessed
+signal or a raw HTTP exception. The normal deterministic parser and human
+provider confirmation remain separate mandatory stages before signal creation.
+
+The upstream service requests identity (uncompressed) content encoding and
+rejects compressed responses before reading/decompression. Its raw response
+stream is capped at 65,536 bytes before JSON parsing, and the combined model
+text is capped at 8,192
+characters while collecting content blocks, before joining or trimming.
+A nonempty preview must be printable ASCII only; invisible/bidirectional
+Unicode controls, non-ASCII line separators, DEL and trailing control characters
+fail closed. Natural-language annotations belong in `notes`, not in the signal
+text. Because `notes` is shown verbatim in the provider preview, notes with
+line breaks, invisible/bidirectional formatting or other nonprintable controls
+must also fail closed; printable international text remains allowed. Overlong integer literals in otherwise size-bounded model JSON must
+return an unreadable result, including after embedded-JSON salvage, rather than
+raising an uncaught parse error. Duplicate JSON object field names in the
+upstream HTTP envelope or model answer (including embedded JSON recovery)
+must fail closed rather than allowing last-value-wins ambiguity. These are
+offline input-boundary checks, not live OCR or MT5 evidence.
+
+`backend/tests/test_vision_extractor_failclosed.py` uses only synthetic JSON
+and `httpx.MockTransport` (no external API, customer data, Telegram, EA or
+broker connection). These tests prove defensive handling of selected hostile
+payloads, **not** the correctness of real model OCR, real provider delivery,
+MT5 demo acceptance or external security assurance.
 
 ## MT5 acceptance — external/manual
 

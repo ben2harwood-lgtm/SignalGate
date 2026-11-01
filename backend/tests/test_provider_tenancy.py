@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from app import crud, models, security
 
-from .conftest import register_user
+from .conftest import ADMIN_HEADERS, register_user
 
 VALID = "XAUUSD BUY SL 2343 TP1 2353"
 
@@ -179,3 +179,45 @@ def test_provider_command_carries_feed_and_account_ownership(client, db):
     finally:
         security.settings.registration_api_key = old_registration
         security.settings.require_license = False
+
+
+def test_provider_recipient_lookup_omits_group_and_invalid_chat_ids(client, db):
+    """Match the bot's private-user contract; one malformed ID must not stop all delivery."""
+    provider, feed, raw_key = _provider_fixture(db, "recipient-private")
+    allowed = register_user(client, "4503599627370495", "direct_ok", "Direct")
+    invalid_ids = (
+        "-1001234567890",  # group/channel chat, never a direct subscriber
+        "0", "045", "4503599627370496",  # zero, padded, beyond 52-bit bound
+        "12345678901234567", "１２３４",  # too long, non-ASCII digits
+    )
+    # Registration uses a separate TestClient DB session. Complete all HTTP
+    # writes before opening the fixture session's subscription transaction,
+    # otherwise SQLite reports a fixture-induced "database is locked".
+    users = [allowed] + [
+        register_user(client, chat_id, f"invalid_private_{idx}", "Invalid")
+        for idx, chat_id in enumerate(invalid_ids, start=1)
+    ]
+    for row in users:
+        crud.subscribe_user_to_feed(db, provider, feed, db.get(models.User, row["id"]))
+    db.commit()
+
+    security.settings.require_license = True
+    try:
+        response = client.get(
+            "/signals/recipients",
+            params={"feed_id": feed.id},
+            headers=_headers(provider, raw_key),
+        )
+        assert response.status_code == 200, response.text
+        assert [r["telegram_user_id"] for r in response.json()["recipients"]] == [
+            allowed["telegram_user_id"]
+        ]
+    finally:
+        security.settings.require_license = False
+
+    # Local-demo fallback also supplies the same allowlisted private-user IDs.
+    local_reply = client.get("/signals/recipients", headers=ADMIN_HEADERS)
+    assert local_reply.status_code == 200, local_reply.text
+    assert [r["telegram_user_id"] for r in local_reply.json()["recipients"]] == [
+        allowed["telegram_user_id"]
+    ]

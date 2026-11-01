@@ -31,9 +31,22 @@ Hosted startup must preserve:
 
 - `DEMO_ONLY_MODE=true`;
 - `REQUIRE_LICENSE=true`;
-- PostgreSQL;
-- HTTPS public base URL;
-- strong independent admin, registration/bot and EA service secrets;
+- both security-mode flags must have a recognised boolean value (case-insensitive
+  `true/false`, `1/0`, `yes/no` or `on/off`); empty/unknown values refuse
+  startup instead of silently falling back to unlicensed local identity headers;
+- PostgreSQL (the parsed `DATABASE_URL` must specify an explicit host and
+  database as well as a PostgreSQL dialect; malformed, implicit local-socket/
+  default-database, SQLite and other SQL dialect URLs are refused at startup
+  without printing the URL; query parameters that override database,
+  network endpoint or connection identity are refused, while ordinary TLS
+  options such as `sslmode=require` remain supported);
+- HTTPS public base URL with a parseable hostname (no embedded credentials,
+  malformed port, query, fragment, backslash or control whitespace; a reverse-proxy
+  path prefix is permitted); this is configuration validation, **not** proof of
+  public-edge TLS or private network ingress;
+- strong independent admin, registration/bot and EA service secrets; the
+  `EA_API_KEY`, `ADMIN_API_KEY` and `REGISTRATION_API_KEY` values must be
+  distinct (including after trimming surrounding whitespace), or startup refuses;
 - versioned Alembic schema at the exact current head.
 
 Provider/customer credentials are additional tenant/account credentials; do not reuse service secrets as provider/customer identity.
@@ -57,6 +70,27 @@ Never commit:
 - backup recovery private identity.
 
 Provider API keys and customer EA licences are returned only at issuance/rotation and are stored by SignalGate only in hashed/last-four form according to `docs/CREDENTIALS.md`.
+
+### Screenshot-reader safety for hosted demo deployments
+
+The supplied `.env.hosted.example` intentionally uses `SIGNAL_EXTRACTOR=fake`
+without a model API key so installation itself never invokes a paid extractor.
+That engine returns canned, image-independent signal text for **offline local
+rehearsal only**. Hosted Provider Edition **refuses screenshot previews** from
+both extract routes when the selected engine is fake (including the implicit
+fallback when no real key is configured): the caller receives HTTP 503, not a
+fabricated valid screenshot. This does not prevent separately human-authored,
+deterministically validated text signals in the demo workflow.
+
+An empty or whitespace-only `ANTHROPIC_API_KEY` is treated as absent, not as consent to invoke an external extractor. The automatic selection then uses the offline fake engine (which hosted screenshot endpoints refuse), while explicitly selecting Claude with no usable key refuses before making a model request. This is an offline configuration guard, not evidence of screenshot, broker or provider acceptance.
+
+An unsupported `SIGNAL_EXTRACTOR` selector fails closed with a value-free error; no configured selector text is reproduced in diagnostics, because it could accidentally contain a credential.
+
+Do not disable `REQUIRE_LICENSE` or mislabel fake output as genuine OCR to
+work around the guard. Real hosted screenshot ingestion requires a separately
+approved extractor configuration, an authorised cost/key arrangement, and
+actual provider-demo evidence. The offline guard tests prove only refusal of
+synthetic image extraction; they do not clear any external acceptance gate.
 
 ## 4. Database
 
@@ -131,6 +165,8 @@ The EA remains demo-only and must refuse a real account.
 Hosted provider signal source is feed-bound.
 
 Use `docs/PROVIDER_TELEGRAM_SOURCE.md`.
+
+The one-time `connection_token` issuance response sends `Cache-Control: no-store` so HTTP caches are instructed not to retain it. This does not erase browser memory, terminal transcripts, screenshots, or copied tokens; deliver tokens privately and revoke any exposed invite.
 
 Do not configure a shared hosted provider API key or shared provider invite code in place of the one-time source binding flow.
 

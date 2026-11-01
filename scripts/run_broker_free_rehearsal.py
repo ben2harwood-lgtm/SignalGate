@@ -69,6 +69,39 @@ def junit_result(path: Path, expected: list[str]) -> dict:
             "sha256": hashlib.sha256(report_bytes).hexdigest()}
 
 
+def rehearsal_test_env(scratch: Path) -> dict[str, str]:
+    """Give candidate tests synthetic config, not inherited operator credentials.
+
+    This reduces accidental credential inheritance but is NOT a security sandbox:
+    candidate Python code can still access host files and network interfaces.
+    Only run inspected candidate commits on isolated, uncredentialed hosts.
+    """
+    home = scratch / "rehearsal-home"
+    temp = scratch / "rehearsal-tmp"
+    home.mkdir(mode=0o700)
+    temp.mkdir(mode=0o700)
+    # Only non-secret OS process/runtime settings. In particular never propagate
+    # GitHub, cloud, provider, proxy, pytest or Python import-hook variables.
+    allowed_host_keys = (
+        "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
+        "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+    )
+    env = {key: os.environ[key] for key in allowed_host_keys if key in os.environ}
+    env.update({
+        "HOME": str(home), "USERPROFILE": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "TMPDIR": str(temp), "TMP": str(temp), "TEMP": str(temp),
+        "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
+        "SIGNALGATE_TEST_DATABASE_URL": f"sqlite:///{scratch / 'rehearsal.db'}",
+        "DATABASE_URL": f"sqlite:///{scratch / 'rehearsal.db'}",
+        "DEMO_ONLY_MODE": "true", "REQUIRE_LICENSE": "false",
+        "TELEGRAM_BOT_TOKEN": "", "ADMIN_API_KEY": "",
+        "REGISTRATION_API_KEY": "", "SIGNAL_PROVIDER_API_KEY": "",
+        "ALLOWED_SYMBOLS": "", "SIGNAL_EXTRACTOR": "fake",
+    })
+    return env
+
+
 def run(repo: Path, candidate: str, output: Path) -> dict:
     if not re.fullmatch(r"[0-9a-f]{40}", candidate):
         raise ValueError("--candidate-sha must be the full lowercase 40-character Git SHA")
@@ -92,13 +125,7 @@ def run(repo: Path, candidate: str, output: Path) -> dict:
             return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
         fingerprint_before = source_fingerprint()
         ea_hash_before = sha256(source / "mt5_ea/SignalGateEA.mq5")
-        env = os.environ.copy()
-        env.update({"SIGNALGATE_TEST_DATABASE_URL": f"sqlite:///{scratch / 'rehearsal.db'}",
-                    "DATABASE_URL": f"sqlite:///{scratch / 'rehearsal.db'}",
-                    "DEMO_ONLY_MODE": "true", "REQUIRE_LICENSE": "false",
-                    "TELEGRAM_BOT_TOKEN": "", "ADMIN_API_KEY": "",
-                    "REGISTRATION_API_KEY": "", "SIGNAL_PROVIDER_API_KEY": "",
-                    "ALLOWED_SYMBOLS": "", "SIGNAL_EXTRACTOR": "fake"})
+        env = rehearsal_test_env(scratch)
         command = [sys.executable, "-m", "pytest", "-q", *tests,
                    f"--junitxml={output / 'rehearsal-junit.xml'}"]
         with (output / "rehearsal.log").open("w") as log:

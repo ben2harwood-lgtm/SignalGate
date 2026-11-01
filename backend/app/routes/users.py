@@ -1,7 +1,7 @@
 """User registration endpoint."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy.orm import Session
 
 from .. import crud
@@ -15,6 +15,7 @@ router = APIRouter(tags=["users"])
 @router.post("/register_user", response_model=UserOut)
 def register_user(
     payload: RegisterUserRequest,
+    response: Response,
     db: Session = Depends(get_db),
     _registration: str = Depends(require_registration),
 ) -> UserOut:
@@ -26,6 +27,7 @@ def register_user(
     )
     issued = getattr(user, "_issued_license_key", None)
     db.commit()
+    response.headers["Cache-Control"] = "no-store"
     return UserOut(
         id=user.id,
         telegram_user_id=user.telegram_user_id,

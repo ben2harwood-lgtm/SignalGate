@@ -14,6 +14,14 @@ Every HTTP response carries `X-Request-Id`. The backend writes one structured JS
 
 Headers, query values, request/response bodies, licences and API keys are deliberately excluded.
 
+An inbound `X-Request-Id` is a **correlation hint, not an identity or
+authorisation credential**. Only 1–128 ASCII letters, digits, `_`, `-`,
+`.` and `:` are echoed and logged. Missing, oversized, control-bearing,
+whitespace, Unicode or otherwise invalid values are replaced with a generated
+32-character hexadecimal ID before the response/log is written. This bounds
+untrusted values entering the log pipeline; it does not authenticate callers
+or prove the identity of a reverse proxy.
+
 ## Protected metrics
 
 `GET /admin/metrics` uses normal platform-admin authentication. It reports aggregate operational counts only:
@@ -99,6 +107,20 @@ demo-only, authorisation or metric-schema checks. The script cannot establish
 time-series SLOs, persistent alert routing, broker truth, receipt provenance or
 production monitoring. Use an independently configured central monitor and
 the release acceptance index before marking G6 complete.
+
+## Backend Telegram delivery diagnostics
+
+Backend Telegram messages are best-effort only. When the bot is disabled, logs
+contain a generic skipped-send event, **not** chat ids or signal/notification
+text. Transport/client exceptions are logged as a generic delivery failure,
+because exception messages and request URLs can include the Telegram bot
+credential in their URL path. The server does not log the raw exception,
+destination, message content or response body. HTTPX's INFO-level request
+logging is suppressed in the backend because those request URLs would contain
+the Telegram bot credential in the API path. This suppresses generic HTTPX
+request INFO logs globally; SignalGate's redacted request telemetry remains
+separate. This logging restriction does
+not establish Telegram delivery reliability or external acceptance.
 
 ## Remaining production work
 

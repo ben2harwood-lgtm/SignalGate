@@ -16,7 +16,10 @@ def test_hosted_backup_requires_encryption_or_explicit_plaintext_escape():
 
 def test_encrypted_restore_requires_identity_and_checksum():
     assert "BACKUP_AGE_IDENTITY_FILE" in RESTORE
-    assert "sha256sum --check" in RESTORE
+    assert 'cat -- "$BACKUP_FILE" > "$verified_backup"' in RESTORE
+    assert 'digest_record="$(sha256sum "$verified_backup")"' in RESTORE
+    assert 'restore_file="$verified_backup"' in RESTORE
+    assert 'cmp -s <(printf' in RESTORE
     assert "age --decrypt" in RESTORE
     assert "BACKUP_ALLOW_PLAINTEXT_RESTORE" in RESTORE
     assert "Refusing plaintext restore" in RESTORE

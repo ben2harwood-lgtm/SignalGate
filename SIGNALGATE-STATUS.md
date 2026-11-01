@@ -1,6 +1,6 @@
 # SignalGate — Canonical Status
 
-**Ledger updated 21 October 2026.** The RC2 section records the frozen 19 September 2026 candidate; post-RC integration and remaining acceptance gates are tracked below.
+**Ledger updated 1 November 2026 (frozen RC2 compiler-gate correction).** The RC2 section records the frozen 19 September 2026 candidate; post-RC integration and remaining acceptance gates are tracked below.
 
 ## Product position
 
@@ -21,7 +21,7 @@ SignalGate does not supply proprietary investment signals, does not promise prof
 - The hosted schema is versioned through ten Alembic revisions:
   `20260918_0001` baseline -> `20260919_0002` execution safety -> `0003` replay identity -> `0004` provider tenancy -> `0005` provider branding -> `0006` feed policy -> `0007` customer-licence hashing -> `0008` subscription invites -> `0009` provider-source bindings -> `0010` audit hash chain.
 
-Use RC2 for all new external/manual acceptance work once its final freeze CI is green. RC1 remains an immutable historical checkpoint.
+**STOP — frozen RC2 is NOT an MT5 broker-demo acceptance candidate.** Its final post-freeze CI #137 ([run 35462909294](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35462909294)) succeeded, but the official MetaEditor run compiling the **exact frozen RC2 source** `3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2` **FAILED with 18 errors / 4 warnings** ([run 35464044898](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464044898)). Later successful post-RC source compiles do not retroactively accept RC2. Preserve frozen RC2 and RC1 as historical evidence; do **not** start new MT5 broker-demo acceptance against RC2's failed EA. A separately pinned successor needs independent review, new exact-source CI, official 0-error/0-warning compilation with a fresh source-bound EX5, and subsequently genuine controlled demo-broker scenario receipts. External release gates remain open.
 
 ## RC2 improvements over RC1
 
@@ -67,7 +67,7 @@ RC2 does not broaden the trading mode. It improves readiness and evidence qualit
 
 These are **not software features to paper over**. They require external or deployed-environment evidence.
 
-1. **MT5 compiler/demo receipt** — compile the exact RC2 `SignalGateEA.mq5` in target MetaEditor with 0 errors / 0 warnings and retain the compiler log/screenshot.
+1. **MT5 compiler/demo receipt — BLOCKED on frozen RC2** — its exact-source official compile failed (18 errors / 4 warnings; run 35464044898). Do not use it for new broker-demo acceptance. Independently review and pin a repaired successor, then require new exact-source MetaEditor 0 errors / 0 warnings, a fresh EX5 and retained compiler log/screenshot before any controlled demo-broker scenarios.
 2. **MT5 demo scenario evidence** — run the scenarios in `docs/MT5_ACCEPTANCE.md`, including fill, rejection, suffix, LIMIT refusal, stop-out/manual-close attribution, netting fallback, lost-callback recovery, restart blocking and reconciliation conflict.
 3. **Central production telemetry** — connect a real log/metrics backend, alert routing, retention and on-call ownership; then accumulate measured SLO history.
 4. **Production-like recovery drill** — retain scheduled restore evidence and measured RTO/RPO, beyond CI smoke.

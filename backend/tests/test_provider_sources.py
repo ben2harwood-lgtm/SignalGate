@@ -64,6 +64,25 @@ def _connect(client, invite, telegram_user_id, headers=None):
     )
 
 
+def test_source_invite_issuance_disables_http_caching(client, db):
+    """An authenticated one-time source token must not be reusable from an HTTP cache."""
+    provider, feed, key = _provider(db, "source-invite-cache")
+    issued = client.post(
+        "/providers/me/source-invites",
+        json={"feed_id": feed.id, "expires_minutes": 60},
+        headers=_headers(provider, key),
+    )
+    assert issued.status_code == 200, issued.text
+    assert issued.json()["connection_token"].startswith("sgs_")
+    assert issued.headers.get("cache-control") == "no-store"
+
+    listed = client.get("/providers/me/source-invites", headers=_headers(provider, key))
+    assert listed.status_code == 200, listed.text
+    same_invite = next(
+        row for row in listed.json() if row["invite_id"] == issued.json()["invite_id"]
+    )
+    assert same_invite["connection_token"] is None
+
 def test_source_token_returned_once_but_never_persisted_or_listed(client, db):
     provider, feed, key = _provider(db, "source-token")
     created = _source_invite(client, provider, feed, key)
@@ -160,6 +179,290 @@ def test_source_status_returns_effective_expiry_for_bot(client, db):
     created_at = dt.datetime.fromisoformat(signal["created_at"])
     expires_at = dt.datetime.fromisoformat(signal["expires_at"])
     assert abs((expires_at - created_at).total_seconds() - 23 * 60) < 5
+
+
+@pytest.mark.parametrize("competing_action", ["connect", "revoke"])
+def test_source_invite_concurrent_claim_or_revoke_postgresql(
+    client, db, competing_action
+):
+    """Only one claimant wins, and a concurrent revoke cannot undo acceptance.
+
+    These are two distinct PostgreSQL transactions. The first has accepted
+    an invite but has not committed; the second starts while that row is
+    still locked. Neither synthetic client ever contacts Telegram or MT5.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from time import sleep
+
+    from sqlalchemy import event
+    from app.database import SessionLocal
+
+    provider, feed, key = _provider(db, f"source-once-{competing_action}")
+    provider_id = provider.id
+    invite = _source_invite(client, provider, feed, key)
+    invite_id = invite["invite_id"]
+    token = invite["connection_token"]
+    invite_read_started = Event()
+    invite_read_finished = Event()
+
+    def competitor():
+        with SessionLocal() as second:
+            # A future timeout cannot terminate a PostgreSQL lock waiter:
+            # bound waits at the database level even if this test regresses.
+            connection = second.connection()
+            connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+
+            def observe_sql(_conn, _cursor, statement, _params, _ctx, _many):
+                if "FROM provider_source_invites" in statement:
+                    invite_read_started.set()
+
+            event.listen(connection, "before_cursor_execute", observe_sql)
+            original_scalar = second.scalar
+
+            def observe_scalar(statement, *args, **kwargs):
+                value = original_scalar(statement, *args, **kwargs)
+                if "provider_source_invites" in str(statement):
+                    invite_read_finished.set()
+                return value
+
+            second.scalar = observe_scalar
+            try:
+                if competing_action == "connect":
+                    crud.connect_telegram_provider_source(second, token, "98002")
+                else:
+                    crud.revoke_provider_source_invite(
+                        second, provider_id, invite_id
+                    )
+            except ValueError as exc:
+                second.rollback()
+                return str(exc)
+            second.commit()
+            return "UNEXPECTED_SUCCESS"
+
+    with SessionLocal() as first:
+        crud.connect_telegram_provider_source(first, token, "98001")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(competitor)
+            try:
+                assert invite_read_started.wait(timeout=5), (
+                    "Competing PostgreSQL transaction did not reach invite SELECT"
+                )
+                # A missing FOR UPDATE lets the second worker read PENDING
+                # before the first commit, even if a later UPDATE/audit blocks.
+                # Prove that the invite SELECT itself is held by our row lock.
+                sleep(0.2)
+                assert not invite_read_finished.is_set(), (
+                    "Competing invite read escaped the uncommitted row lock"
+                )
+            finally:
+                first.commit()
+            outcome = future.result(timeout=18)
+            assert invite_read_finished.is_set()
+
+    expected = (
+        "Source invite is no longer active"
+        if competing_action == "connect"
+        else "Accepted source invite cannot be revoked"
+    )
+    assert outcome == expected
+    with SessionLocal() as check:
+        stored = check.get(models.ProviderSourceInvite, invite_id)
+        assert stored.status == "ACCEPTED"
+        assert stored.accepted_telegram_user_id == "98001"
+        bindings = (
+            check.query(models.ProviderSourceBinding)
+            .filter(models.ProviderSourceBinding.external_identity.in_(
+                ["98001", "98002"]
+            ))
+            .all()
+        )
+        assert len(bindings) == 1
+        assert bindings[0].external_identity == "98001"
+
+
+def test_distinct_invites_first_binding_serializes_postgresql(client, db):
+    """Two provider invites cannot concurrently INSERT the same new source.
+
+    The unique constraint prevents duplicate committed rows but does not
+    serialize the first, previously absent identity. Both valid invitations
+    should complete without an unhandled integrity error. No broker is used.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from time import sleep
+
+    from sqlalchemy import event
+    from app.database import SessionLocal
+
+    first_provider, first_feed, first_key = _provider(db, "first-new-identity")
+    next_provider, next_feed, next_key = _provider(db, "second-new-identity")
+    first_invite = _source_invite(client, first_provider, first_feed, first_key)
+    next_invite = _source_invite(client, next_provider, next_feed, next_key)
+    first_invite_id, next_invite_id = first_invite["invite_id"], next_invite["invite_id"]
+    next_provider_id = next_provider.id
+    identity = "98004"
+    lock_started, lock_finished = Event(), Event()
+
+    def competing_first_binding():
+        with SessionLocal() as second:
+            connection = second.connection()
+            connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+
+            def before_sql(_conn, _cursor, statement, _params, _ctx, _many):
+                if "pg_advisory_xact_lock" in statement:
+                    lock_started.set()
+
+            def after_sql(_conn, _cursor, statement, _params, _ctx, _many):
+                if "pg_advisory_xact_lock" in statement:
+                    lock_finished.set()
+
+            event.listen(connection, "before_cursor_execute", before_sql)
+            event.listen(connection, "after_cursor_execute", after_sql)
+            crud.connect_telegram_provider_source(
+                second, next_invite["connection_token"], identity
+            )
+            second.commit()
+            return "ACCEPTED"
+
+    with SessionLocal() as first:
+        crud.connect_telegram_provider_source(
+            first, first_invite["connection_token"], identity
+        )
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(competing_first_binding)
+            try:
+                assert lock_started.wait(timeout=5), (
+                    "Competing first-bind did not attempt the identity lock"
+                )
+                sleep(0.2)
+                assert not lock_finished.is_set(), (
+                    "Second first-bind escaped the uncommitted source-identity lock"
+                )
+            finally:
+                first.commit()
+            assert future.result(timeout=18) == "ACCEPTED"
+
+    assert lock_finished.is_set()
+    with SessionLocal() as check:
+        first_stored = check.get(models.ProviderSourceInvite, first_invite_id)
+        next_stored = check.get(models.ProviderSourceInvite, next_invite_id)
+        assert first_stored.status == next_stored.status == "ACCEPTED"
+        assert first_stored.accepted_telegram_user_id == identity
+        assert next_stored.accepted_telegram_user_id == identity
+        bindings = check.query(models.ProviderSourceBinding).filter(
+            models.ProviderSourceBinding.source_type == "TELEGRAM",
+            models.ProviderSourceBinding.external_identity == identity,
+        ).all()
+        assert len(bindings) == 1
+        assert bindings[0].provider_id == next_provider_id
+        assert bindings[0].status == "ACTIVE"
+        assert check.query(models.AuditLog).filter(
+            models.AuditLog.entity_id == bindings[0].id,
+            models.AuditLog.event_type == "PROVIDER_SOURCE_CONNECTED",
+        ).count() == 2
+
+
+def test_rebind_blocks_stale_provider_revocation_postgresql(client, db):
+    """A previously owning provider cannot revoke a newly rebound source.
+
+    This interleaves separate PostgreSQL transactions; a stale owner attempts
+    to revoke while the new provider's rebind remains uncommitted. It does not
+    send Telegram messages, connect to a broker, or execute an order.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from time import sleep
+
+    from sqlalchemy import event
+    from app.database import SessionLocal
+
+    old_provider, old_feed, old_key = _provider(db, "stale-binding-owner")
+    new_provider, new_feed, new_key = _provider(db, "new-binding-owner")
+    old_id, new_id, new_feed_id = old_provider.id, new_provider.id, new_feed.id
+    old_invite = _source_invite(client, old_provider, old_feed, old_key)
+    original = _connect(client, old_invite, "98003")
+    assert original.status_code == 200, original.text
+    binding_id = original.json()["binding_id"]
+    new_invite = _source_invite(client, new_provider, new_feed, new_key)
+
+    binding_read_started = Event()
+    binding_read_finished = Event()
+
+    def stale_owner_revoke():
+        with SessionLocal() as competing:
+            connection = competing.connection()
+            connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+
+            def observe_sql(_conn, _cursor, statement, _params, _ctx, _many):
+                if "FROM provider_source_bindings" in statement:
+                    binding_read_started.set()
+
+            event.listen(connection, "before_cursor_execute", observe_sql)
+            original_scalar = competing.scalar
+
+            def observe_scalar(statement, *args, **kwargs):
+                result = original_scalar(statement, *args, **kwargs)
+                if "provider_source_bindings" in str(statement):
+                    binding_read_finished.set()
+                return result
+
+            competing.scalar = observe_scalar
+            try:
+                crud.revoke_provider_source_binding(competing, old_id, binding_id)
+            except ValueError as exc:
+                competing.rollback()
+                return str(exc)
+            competing.commit()
+            return "UNEXPECTED_SUCCESS"
+
+    with SessionLocal() as first:
+        crud.connect_telegram_provider_source(
+            first, new_invite["connection_token"], "98003"
+        )
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(stale_owner_revoke)
+            try:
+                assert binding_read_started.wait(timeout=5), (
+                    "Stale revoke did not reach the binding SELECT"
+                )
+                sleep(0.2)
+                assert not binding_read_finished.is_set(), (
+                    "Stale revoke read the old owner despite an in-flight rebind"
+                )
+            finally:
+                first.commit()
+            outcome = future.result(timeout=18)
+
+    assert outcome == "Source binding not found"
+    assert binding_read_finished.is_set()
+    with SessionLocal() as check:
+        binding = check.get(models.ProviderSourceBinding, binding_id)
+        assert binding.provider_id == new_id
+        assert binding.feed_id == new_feed_id
+        assert binding.external_identity == "98003"
+        assert binding.status == "ACTIVE"
+        assert (
+            check.query(models.AuditLog)
+            .filter(
+                models.AuditLog.entity_id == binding_id,
+                models.AuditLog.event_type == "PROVIDER_SOURCE_REVOKED",
+            )
+            .count()
+            == 0
+        )
 
 
 def test_rebinding_requires_a_new_provider_owned_token_and_is_audited(client, db):
@@ -1086,3 +1389,58 @@ def test_portal_and_bot_are_wired_to_tenant_source_routes(client):
     assert '"/provider-sources/telegram/signals"' in handler_source
     assert "/provider-sources/telegram/extract" in handler_source
     assert '"/provider-sources/telegram/recipients"' in handler_source
+
+
+@pytest.mark.parametrize("engine_setting", ["fake", ""])
+def test_hosted_screenshot_previews_never_return_fabricated_fake_signal(
+    client, db, monkeypatch, engine_setting,
+):
+    """Hosted previews must refuse canned data even if its parser status would be VALID."""
+    from app.vision_extractor import FakeExtractor
+
+    provider, feed, key = _provider(db, f"fake-guard-{engine_setting or 'default'}")
+    invite = _source_invite(client, provider, feed, key)
+    connected = _connect(client, invite, "9388")
+    assert connected.status_code == 200, connected.text
+
+    monkeypatch.setenv("SIGNAL_EXTRACTOR", engine_setting)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    def forbidden_fake_extract(*args, **kwargs):
+        raise AssertionError("Synthetic model was called in hosted mode")
+
+    monkeypatch.setattr(FakeExtractor, "extract", forbidden_fake_extract)
+    prior_hosted = security.settings.require_license
+    prior_bot_key = security.settings.registration_api_key
+    security.settings.require_license = True
+    security.settings.registration_api_key = "r" * 40
+    try:
+        generic = client.post(
+            "/signals/extract",
+            headers=_headers(provider, key),
+            files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+        )
+        source_bound = client.post(
+            "/provider-sources/telegram/extract",
+            params={"telegram_user_id": "9388", **_source_claim(connected.json())},
+            headers={"X-Registration-API-Key": "r" * 40},
+            files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+        )
+        for response in (generic, source_bound):
+            assert response.status_code == 503, response.text
+            assert "synthetic screenshot extraction" in response.text.lower()
+            assert "extracted_text" not in response.text
+
+        # Neither route wrote a fabricated extraction-success audit receipt.
+        rows = (
+            db.query(models.AuditLog)
+            .filter(models.AuditLog.event_type.in_([
+                "SIGNAL_IMAGE_EXTRACTED",
+                "PROVIDER_SOURCE_IMAGE_EXTRACTED",
+            ]))
+            .all()
+        )
+        assert not rows
+    finally:
+        security.settings.require_license = prior_hosted
+        security.settings.registration_api_key = prior_bot_key
