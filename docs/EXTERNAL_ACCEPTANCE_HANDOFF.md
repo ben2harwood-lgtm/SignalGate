@@ -40,6 +40,7 @@ Do not use real-money accounts.
 Provide the assessor:
 
 - `docs/PENTEST_SCOPE.md`;
+- `docs/evidence/PUBLIC_INGRESS_ISOLATION_RECEIPT_TEMPLATE.md` (NI-01–NI-07 **NOT_RUN** until independent, isolated ingress tests; issue #108 remains HOLD);
 - `docs/SECURITY_OVERVIEW.md`;
 - `docs/PRIVACY_DATA_MAP.md`;
 - `docs/ARCHITECTURE.md`;
