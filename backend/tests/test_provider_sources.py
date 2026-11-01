@@ -1455,9 +1455,8 @@ def test_hosted_screenshot_previews_never_return_fabricated_fake_signal(
 def test_revoke_then_same_feed_reconnect_refuses_stale_preview(client, db):
     """A new invite to the same feed must not re-authorise a staged old preview.
 
-    This is a deliberately RED, broker-free security regression on a separate
-    draft branch. The current three-part source claim has no authorisation
-    generation, so the old snapshot is expected to slip through until fixed.
+    This broker-free security regression proves a new authorisation generation
+    invalidates the old scope even when binding, provider and feed IDs match.
     Do not merge this branch or claim an accepted release with a failing test.
     """
     provider, feed, key = _provider(db, "source-epoch-reconnect")
@@ -1612,3 +1611,82 @@ def test_same_feed_reconnect_refuses_stale_screenshot_before_extractor(
     assert db.query(models.AuditLog).filter(
         models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
     ).count() == 0
+
+
+def test_same_feed_reconnect_during_extraction_refuses_old_epoch_postgresql(
+    client, db, monkeypatch,
+):
+    """A separate real PostgreSQL transaction can renew A -> A mid-extraction.
+
+    The provider/feed/binding identifiers stay unchanged. Only the renewed
+    authorisation generation can distinguish the previously captured image.
+    No real Telegram, vision service, provider data or broker is involved.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from types import SimpleNamespace
+
+    from app.database import SessionLocal
+
+    provider, feed, key = _provider(db, "extract-inflight-same-feed")
+    telegram_id = "9422"
+    original = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    ).json()
+    renewal = _source_invite(client, provider, feed, key)
+    calls = []
+
+    class RenewDuringExtraction:
+        engine = "offline-test"
+
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG
+            assert mime == "image/png"
+            with SessionLocal() as writer:
+                # An accidentally held source lock must fail the test rather
+                # than hang the CI runner during this synchronous extraction.
+                conn = writer.connection()
+                conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+                conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+                _invite, binding, rebound_provider, rebound_feed = (
+                    crud.connect_telegram_provider_source(
+                        writer, renewal["connection_token"], telegram_id
+                    )
+                )
+                assert binding.id == original["binding_id"]
+                assert rebound_provider.id == provider.id
+                assert rebound_feed.id == feed.id
+                assert binding.authorization_epoch != original["authorization_epoch"]
+                writer.commit()
+            calls.append("renewed")
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="HIGH",
+                notes="",
+                raw_text=EUR_BUY,
+            )
+
+    monkeypatch.setattr(
+        "app.routes.provider_sources.get_extractor",
+        lambda: RenewDuringExtraction(),
+    )
+    before = db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count()
+    refused = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": telegram_id, **_source_claim(original)},
+        files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert calls == ["renewed"], "Extraction did not reach the renewal"
+    assert refused.status_code == 409, refused.text
+    db.expire_all()
+    binding = db.get(models.ProviderSourceBinding, original["binding_id"])
+    assert binding.provider_id == provider.id
+    assert binding.feed_id == feed.id
+    assert binding.authorization_epoch != original["authorization_epoch"]
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count() == before, "Old-epoch extraction was incorrectly audited"
