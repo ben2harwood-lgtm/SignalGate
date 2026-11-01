@@ -6,10 +6,14 @@ import os
 import re
 from pathlib import Path
 
-from alembic.operations import Operations
-from alembic.runtime.migration import MigrationContext
 import pytest
 import sqlalchemy as sa
+
+# The lightweight backend job intentionally lacks hosted Alembic dependencies.
+# Run the populated-migration assertions in the hosted PostgreSQL CI job.
+pytest.importorskip("alembic", reason="Hosted migration dependencies required")
+from alembic.operations import Operations
+from alembic.runtime.migration import MigrationContext
 
 
 _REVISION = (
