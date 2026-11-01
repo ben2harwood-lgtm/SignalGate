@@ -292,6 +292,7 @@ def check_screenshot_extraction_fail_closed() -> None:
                 "expected_binding_id": "BINDING-OFFLINE",
                 "expected_provider_id": "PROVIDER-OFFLINE",
                 "expected_feed_id": "FEED-OFFLINE",
+                "expected_authorization_epoch": "a" * 32,
             }, "Hosted screenshot test lost its original source claim"
             if fail is not None:
                 raise RuntimeError(fail)
@@ -1963,6 +1964,7 @@ def check_overlapping_screenshot_attempts_fail_closed() -> None:
                 "expected_binding_id": "BINDING-OFFLINE",
                 "expected_provider_id": "PROVIDER-OFFLINE",
                 "expected_feed_id": "OFFLINE",
+                    "expected_authorization_epoch": "a" * 32,
             }, "Delayed screenshot extraction lost its source snapshot"
             return httpx.Response(
                 200, json={
@@ -2583,6 +2585,7 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
             "expected_binding_id": "BINDING-A",
             "expected_provider_id": "PROVIDER-A",
             "expected_feed_id": "FEED-A",
+                "expected_authorization_epoch": "a" * 32,
         }, "Bot failed to pin screenshot extraction to its source snapshot"
         return httpx.Response(200, json=extracted)
 
