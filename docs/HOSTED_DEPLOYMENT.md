@@ -78,6 +78,8 @@ fallback when no real key is configured): the caller receives HTTP 503, not a
 fabricated valid screenshot. This does not prevent separately human-authored,
 deterministically validated text signals in the demo workflow.
 
+An empty or whitespace-only `ANTHROPIC_API_KEY` is treated as absent, not as consent to invoke an external extractor. The automatic selection then uses the offline fake engine (which hosted screenshot endpoints refuse), while explicitly selecting Claude with no usable key refuses before making a model request. This is an offline configuration guard, not evidence of screenshot, broker or provider acceptance.
+
 Do not disable `REQUIRE_LICENSE` or mislabel fake output as genuine OCR to
 work around the guard. Real hosted screenshot ingestion requires a separately
 approved extractor configuration, an authorised cost/key arrangement, and

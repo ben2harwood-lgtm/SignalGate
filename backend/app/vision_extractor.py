@@ -312,6 +312,7 @@ def get_extractor():
 
 
 def _has_real_api_key(value: Optional[str]) -> bool:
-    if not value:
-        return False
-    return value.strip().lower() not in {"replace_me", "changeme", "todo"}
+    # Whitespace-only values are absent, not valid opt-ins for a paid HTTP
+    # extractor. Hosted mode must continue to refuse its synthetic fallback.
+    normalized = (value or "").strip().lower()
+    return bool(normalized) and normalized not in {"replace_me", "changeme", "todo"}

@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from app.vision_extractor import ClaudeExtractor, _parse_model_json
+from app.vision_extractor import ClaudeExtractor, _parse_model_json, get_extractor
 
 
 TRADE = "XAUUSD BUY ENTRY 2348 SL 2343 TP1 2353 TP2 2358 TP3 2363"
@@ -384,3 +384,30 @@ def test_vision_signal_allows_plain_ascii_surrounding_spaces():
     )
     assert result.readable is True
     assert result.raw_text == TRADE
+
+
+@pytest.mark.parametrize(
+    "api_key",
+    ["", " ", " \t\n ", "replace_me", " CHANGEME ", "todo"],
+)
+def test_empty_or_placeholder_vision_key_cannot_start_an_external_request(
+    monkeypatch, api_key
+):
+    # The automatic path must not mistake whitespace for a configured key.
+    # Explicit Claude selection must still refuse before constructing httpx.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", api_key)
+    monkeypatch.delenv("SIGNAL_EXTRACTOR", raising=False)
+    assert get_extractor().engine == "fake"
+    monkeypatch.setenv("SIGNAL_EXTRACTOR", "claude")
+
+    def no_external_client(*args, **kwargs):
+        pytest.fail("a missing/placeholder model key constructed an HTTP client")
+
+    monkeypatch.setattr(httpx, "Client", no_external_client)
+    _must_refuse(get_extractor().extract(b"synthetic-image-bytes"))
+
+
+def test_configured_synthetic_key_still_selects_extractor_without_network(monkeypatch):
+    monkeypatch.delenv("SIGNAL_EXTRACTOR", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "offline-key-not-used")
+    assert get_extractor().engine == "claude"
