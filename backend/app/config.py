@@ -242,10 +242,21 @@ class Settings:
             # A dialect-only URL can silently fall back to a local Unix
             # socket/default database. Hosted tenancy needs an explicit
             # server AND database, not just a PostgreSQL scheme.
+            # libpq/psycopg2 query parameters can override the apparent
+            # URL host or database (including selecting a Unix socket).
+            # Preserve ordinary sslmode/options, but refuse target/identity
+            # overrides that make the operator's chosen DSN ambiguous.
+            authority_overrides = {
+                "host", "hostaddr", "port", "dbname", "database",
+                "user", "password", "service",
+            }
             valid_postgresql_target = (
                 database.get_backend_name() == "postgresql"
                 and bool(database.host)
                 and bool(database.database)
+                and not any(
+                    key.lower() in authority_overrides for key in database.query
+                )
             )
         except (ArgumentError, TypeError, ValueError):
             valid_postgresql_target = False

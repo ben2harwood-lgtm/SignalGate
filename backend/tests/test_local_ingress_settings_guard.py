@@ -109,6 +109,15 @@ def test_hosted_demo_ingress_still_uses_licensed_secret_and_https_gates(monkeypa
         "postgresql://synthetic:never-expose@/demo",
         "postgresql://synthetic:never-expose@localhost/",
         "postgresql://synthetic:never-expose@localhost",
+        # A libpq query option can silently replace the explicit URL server,
+        # identity or database; this is not the permitted SSL query case.
+        "postgresql://synthetic:never-expose@db/demo?host=/var/run/postgresql",
+        "postgresql://synthetic:never-expose@db/demo?hostaddr=127.0.0.1",
+        "postgresql://synthetic:never-expose@db/demo?port=5433",
+        "postgresql://synthetic:never-expose@db/demo?dbname=another",
+        "postgresql://synthetic:never-expose@db/demo?user=other",
+        "postgresql://synthetic:never-expose@db/demo?password=other",
+        "postgresql://synthetic:never-expose@db/demo?service=local",
         "not-a-database-url",
     ],
 )
