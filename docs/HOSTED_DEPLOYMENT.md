@@ -226,3 +226,20 @@ A correct deployment does not close:
 - real-provider operating evidence.
 
 Do not enable UK retail real-money or automatic-copy execution merely because hosted deployment works.
+
+### Telegram source authorisation generation (demo-only, not external acceptance)
+
+Each accepted one-time provider-source invitation regenerates an opaque
+`authorization_epoch` on its existing source-binding row, even if the Telegram
+identity reconnects to the same provider/feed. Source status and connect
+responses include this generation; hosted signal POSTs **must** submit
+`expected_authorization_epoch` alongside the three existing expected IDs.
+The screenshot extraction route checks it both before any extractor/model call
+and again after I/O; bot preview and recipient receipts compare the same
+generation. Missing/obsolete claims must fail closed rather than falling back
+to binding/provider/feed IDs. Old in-memory screenshot previews must be
+discarded after deployment. Apply Alembic revision `20261101_0011` before
+the upgraded backend serves requests; it backfills random generations for
+existing bindings. Reverting the migration while the new runtime is active is
+unsafe. These are synthetic source-authorization controls, **not** MT5 demo
+broker evidence, independent ingress/pentest proof or authority to launch.

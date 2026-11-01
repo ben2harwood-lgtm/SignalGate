@@ -50,6 +50,7 @@ def _source_claim(binding):
         "expected_binding_id": binding["binding_id"],
         "expected_provider_id": binding["provider_id"],
         "expected_feed_id": binding["feed_id"],
+        "expected_authorization_epoch": binding["authorization_epoch"],
     }
 
 
@@ -1480,7 +1481,9 @@ def test_revoke_then_same_feed_reconnect_refuses_stale_preview(client, db):
     assert second.status_code == 200, second.text
     assert second.json()["status"] == "ACTIVE"
     assert second.json()["binding_id"] == first.json()["binding_id"]
-    assert _source_claim(second.json()) == original_claim
+    assert second.json()["provider_id"] == first.json()["provider_id"]
+    assert second.json()["feed_id"] == first.json()["feed_id"]
+    assert second.json()["authorization_epoch"] != first.json()["authorization_epoch"]
 
     # The Telegram preview predates revocation; it must not create any
     # signal or audit under the freshly authorised (but same) provider/feed.

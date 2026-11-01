@@ -6,6 +6,7 @@ human-readable prefixed format (e.g. USER-000001) generated in crud.py.
 from __future__ import annotations
 
 import datetime as dt
+import secrets
 from typing import Optional
 
 from sqlalchemy import (
@@ -145,6 +146,11 @@ class ProviderSourceBinding(Base):
     feed_id: Mapped[str] = mapped_column(ForeignKey("feeds.id"), index=True)
     source_type: Mapped[str] = mapped_column(String, default="TELEGRAM")
     external_identity: Mapped[str] = mapped_column(String, index=True)
+    # Rotates on EVERY successful one-time source connection, including A->A.
+    # An older screenshot/preview can never acquire authority from reused IDs.
+    authorization_epoch: Mapped[str] = mapped_column(
+        String(32), default=lambda: secrets.token_hex(16), nullable=False
+    )
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
