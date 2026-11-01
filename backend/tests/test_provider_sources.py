@@ -1444,3 +1444,57 @@ def test_hosted_screenshot_previews_never_return_fabricated_fake_signal(
     finally:
         security.settings.require_license = prior_hosted
         security.settings.registration_api_key = prior_bot_key
+
+
+def test_revoke_then_same_feed_reconnect_refuses_stale_preview(client, db):
+    """A new invite to the same feed must not re-authorise a staged old preview.
+
+    This is a deliberately RED, broker-free security regression on a separate
+    draft branch. The current three-part source claim has no authorisation
+    generation, so the old snapshot is expected to slip through until fixed.
+    Do not merge this branch or claim an accepted release with a failing test.
+    """
+    provider, feed, key = _provider(db, "source-epoch-reconnect")
+    telegram_id = "9419"
+    first = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert first.status_code == 200, first.text
+    original_claim = _source_claim(first.json())
+
+    revoked = client.post(
+        f"/providers/me/source-bindings/{first.json()['binding_id']}/revoke",
+        headers=_headers(provider, key),
+    )
+    assert revoked.status_code == 200, revoked.text
+    inactive = client.get(
+        "/provider-sources/telegram/status",
+        params={"telegram_user_id": telegram_id},
+    )
+    assert inactive.status_code == 404, inactive.text
+
+    # This is a new, one-use invitation and a distinct authorisation event.
+    second = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "ACTIVE"
+    assert second.json()["binding_id"] == first.json()["binding_id"]
+    assert _source_claim(second.json()) == original_claim
+
+    # The Telegram preview predates revocation; it must not create any
+    signal or audit under the freshly authorised (but same) provider/feed.
+    stale = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": "9419:preview-before-revoke",
+            **original_claim,
+        },
+    )
+    assert stale.status_code == 409, stale.text
+    assert db.query(models.Signal).count() == 0
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "SIGNAL_CREATED"
+    ).count() == 0
