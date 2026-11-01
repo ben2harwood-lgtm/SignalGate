@@ -608,6 +608,8 @@ async def connect_provider_source(
             not isinstance(result.get(field), str) or not result[field].strip()
             for field in required_fields
         )
+        or re.fullmatch(r"[0-9a-f]{32}", result["authorization_epoch"], re.ASCII)
+        is None
     ):
         await update.message.reply_text(
             "Provider source connection could not be confirmed. Check its status "
