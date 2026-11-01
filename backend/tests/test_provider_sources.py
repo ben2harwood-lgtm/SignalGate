@@ -1289,7 +1289,12 @@ def test_unbound_or_revoked_source_cannot_extract_create_or_broadcast(client, db
                     "telegram_user_id": "9209",
                     "raw_text": EUR_BUY,
                     "source_message_id": "1",
-                    **_source_claim({"binding_id": "ABSENT", "provider_id": "ABSENT", "feed_id": "ABSENT"}),
+                    **_source_claim({
+                        "binding_id": "ABSENT",
+                        "provider_id": "ABSENT",
+                        "feed_id": "ABSENT",
+                        "authorization_epoch": "a" * 32,
+                    }),
                 }
             },
         ),
