@@ -2081,6 +2081,8 @@ def check_broadcast_recipient_feed_binding() -> None:
         dict(valid, binding_id="BINDING-B"),
         dict(valid, provider_id="PROVIDER-B"),
         dict(valid, feed_id="FEED-B"),
+        # Same binding/provider/feed, but a renewed one-time source authority.
+        dict(valid, authorization_epoch="b" * 32),
         {"recipients": valid["recipients"]},
         {"detail": "backend error", **{"recipients": valid["recipients"]}},
         {"binding_id": "BINDING-A", "authorization_epoch": "a" * 32, "provider_id": "PROVIDER-A",
