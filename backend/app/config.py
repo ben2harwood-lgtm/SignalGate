@@ -238,14 +238,21 @@ class Settings:
         from sqlalchemy.exc import ArgumentError
 
         try:
-            backend_name = make_url(
-                sqlalchemy_driver_url(self.database_url)
-            ).get_backend_name()
+            database = make_url(sqlalchemy_driver_url(self.database_url))
+            # A dialect-only URL can silently fall back to a local Unix
+            # socket/default database. Hosted tenancy needs an explicit
+            # server AND database, not just a PostgreSQL scheme.
+            valid_postgresql_target = (
+                database.get_backend_name() == "postgresql"
+                and bool(database.host)
+                and bool(database.database)
+            )
         except (ArgumentError, TypeError, ValueError):
-            backend_name = None
-        if backend_name != "postgresql":
+            valid_postgresql_target = False
+        if not valid_postgresql_target:
+            # Never echo the DSN: it may contain provider credentials.
             raise RuntimeError(
-                "Hosted mode requires PostgreSQL; invalid or unsupported DATABASE_URL."
+                "Hosted mode requires PostgreSQL with an explicit host and database; invalid DATABASE_URL."
             )
         # A scheme prefix alone also accepts empty hosts, userinfo containing
         # credentials, malformed ports and URLs with query parameters. Refuse

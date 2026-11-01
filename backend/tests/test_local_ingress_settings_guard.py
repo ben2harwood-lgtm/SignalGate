@@ -102,6 +102,13 @@ def test_hosted_demo_ingress_still_uses_licensed_secret_and_https_gates(monkeypa
         "sqlite+pysqlite:///./wrong-hosted.db",
         "mysql+pymysql://synthetic:never-expose@localhost/demo",
         "mssql+pyodbc://synthetic:never-expose@localhost/demo",
+        # PostgreSQL dialect alone is insufficient: libpq may silently use
+        # an implicit local socket or default database if fields are absent.
+        "postgresql://",
+        "postgresql:///demo",
+        "postgresql://synthetic:never-expose@/demo",
+        "postgresql://synthetic:never-expose@localhost/",
+        "postgresql://synthetic:never-expose@localhost",
         "not-a-database-url",
     ],
 )
@@ -127,6 +134,7 @@ def test_hosted_demo_rejects_non_postgresql_or_malformed_database_url(
         "postgres://synthetic:fake@localhost/demo",
         "postgresql://synthetic:fake@localhost/demo",
         "postgresql+psycopg2://synthetic:fake@localhost/demo",
+        "postgresql://synthetic:fake@localhost/demo?sslmode=require",
     ],
 )
 def test_hosted_demo_allows_postgresql_dialects_without_connecting(

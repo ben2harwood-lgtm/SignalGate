@@ -34,8 +34,10 @@ Hosted startup must preserve:
 - both security-mode flags must have a recognised boolean value (case-insensitive
   `true/false`, `1/0`, `yes/no` or `on/off`); empty/unknown values refuse
   startup instead of silently falling back to unlicensed local identity headers;
-- PostgreSQL (the parsed `DATABASE_URL` dialect must be PostgreSQL; malformed,
-  SQLite and other SQL dialects are refused at startup without printing the URL);
+- PostgreSQL (the parsed `DATABASE_URL` must specify an explicit host and
+  database as well as a PostgreSQL dialect; malformed, implicit local-socket/
+  default-database, SQLite and other SQL dialect URLs are refused at startup
+  without printing the URL; ordinary TLS query options remain supported);
 - HTTPS public base URL with a parseable hostname (no embedded credentials,
   malformed port, query, fragment, backslash or control whitespace; a reverse-proxy
   path prefix is permitted); this is configuration validation, **not** proof of
