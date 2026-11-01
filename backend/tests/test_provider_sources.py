@@ -1483,7 +1483,7 @@ def test_revoke_then_same_feed_reconnect_refuses_stale_preview(client, db):
     assert _source_claim(second.json()) == original_claim
 
     # The Telegram preview predates revocation; it must not create any
-    signal or audit under the freshly authorised (but same) provider/feed.
+    # signal or audit under the freshly authorised (but same) provider/feed.
     stale = client.post(
         "/provider-sources/telegram/signals",
         json={
