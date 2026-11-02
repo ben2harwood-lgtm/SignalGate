@@ -316,7 +316,9 @@ jobs:
           printf '%s\n' "$output" | grep -Fq 'requires REQUIRE_LICENSE=true'
 
   backup-restore-smoke:
-    runs-on: ubuntu-latest
+    # Keep PostgreSQL backup/restore clients matched to the v16 test server.
+    # Rolling ubuntu-latest installed a v18 client that generated an incompatible dump.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     services:
       postgres:
@@ -344,8 +346,15 @@ jobs:
           cache-dependency-path: |
             backend/requirements.txt
             backend/requirements-hosted.txt
-      - name: Install PostgreSQL client and age
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client age
+      - name: Install matching PostgreSQL 16 client and age
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16 age
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - name: Verify matching PostgreSQL backup/restore client major
+        run: |
+          pg_dump --version | grep -Eq 'PostgreSQL\) 16\.'
+          pg_restore --version | grep -Eq 'PostgreSQL\) 16\.'
       - name: Generate ephemeral backup encryption identity
         run: |
           age-keygen -o "$RUNNER_TEMP/backup-age-key.txt"
