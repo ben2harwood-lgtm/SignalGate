@@ -66,14 +66,20 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
     ).all()
 
     def assert_unique_source_identity() -> None:
-        # This pre-0011 constraint prevents two providers from owning the same
-        # Telegram identity. A batch table rebuild must never silently drop it.
+        # Supply a valid new non-null epoch after 0011. Otherwise the duplicate
+        # INSERT could fail on epoch NOT NULL even if the source UNIQUE
+        # constraint had accidentally disappeared during table reconstruction.
+        columns = "id, provider_id, feed_id, source_type, external_identity, status"
+        values = "'BIND-D', 'OTHER', 'OTHER', 'TELEGRAM', '92001', 'ACTIVE'"
+        if "authorization_epoch" in {
+            col["name"] for col in sa.inspect(conn).get_columns("provider_source_bindings")
+        }:
+            columns += ", authorization_epoch"
+            values += ", 'ffffffffffffffffffffffffffffffff'"
         with pytest.raises(sa.exc.IntegrityError):
             with conn.begin_nested():
                 conn.exec_driver_sql(
-                    "INSERT INTO provider_source_bindings "
-                    "(id, provider_id, feed_id, source_type, external_identity, status) "
-                    "VALUES ('BIND-D', 'OTHER', 'OTHER', 'TELEGRAM', '92001', 'ACTIVE')"
+                    f"INSERT INTO provider_source_bindings ({columns}) VALUES ({values})"
                 )
 
     def assert_scope_preserved() -> None:
