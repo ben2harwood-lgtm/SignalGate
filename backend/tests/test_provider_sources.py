@@ -182,6 +182,78 @@ def test_source_status_returns_effective_expiry_for_bot(client, db):
     assert abs((expires_at - created_at).total_seconds() - 23 * 60) < 5
 
 
+def test_screenshot_preview_uses_same_effective_expiry_as_status_and_signal(
+    client, db, monkeypatch,
+):
+    """Synthetic screenshot parsing must use the persisted operator override.
+
+    Source status and final signal creation already consult this value when a
+    feed has no explicit expiry. No model, Telegram API or broker is contacted.
+    """
+    from types import SimpleNamespace
+    from app.parser import parse_signal as original_parse_signal
+    from app.routes import provider_sources
+
+    provider, feed, key = _provider(db, "source-image-db-expiry")
+    feed.expiry_minutes = None
+    crud.set_setting(db, "default_signal_expiry_minutes", "23")
+    db.commit()
+    binding = _connect(
+        client, _source_invite(client, provider, feed, key), "9213"
+    ).json()
+    assert binding["status"] == "ACTIVE"
+
+    class OfflineExtractor:
+        engine = "offline-test"
+
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG
+            assert mime == "image/png"
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="high",
+                notes="synthetic",
+                raw_text=EUR_BUY,
+            )
+
+    observed_expiries = []
+
+    def record_expiry(raw_text, *, expiry_minutes, allowed_symbols=None):
+        observed_expiries.append(expiry_minutes)
+        return original_parse_signal(
+            raw_text,
+            expiry_minutes=expiry_minutes,
+            allowed_symbols=allowed_symbols,
+        )
+
+    monkeypatch.setattr(provider_sources, "get_extractor", OfflineExtractor)
+    monkeypatch.setattr(provider_sources, "parse_signal", record_expiry)
+
+    for expected in (23, 11):
+        status = client.get(
+            "/provider-sources/telegram/status",
+            params={"telegram_user_id": "9213"},
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()["expiry_minutes"] == expected
+
+        preview = client.post(
+            "/provider-sources/telegram/extract",
+            params={"telegram_user_id": "9213", **_source_claim(binding)},
+            files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["parser_status"] == "VALID"
+        assert observed_expiries[-1] == expected
+
+        # An explicit feed setting always overrides the operator default.
+        feed.expiry_minutes = 11
+        db.commit()
+
+    assert observed_expiries == [23, 11]
+
+
 @pytest.mark.parametrize("competing_action", ["connect", "revoke"])
 def test_source_invite_concurrent_claim_or_revoke_postgresql(
     client, db, competing_action
