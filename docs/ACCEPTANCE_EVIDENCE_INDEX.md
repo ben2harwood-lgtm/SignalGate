@@ -40,12 +40,22 @@ Frozen RC2's final CI and release-ref pin are complete, but its exact EA **faile
 
 ## Controlled data-room naming
 
-A simple convention:
+Bind each **new** acceptance receipt to the exact immutable 40-character SHA of
+the separately reviewed successor candidate it actually tests, not to a historical
+release label. There is **no accepted successor candidate yet**. Use this
+placeholder convention only when a successor has been pinned and independently
+authorised for the relevant demo-only acceptance work:
 
-`SG-RC2-2026-09-19/<gate>/<YYYY-MM-DD>-<receipt-id>`
+`SG-<FULL-40-CHAR-CANDIDATE-SHA>/<gate>/<YYYY-MM-DD>-<receipt-id>`
 
-Example:
+Illustrative identifier **only** (not a test result or completed receipt):
 
-`SG-RC2-2026-09-19/mt5/2026-09-20-MT5-001`
+`SG-<FULL-40-CHAR-CANDIDATE-SHA>/mt5/<YYYY-MM-DD>-MT5-001`
 
-Reference that identifier here instead of committing sensitive evidence.
+An old `SG-RC2-2026-09-19/...` archive identifier may be retained for the
+frozen RC2 **FAILED/HOLD** compiler evidence, but **must never** label new
+successor compiler or MT5 demo-broker acceptance evidence. The recorded
+candidate SHA must match the compiled source, matching fresh EX5 and actual
+demo-broker scenario receipts. A naming convention supplies no such proof.
+
+Reference only the resulting identifier here instead of committing sensitive evidence.
