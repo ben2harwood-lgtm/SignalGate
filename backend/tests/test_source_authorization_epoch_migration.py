@@ -89,7 +89,7 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
         for name, expected_columns in expected_indexes.items():
             assert name in surviving_indexes, f"0011 dropped pre-existing index {name}"
             assert surviving_indexes[name]["column_names"] == expected_columns
-            assert surviving_indexes[name]["unique"] is False
+            assert not bool(surviving_indexes[name]["unique"])
 
     assert_scope_preserved()
     migration.op = Operations(MigrationContext.configure(conn))
