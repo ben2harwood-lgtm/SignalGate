@@ -301,7 +301,10 @@ jobs:
         run: docker build --pull -t signalgate-ci .
 
   backup-restore-smoke:
-    runs-on: ubuntu-latest
+    # Pin the runner so apt's PostgreSQL client matches postgres:16-alpine.
+    # Ubuntu 26.04's default client writes transaction_timeout into dumps,
+    # which PostgreSQL 16 cannot restore (CI run 41366195120).
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     services:
       postgres:
@@ -329,8 +332,15 @@ jobs:
           cache-dependency-path: |
             backend/requirements.txt
             backend/requirements-hosted.txt
-      - name: Install PostgreSQL client and age
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client age
+      - name: Install matching PostgreSQL 16 client and age
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16 age
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - name: Verify matching PostgreSQL backup/restore client major
+        run: |
+          pg_dump --version | grep -Eq 'PostgreSQL\) 16\.'
+          pg_restore --version | grep -Eq 'PostgreSQL\) 16\.'
       - name: Generate ephemeral backup encryption identity
         run: |
           age-keygen -o "$RUNNER_TEMP/backup-age-key.txt"
