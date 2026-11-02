@@ -15,6 +15,7 @@ Templates:
   fill scenario;
   not external acceptance)
 - `SECURITY_REVIEW_RECEIPT_TEMPLATE.md`
+- `PUBLIC_INGRESS_ISOLATION_RECEIPT_TEMPLATE.md` — independent ingress NI-01–NI-07 worksheet; all **NOT_RUN** (HOLD #108).
 - `REGULATORY_PRIVACY_RECEIPT_TEMPLATE.md`
 - `PILOT_OPERATIONS_LOG_TEMPLATE.md`
 - `EXCEPTION_REGISTER_TEMPLATE.md`

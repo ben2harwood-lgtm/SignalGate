@@ -17,6 +17,17 @@ Do not change runtime code during an acceptance run. A runtime change creates a 
 
 ## 2. MetaEditor + MT5 demo acceptance
 
+**STOP — the frozen RC2 is not a broker-demo acceptance candidate.** Its official
+[frozen-source MetaEditor run #35464044898](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464044898)
+reported **18 errors and 4 warnings** for `3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2`,
+even though its separate machine CI passed. Preserve that historical branch.
+Before running controlled MT5 demo-broker scenarios, use an independently reviewed
+successor SHA with green exact-source CI, a fresh official **0-error / 0-warning**
+MetaEditor compile and a newly produced EX5 bound to the same source. The
+execution-safety and external-assurance HOLDs remain; see [#60](https://github.com/ben2harwood-lgtm/SignalGate/pull/60),
+[#115](https://github.com/ben2harwood-lgtm/SignalGate/pull/115) and the existing
+[evidence-ledger correction #86](https://github.com/ben2harwood-lgtm/SignalGate/pull/86).
+
 Primary instructions:
 
 - `docs/MT5_ACCEPTANCE.md`
@@ -40,6 +51,7 @@ Do not use real-money accounts.
 Provide the assessor:
 
 - `docs/PENTEST_SCOPE.md`;
+- `docs/evidence/PUBLIC_INGRESS_ISOLATION_RECEIPT_TEMPLATE.md` (NI-01–NI-07 **NOT_RUN** until independent, isolated ingress tests; issue #108 remains HOLD);
 - `docs/SECURITY_OVERVIEW.md`;
 - `docs/PRIVACY_DATA_MAP.md`;
 - `docs/ARCHITECTURE.md`;
