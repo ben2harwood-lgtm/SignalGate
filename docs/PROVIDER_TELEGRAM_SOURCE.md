@@ -15,7 +15,12 @@ Provider Edition does not use a shared hosted "signal provider" API secret for T
 6. The backend persists one active Telegram -> provider/feed binding.
 7. The raw connection token is never stored and cannot be reused.
 
-A new provider/feed token can explicitly rebind the same Telegram identity. The rebind is audited.
+A new provider/feed token can explicitly rebind the same Telegram identity. Every
+successful connection, including a reconnect to the **same** provider/feed,
+rotates a fresh 32-hex-character `authorization_epoch` on the binding. Old
+screenshot previews cannot borrow authority from a reused binding ID or
+unchanged provider/feed identifiers. The rebind is audited. The epoch is a
+source-generation guard, **not** a substitute for bot authentication.
 
 ## Signal flow
 
@@ -154,19 +159,20 @@ Telegram delivery or external acceptance evidence.
 
 ## Screenshot extraction source snapshot (offline guard)
 
-Hosted screenshot extraction sends the bot's expected binding/provider/feed identity
-along with the Telegram user ID. The backend compares **all three** against
-its current authenticated source binding **before** invoking the image
-extractor; a stale A snapshot after an A-to-B rebind receives HTTP 409 and a
-missing scope receives HTTP 422. Binding IDs are reused on rebind, so testing
-the ID alone would not protect tenant/feed policy. This stops the *initial*
+Hosted screenshot extraction sends the bot's expected binding/provider/feed
+identifiers **and `authorization_epoch`** with the Telegram user ID. The backend
+compares all four against its current authenticated binding **before** invoking
+the extractor. An old snapshot after an A-to-B rebind **or same-feed reconnect**
+receives HTTP 409; an omitted required field receives HTTP 422. Binding IDs
+are reused, so checking only the ID (or even the same provider/feed IDs) does
+not protect against a new connection generation. This stops the *initial*
 stale-request path from parsing an A screenshot under B's feed or recording an
 extraction audit for B. The initial read does not hold a lock across
 image/model I/O. After extraction returns, the backend expires its old ORM
 snapshot and rechecks the current binding, using PostgreSQL `FOR UPDATE` to
 serialize source changes until the extraction audit commits. An in-flight
-A-to-B rebind therefore refuses the result with HTTP 409 and records no
-extraction audit. This cannot undo image bytes already handed to an extractor
+A-to-B rebind or same-feed reconnect therefore refuses the stale result with
+HTTP 409 and records no extraction audit. This cannot undo image bytes already handed to an extractor
 before the rebind, or provide a PostgreSQL row-lock guarantee on SQLite.
 Preview confirmation and final signal creation independently recheck identity.
 Tests are synthetic FastAPI/offline-bot and PostgreSQL transaction checks,
@@ -184,8 +190,9 @@ persistence and card submission can leave zero deliveries; a replay will not
 blindly resend them. Operators must reconcile such cases with provider
 history and subscribers before any manual resend.
 The hosted route also requires the bot's exact expected `binding_id`,
-`provider_id`, and `feed_id` from its pre-submit source status; it compares all
-three with the authoritative current binding **before** creating a signal.
+`provider_id`, `feed_id` **and `authorization_epoch`** from its pre-submit
+source status; it compares all four with the authoritative current binding
+**before** creating a signal.
 A source A-to-B rebind during the bot/backend request must not persist source
 A's private text under tenant B, even if subsequent card checks would refuse
 broadcast. Omitted or stale expected scope fails closed. On PostgreSQL the
@@ -200,7 +207,7 @@ The hosted route requires a nonempty stable `source_message_id` to prevent
 the caller from defeating replay identity by omitting it.
 Before broadcasting subscriber cards, the bot checks that identity against the
 original Telegram binding; the separately queried recipient list must carry
-matching binding/provider/feed identifiers. An HTTP 200 recipient response
+matching binding/provider/feed **and authorization-epoch** identifiers. An HTTP 200 recipient response
 containing an error `detail` is refused even if its scope identifiers match.
 If the source was rebound between creation and enumeration, or if any recipient
 identifier is malformed, the bot **sends no cards** and tells the provider to
@@ -376,28 +383,27 @@ if a newer screenshot, Cancel or competing correction invalidated that preview.
 A revoked source clears only its still-current edit state. Offline interleaving
 tests verify this in memory, not actual Telegram delivery.
 
-A screenshot's confirmable state also retains its original
-`binding_id`/`provider_id`/`feed_id` snapshot. Both Confirm and Edit
-compare that exact snapshot with the current ACTIVE provider-source binding,
-including after the asynchronous permission check; hosted pre-upgrade previews
-without a snapshot are refused. The signal-creation path independently
-rechecks the original scope immediately before the create POST, so a provider
-rebound from feed A to feed B cannot knowingly submit A's preview using B's
-binding. A different current provider/feed refuses the pending preview;
-providers must capture a new screenshot. The existing backend reuses a binding
-ID on rebind. An A→B→A round-trip or revocation followed by same-feed reconnect
-can restore the same three identifiers and escape this client-only comparison;
-a connection-generation/transactional backend check remains unimplemented.
-Offline interleaving tests cover A-preview → B-rebind
-→ Confirm/Edit, rebind between the two pre-create checks, and a matching
-unchanged-source positive path. No genuine Telegram traffic was used.
+A screenshot's confirmable state retains the original `binding_id`,
+`provider_id`, `feed_id` and `authorization_epoch` snapshot. Confirm and Edit
+compare all four with the current ACTIVE source, including after asynchronous
+permission checks. Hosted previews without this scope fail closed. A reconnect
+rotates the epoch even if the same provider/feed is selected or an A→B→A
+round-trip restores every other identifier. Old previews are refused and the
+provider must capture a new screenshot. The bot also rechecks the original
+scope before the signal-create POST. Offline tests cover A→B and same-feed
+epoch-only reconnects, Confirm/Edit, and a valid unchanged-source control.
+No genuine Telegram traffic was used.
 
-This is a **client-side fail-closed check, not a transaction lock**. A rebind
-between the final status read and backend POST may still persist a signal
-against the newer feed; the later persisted signal/recipient checks refuse
-the mismatched subscriber broadcast, but an unconfirmed provider should
-inspect feed history rather than blindly retry. Server-side transactional
-binding checks and real Telegram/MT5 demo evidence remain separate work.
+The client-side preview check is **not a transaction lock**. Independently,
+the backend requires the expected epoch on extraction and signal creation.
+On PostgreSQL, signal creation holds a source-binding row lock until commit:
+a concurrent reconnect must wait or the stale claim is refused with HTTP 409.
+The extraction path rechecks after model I/O before writing its audit. SQLite
+does not provide equivalent PostgreSQL row-lock proof. These guards do **not**
+make subscriber delivery atomic: source revocation/reconnection after recipient
+lookup can still race with Telegram sends. Operators should inspect provider
+history and subscriber delivery before any manual resend. Independent security
+review, real Telegram delivery and MT5 demo-broker evidence remain open.
 
 The source's backend remains responsible for identity, tenant policy,
 subscriber consent and idempotent signal processing. The binding here is
@@ -710,6 +716,8 @@ bot-handler tests, not evidence of real Telegram delivery or provider acceptance
 - bot service credential is required in hosted mode;
 - feed symbol/expiry policy is applied during screenshot preview and final signal parsing;
 - replay identity is scoped to the binding;
+- every successful source reconnect renews the epoch used for screenshot previews,
+  signal submission and recipient ownership checks;
 - broadcast recipients come only from active subscriptions to the bound feed;
 - the backend recipient receipt filters out noncanonical or nonpositive Telegram
   user IDs, including group/channel IDs, leading-zero/Unicode identifiers and
