@@ -1,8 +1,13 @@
 # SignalGate Release Candidate Evidence — RC2 — 19 September 2026
 
+> **RETROSPECTIVE MT5 COMPILER HOLD:** The final frozen RC2 at `3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2` passed repository CI but **failed** its official exact-source MetaEditor compilation: **18 errors / 4 warnings** ([run 35464044898](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464044898)). **Do not use its EA for broker-demo acceptance or change the frozen branch.** This is historical machine evidence, not release approval; an independently reviewed successor requires green exact-source CI, a fresh 0-error / 0-warning MetaEditor compile with matching EX5, and genuine controlled MT5 **DEMO** scenario receipts. See [issue #46](https://github.com/ben2harwood-lgtm/SignalGate/issues/46) and `docs/EXTERNAL_ACCEPTANCE_HANDOFF.md`.
+
 ## Candidate identity
 
 - RC2 runtime/tooling SHA: `852a6bc9ca9f0651b34e87b63e86c65669130767`
+- Final frozen RC2 SHA: `3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2`
+- Frozen RC2 final CI: [run 35462909294](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35462909294) — **SUCCESS** (machine checks only)
+- Frozen RC2 official MetaEditor: [run 35464044898](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464044898) — **FAILED, 18 errors / 4 warnings**
 - Integration branch: `codex/signalgate-hardening-2026-09-18`
 - Release branch target: `release/signalgate-demo-rc2-2026-09-19`
 - Integrated CI workflow: `SignalGate CI`
@@ -13,7 +18,7 @@
 
 This receipt records repository evidence. It does **not** claim that external/manual gates are complete.
 
-RC1 remains preserved at `release/signalgate-demo-rc-2026-09-19`. RC2 supersedes RC1 for new acceptance work; RC1 must not be silently rewritten.
+RC1 remains preserved at `release/signalgate-demo-rc-2026-09-19`. Frozen RC2 also remains preserved **as historical evidence**, not a candidate for new MT5 broker-demo acceptance. Neither frozen release ref may be silently rewritten.
 
 ## Why RC2 exists
 
@@ -108,15 +113,15 @@ The repository now contains:
 
 ### MT5 acceptance
 
-Still required against RC2:
+Still required for an **independently reviewed successor candidate** (not the failed frozen RC2 EA):
 
-- compile the exact RC2 EA source in target MetaEditor;
+- compile the successor's exact pinned EA source in target MetaEditor;
 - record MetaEditor/build and broker-demo terminal versions;
 - prove 0 compile errors and 0 warnings;
 - retain screenshot or exported compiler log;
 - run and retain the complete demo scenario pack in `docs/MT5_ACCEPTANCE.md`.
 
-Until those receipts exist, MT5 execution is machine-tested but not externally accepted.
+Frozen RC2's actual compiler attempt has already **failed**; do not reclassify it as an unrun or passing gate. A later candidate's successful compilation alone does not constitute real MT5 demo-broker acceptance.
 
 ### Production operations
 
@@ -155,12 +160,12 @@ RC2 does **not** prove:
 - investment performance or profitability;
 - production SLO achievement;
 - independent penetration-test clearance;
-- successful MetaEditor compilation;
+- successful MetaEditor compilation (**the official frozen-RC2 attempt failed**);
 - live-broker execution acceptance;
 - paying-customer traction.
 
 ## RC2 decision
 
-Run #134 is **SUCCESS**. Once the documentation-only RC2 freeze itself is green and the named RC2 release branch is pinned, this candidate is suitable to proceed to the external/manual acceptance sequence.
+Runtime/tooling CI #134 and the final frozen-RC2 CI run `35462909294` are **SUCCESS**, but the frozen release's official MetaEditor run `35464044898` is **FAILED (18 errors / 4 warnings)**. Therefore **frozen RC2 is NOT suitable for MT5 broker-demo acceptance**. Preserve it unchanged. Only a separately designated, independently reviewed successor with green exact-source CI, matching fresh EX5 from a 0-error / 0-warning MetaEditor compile, and genuine controlled demo-broker scenario evidence can progress the relevant acceptance gates. Independent ingress/security, execution safety, legal/privacy and operating gates remain open.
 
 Do not enable UK retail real-money trading or automatic copy execution from RC2.

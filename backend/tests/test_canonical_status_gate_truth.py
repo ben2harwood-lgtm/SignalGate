@@ -70,3 +70,38 @@ def test_root_guides_keep_ci_separate_from_broker_acceptance() -> None:
         assert "green backend ci" in content
         assert "cannot clear" in content
         assert "real-money" in content
+
+
+ACCEPTANCE_INDEX = ROOT / "docs" / "ACCEPTANCE_EVIDENCE_INDEX.md"
+RELEASE_RECEIPT = ROOT / "docs" / "RELEASE_CANDIDATE_2026-09-19.md"
+
+
+def test_acceptance_index_records_failed_frozen_rc2_compiler_gate() -> None:
+    """A green historical CI run cannot leave the compiler row as merely Open."""
+    data = ACCEPTANCE_INDEX.read_text(encoding="utf-8")
+    row = next(
+        line for line in data.splitlines()
+        if line.startswith("| MetaEditor compile |")
+    )
+    assert "**HOLD — frozen RC2 failed**" in row
+    assert "35464044898" in row
+    assert "18 errors / 4 warnings" in row
+    assert "3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2" in data
+    assert "35462909294" in data
+    assert "Do **not** use frozen RC2's EA" in data
+    assert "RC2 must not be used for external acceptance until" not in data
+
+
+def test_release_receipt_refuses_failed_rc2_mt5_acceptance() -> None:
+    """Retrospective ledger remains separate from successor and real broker proof."""
+    data = RELEASE_RECEIPT.read_text(encoding="utf-8")
+    assert "RETROSPECTIVE MT5 COMPILER HOLD" in data
+    assert "3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2" in data
+    assert "35464044898" in data
+    assert "18 errors / 4 warnings" in data
+    assert "independently reviewed successor" in data
+    assert "0-error / 0-warning" in data
+    assert "matching EX5" in data
+    assert "genuine controlled" in data and "DEMO" in data
+    assert "Still required against RC2:" not in data
+    assert "RC2 supersedes RC1 for new acceptance work" not in data
