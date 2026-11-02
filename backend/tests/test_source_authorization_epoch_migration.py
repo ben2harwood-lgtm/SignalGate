@@ -41,6 +41,18 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
         "CONSTRAINT uq_provider_source_external_identity "
         "UNIQUE (source_type, external_identity))"
     )
+    # Revision 0009 also builds these three search/tenancy indexes. On SQLite,
+    # 0011's batch table rebuild must retain them, not merely its UNIQUE rule.
+    expected_indexes = {
+        "ix_provider_source_bindings_provider_id": ["provider_id"],
+        "ix_provider_source_bindings_feed_id": ["feed_id"],
+        "ix_provider_source_bindings_external_identity": ["external_identity"],
+    }
+    for index_name, columns in expected_indexes.items():
+        conn.exec_driver_sql(
+            f"CREATE INDEX {index_name} ON provider_source_bindings ({columns[0]})"
+        )
+
     conn.exec_driver_sql(
         "INSERT INTO provider_source_bindings "
         "(id, provider_id, feed_id, source_type, external_identity, status) VALUES "
@@ -70,6 +82,14 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
             "FROM provider_source_bindings ORDER BY id"
         ).all() == original_scopes
         assert_unique_source_identity()
+        surviving_indexes = {
+            index["name"]: index
+            for index in sa.inspect(conn).get_indexes("provider_source_bindings")
+        }
+        for name, expected_columns in expected_indexes.items():
+            assert name in surviving_indexes, f"0011 dropped pre-existing index {name}"
+            assert surviving_indexes[name]["column_names"] == expected_columns
+            assert surviving_indexes[name]["unique"] is False
 
     assert_scope_preserved()
     migration.op = Operations(MigrationContext.configure(conn))
