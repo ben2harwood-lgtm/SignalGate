@@ -30,6 +30,21 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
     spec.loader.exec_module(migration)
 
     temporary = "TEMPORARY " if postgres else ""
+    # Revision 0009 has parent-table foreign keys. Give this synthetic fixture
+    # real parent tables so SQLite batch recreation cannot silently lose them.
+    # PostgreSQL uses temporary parents and bindings, never real tenant tables.
+    conn.exec_driver_sql(
+        f"CREATE {temporary}TABLE providers (id VARCHAR(80) PRIMARY KEY)"
+    )
+    conn.exec_driver_sql(
+        f"CREATE {temporary}TABLE feeds (id VARCHAR(80) PRIMARY KEY)"
+    )
+    conn.exec_driver_sql(
+        "INSERT INTO providers (id) VALUES ('PROVIDER-A'), ('PROVIDER-B')"
+    )
+    conn.exec_driver_sql(
+        "INSERT INTO feeds (id) VALUES ('FEED-A'), ('FEED-B'), ('FEED-C')"
+    )
     conn.exec_driver_sql(
         f"CREATE {temporary}TABLE provider_source_bindings ("
         "id VARCHAR(80) NOT NULL PRIMARY KEY, "
@@ -38,6 +53,10 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
         "source_type VARCHAR(20) NOT NULL, "
         "external_identity VARCHAR(40) NOT NULL, "
         "status VARCHAR(20) NOT NULL, "
+        "CONSTRAINT fk_source_binding_provider "
+        "FOREIGN KEY (provider_id) REFERENCES providers(id), "
+        "CONSTRAINT fk_source_binding_feed "
+        "FOREIGN KEY (feed_id) REFERENCES feeds(id), "
         "CONSTRAINT uq_provider_source_external_identity "
         "UNIQUE (source_type, external_identity))"
     )
@@ -88,6 +107,44 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
             "FROM provider_source_bindings ORDER BY id"
         ).all() == original_scopes
         assert_unique_source_identity()
+        foreign_keys = {
+            (
+                tuple(fk["constrained_columns"]),
+                fk["referred_table"],
+                tuple(fk["referred_columns"]),
+            )
+            for fk in sa.inspect(conn).get_foreign_keys("provider_source_bindings")
+        }
+        assert foreign_keys == {
+            (("provider_id",), "providers", ("id",)),
+            (("feed_id",), "feeds", ("id",)),
+        }, "0011 must preserve both original source-binding foreign keys"
+
+        # Verify actual enforcement, not only reflected constraint names.
+        # All other fields, including the newly NOT NULL epoch, are valid:
+        # a failed insert must be due specifically to the missing parent.
+        has_epoch = "authorization_epoch" in {
+            column["name"]
+            for column in sa.inspect(conn).get_columns("provider_source_bindings")
+        }
+        for binding_id, provider_id, feed_id in (
+            ("BIND-MISSING-PROVIDER", "NO-PROVIDER", "FEED-A"),
+            ("BIND-MISSING-FEED", "PROVIDER-A", "NO-FEED"),
+        ):
+            columns = "id, provider_id, feed_id, source_type, external_identity, status"
+            values = (
+                f"'{binding_id}', '{provider_id}', '{feed_id}', "
+                f"'TELEGRAM', '{binding_id}', 'ACTIVE'"
+            )
+            if has_epoch:
+                columns += ", authorization_epoch"
+                values += ", 'ffffffffffffffffffffffffffffffff'"
+            with pytest.raises(sa.exc.IntegrityError) as rejected:
+                with conn.begin_nested():
+                    conn.exec_driver_sql(
+                        f"INSERT INTO provider_source_bindings ({columns}) VALUES ({values})"
+                    )
+            assert "foreign key" in str(rejected.value).lower()
         surviving_indexes = {
             index["name"]: index
             for index in sa.inspect(conn).get_indexes("provider_source_bindings")
@@ -138,6 +195,11 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
 
 def test_populated_source_epoch_migration_on_isolated_sqlite() -> None:
     engine = sa.create_engine("sqlite+pysqlite:///:memory:")
+
+    @sa.event.listens_for(engine, "connect")
+    def _require_foreign_keys(dbapi_connection, _connection_record):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
     try:
         with engine.begin() as conn:
             _exercise_populated_migration(conn, postgres=False)
