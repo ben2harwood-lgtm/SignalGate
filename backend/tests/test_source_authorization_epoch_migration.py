@@ -178,6 +178,26 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
             assert surviving_indexes[name]["column_names"] == expected_columns
             assert not bool(surviving_indexes[name]["unique"])
 
+    def assert_missing_epoch_rejected() -> None:
+        # The column's reflected nullable=False is not enough: after 0011,
+        # inserts omitting the preview-revocation epoch must actually fail.
+        # All other values use existing parents, distinct identity and valid
+        # timestamps, so an unrelated FK/UNIQUE constraint cannot pass this.
+        with pytest.raises(sa.exc.IntegrityError) as rejected:
+            with conn.begin_nested():
+                conn.exec_driver_sql(
+                    "INSERT INTO provider_source_bindings "
+                    "(id, provider_id, feed_id, source_type, external_identity, "
+                    "status, created_at, updated_at) VALUES "
+                    "('BIND-NO-EPOCH', 'PROVIDER-A', 'FEED-A', "
+                    "'TELEGRAM', '92999', 'ACTIVE', "
+                    "'2026-10-24 12:00:00', '2026-10-24 12:00:00')"
+                )
+        error = str(rejected.value).lower()
+        assert "authorization_epoch" in error and "null" in error, (
+            "Missing epoch must be rejected by its NOT NULL constraint"
+        )
+
     assert_scope_preserved()
     migration.op = Operations(MigrationContext.configure(conn))
     migration.upgrade()
@@ -196,6 +216,7 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
         for column in sa.inspect(conn).get_columns("provider_source_bindings")
     }
     assert columns["authorization_epoch"]["nullable"] is False
+    assert_missing_epoch_rejected()
 
     migration.downgrade()
     assert_scope_preserved()
@@ -205,6 +226,7 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
     }
     migration.upgrade()
     assert_scope_preserved()
+    assert_missing_epoch_rejected()
     regenerated_epochs = [
         row[0]
         for row in conn.exec_driver_sql(
