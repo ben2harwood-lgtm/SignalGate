@@ -23,6 +23,30 @@ SignalGate does not supply proprietary investment signals, does not promise prof
 
 **STOP — frozen RC2 is NOT an MT5 broker-demo acceptance candidate.** Its final post-freeze CI #137 ([run 35462909294](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35462909294)) succeeded, but the official MetaEditor run compiling the **exact frozen RC2 source** `3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2` **FAILED with 18 errors / 4 warnings** ([run 35464044898](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464044898)). Later successful post-RC source compiles do not retroactively accept RC2. Preserve frozen RC2 and RC1 as historical evidence; do **not** start new MT5 broker-demo acceptance against RC2's failed EA. A separately pinned successor needs independent review, new exact-source CI, official 0-error/0-warning compilation with a fresh source-bound EX5, and subsequently genuine controlled demo-broker scenario receipts. External release gates remain open.
 
+## Frozen RC2 compiler exception — verified 23 October 2026
+
+**FAILED (exact frozen source):** `release/signalgate-demo-rc2-2026-09-19` at
+`3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2` produced
+**18 errors / 4 warnings** under official MetaEditor 5.0.0.6204 on
+19 September 2026 (workflow [35464044898](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464044898);
+log and evidence artifact `10590378689`). This was an actual compiler failure,
+**not** a failed Linux static/source-only check. Earlier green RC2 backend,
+security and runtime CI did not compile this EA successfully.
+
+**Different repaired candidate:** PR #55's exact head
+`d2dc404c94db02bd2d21cfa5a37674bfd748dea4` passed official
+MetaEditor with **0 errors / 0 warnings** (workflow
+[35464509608](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464509608)).
+That pass belongs only to the repaired SHA; it cannot retroactively clear
+frozen RC2. Likewise the 20 October provider-workspace compilation below
+does not constitute a frozen-RC2 compile pass.
+
+**Gate remains OPEN:** independently review a separately pinned successor,
+obtain its own exact-source compile receipt, then collect real MT5 broker-demo
+scenario receipts. PR #60's execution-attribution HOLD remains independent.
+Do not treat a synthetic rehearsal, a new document or a green CI matrix as
+broker-demo acceptance. Real-money and automatic copying remain blocked.
+
 ## RC2 improvements over RC1
 
 RC2 does not broaden the trading mode. It improves readiness and evidence quality:

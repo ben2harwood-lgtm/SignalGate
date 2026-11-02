@@ -9,6 +9,17 @@ The current release candidate is DEMO ONLY. Do not use a live trading account.
 Frozen demo RC:
     release/signalgate-demo-rc2-2026-09-19
 
+FROZEN RC2 MT5 COMPILER HOLD
+---------------------------
+Exact EA source: 3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2.
+Official MetaEditor run 35464044898 FAILED: 18 errors / 4 warnings.
+Do NOT use the frozen RC2 EA for MT5 broker-demo acceptance.
+Green backend CI, or a clean compile of different source, cannot clear this.
+A separately approved, independently reviewed successor needs an exact-source
+0-error / 0-warning MetaEditor compile, a regenerated EX5, resolved PR #60
+execution-safety holds, and genuine DEMO broker-scenario receipts.
+Real-money trading and automatic copying remain blocked.
+
 Start here:
     README.md
     SIGNALGATE-STATUS.md
