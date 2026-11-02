@@ -198,6 +198,35 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
             "Missing epoch must be rejected by its NOT NULL constraint"
         )
 
+    def assert_valid_epoch_binding_accepted() -> None:
+        # A migration that rejects every new binding could satisfy the
+        # missing-epoch and FK negative tests. Verify a complete, valid
+        # synthetic connection is actually insertable after each upgrade.
+        # Roll back the savepoint so original historical rows stay isolated.
+        with conn.begin_nested() as savepoint:
+            conn.exec_driver_sql(
+                "INSERT INTO provider_source_bindings "
+                "(id, provider_id, feed_id, source_type, external_identity, "
+                "status, created_at, updated_at, authorization_epoch) VALUES "
+                "('BIND-VALID-EPOCH', 'PROVIDER-A', 'FEED-A', 'TELEGRAM', "
+                "'93999', 'ACTIVE', '2026-10-24 12:01:00', "
+                "'2026-10-24 12:01:00', '0123456789abcdef0123456789abcdef')"
+            )
+            actual = conn.exec_driver_sql(
+                "SELECT provider_id, feed_id, source_type, external_identity, "
+                "status, authorization_epoch FROM provider_source_bindings "
+                "WHERE id='BIND-VALID-EPOCH'"
+            ).one()
+            assert tuple(actual) == (
+                "PROVIDER-A", "FEED-A", "TELEGRAM", "93999", "ACTIVE",
+                "0123456789abcdef0123456789abcdef",
+            )
+            savepoint.rollback()
+        assert conn.exec_driver_sql(
+            "SELECT COUNT(*) FROM provider_source_bindings "
+            "WHERE id='BIND-VALID-EPOCH'"
+        ).scalar_one() == 0
+
     assert_scope_preserved()
     migration.op = Operations(MigrationContext.configure(conn))
     migration.upgrade()
@@ -217,6 +246,7 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
     }
     assert columns["authorization_epoch"]["nullable"] is False
     assert_missing_epoch_rejected()
+    assert_valid_epoch_binding_accepted()
 
     migration.downgrade()
     assert_scope_preserved()
@@ -227,6 +257,7 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
     migration.upgrade()
     assert_scope_preserved()
     assert_missing_epoch_rejected()
+    assert_valid_epoch_binding_accepted()
     regenerated_epochs = [
         row[0]
         for row in conn.exec_driver_sql(
