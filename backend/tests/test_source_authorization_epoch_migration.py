@@ -33,14 +33,48 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
     conn.exec_driver_sql(
         f"CREATE {temporary}TABLE provider_source_bindings ("
         "id VARCHAR(80) NOT NULL PRIMARY KEY, "
-        "status VARCHAR(20) NOT NULL)"
+        "provider_id VARCHAR(80) NOT NULL, "
+        "feed_id VARCHAR(80) NOT NULL, "
+        "source_type VARCHAR(20) NOT NULL, "
+        "external_identity VARCHAR(40) NOT NULL, "
+        "status VARCHAR(20) NOT NULL, "
+        "CONSTRAINT uq_provider_source_external_identity "
+        "UNIQUE (source_type, external_identity))"
     )
     conn.exec_driver_sql(
-        "INSERT INTO provider_source_bindings (id, status) VALUES "
-        "('BIND-A', 'ACTIVE'), ('BIND-B', 'REVOKED'), ('BIND-C', 'ACTIVE')"
+        "INSERT INTO provider_source_bindings "
+        "(id, provider_id, feed_id, source_type, external_identity, status) VALUES "
+        "('BIND-A', 'PROVIDER-A', 'FEED-A', 'TELEGRAM', '92001', 'ACTIVE'), "
+        "('BIND-B', 'PROVIDER-B', 'FEED-B', 'TELEGRAM', '92002', 'REVOKED'), "
+        "('BIND-C', 'PROVIDER-A', 'FEED-C', 'TELEGRAM', '92003', 'ACTIVE')"
     )
+    original_scopes = conn.exec_driver_sql(
+        "SELECT id, provider_id, feed_id, source_type, external_identity, status "
+        "FROM provider_source_bindings ORDER BY id"
+    ).all()
+
+    def assert_unique_source_identity() -> None:
+        # This pre-0011 constraint prevents two providers from owning the same
+        # Telegram identity. A batch table rebuild must never silently drop it.
+        with pytest.raises(sa.exc.IntegrityError):
+            with conn.begin_nested():
+                conn.exec_driver_sql(
+                    "INSERT INTO provider_source_bindings "
+                    "(id, provider_id, feed_id, source_type, external_identity, status) "
+                    "VALUES ('BIND-D', 'OTHER', 'OTHER', 'TELEGRAM', '92001', 'ACTIVE')"
+                )
+
+    def assert_scope_preserved() -> None:
+        assert conn.exec_driver_sql(
+            "SELECT id, provider_id, feed_id, source_type, external_identity, status "
+            "FROM provider_source_bindings ORDER BY id"
+        ).all() == original_scopes
+        assert_unique_source_identity()
+
+    assert_scope_preserved()
     migration.op = Operations(MigrationContext.configure(conn))
     migration.upgrade()
+    assert_scope_preserved()
     rows = conn.exec_driver_sql(
         "SELECT id, status, authorization_epoch "
         "FROM provider_source_bindings ORDER BY id"
@@ -57,11 +91,13 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
     assert columns["authorization_epoch"]["nullable"] is False
 
     migration.downgrade()
+    assert_scope_preserved()
     assert "authorization_epoch" not in {
         column["name"]
         for column in sa.inspect(conn).get_columns("provider_source_bindings")
     }
     migration.upgrade()
+    assert_scope_preserved()
     regenerated_epochs = [
         row[0]
         for row in conn.exec_driver_sql(
