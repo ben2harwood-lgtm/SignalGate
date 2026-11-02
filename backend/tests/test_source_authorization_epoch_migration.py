@@ -89,17 +89,23 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
         # INSERT could fail on epoch NOT NULL even if the source UNIQUE
         # constraint had accidentally disappeared during table reconstruction.
         columns = "id, provider_id, feed_id, source_type, external_identity, status"
-        values = "'BIND-D', 'OTHER', 'OTHER', 'TELEGRAM', '92001', 'ACTIVE'"
+        # Both parents must exist: otherwise the old assertion passed from
+        # FK rejection even when source-identity uniqueness was missing.
+        # Use the *other* tenant/feed to prove uniqueness across scopes.
+        values = "'BIND-D', 'PROVIDER-B', 'FEED-B', 'TELEGRAM', '92001', 'ACTIVE'"
         if "authorization_epoch" in {
             col["name"] for col in sa.inspect(conn).get_columns("provider_source_bindings")
         }:
             columns += ", authorization_epoch"
             values += ", 'ffffffffffffffffffffffffffffffff'"
-        with pytest.raises(sa.exc.IntegrityError):
+        with pytest.raises(sa.exc.IntegrityError) as rejected:
             with conn.begin_nested():
                 conn.exec_driver_sql(
                     f"INSERT INTO provider_source_bindings ({columns}) VALUES ({values})"
                 )
+        assert "unique" in str(rejected.value).lower(), (
+            "Duplicate source identity must fail on UNIQUE, not on FK/NOT NULL"
+        )
 
     def assert_scope_preserved() -> None:
         assert conn.exec_driver_sql(
