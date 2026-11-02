@@ -329,9 +329,16 @@ def telegram_provider_source_extract(
     parsed = (
         parse_signal(
             extracted.raw_text,
+            # Match the persisted policy used by source status and final signal
+            # creation; a feed without an override uses the operator DB setting.
             expiry_minutes=(
                 feed.expiry_minutes
-                or settings.default_signal_expiry_minutes
+                if feed.expiry_minutes is not None
+                else crud.get_setting_int(
+                    db,
+                    "default_signal_expiry_minutes",
+                    settings.default_signal_expiry_minutes,
+                )
             ),
             allowed_symbols=crud.feed_allowed_symbols(feed),
         )
