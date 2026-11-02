@@ -105,3 +105,14 @@ def test_release_receipt_refuses_failed_rc2_mt5_acceptance() -> None:
     assert "genuine controlled" in data and "DEMO" in data
     assert "Still required against RC2:" not in data
     assert "RC2 supersedes RC1 for new acceptance work" not in data
+
+def test_new_acceptance_receipt_identifiers_do_not_impersonate_frozen_rc2() -> None:
+    """New demo receipts must be bound to their own candidate, not failed RC2."""
+    data = ACCEPTANCE_INDEX.read_text(encoding="utf-8")
+    naming = data.split("## Controlled data-room naming", 1)[1]
+    assert "SG-<FULL-40-CHAR-CANDIDATE-SHA>/" in naming
+    assert "There is **no accepted successor candidate yet**" in naming
+    assert "SG-RC2-2026-09-19/mt5/" not in naming
+    assert "must never" in naming
+    assert "FAILED/HOLD" in naming
+    assert "A naming convention supplies no such proof" in naming
