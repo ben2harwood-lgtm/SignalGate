@@ -21,6 +21,24 @@ SignalGate does not supply proprietary investment signals, does not promise prof
 - The hosted schema is versioned through ten Alembic revisions:
   `20260918_0001` baseline -> `20260919_0002` execution safety -> `0003` replay identity -> `0004` provider tenancy -> `0005` provider branding -> `0006` feed policy -> `0007` customer-licence hashing -> `0008` subscription invites -> `0009` provider-source bindings -> `0010` audit hash chain.
 
+### Draft migration `20261101_0011` is not the RC2/main schema
+
+The **ten revisions above** describe the historical RC2/current `main` schema ending
+at `20260919_0010`. **Unmerged draft PRs #168/#172** additionally propose
+`backend/migrations/versions/20261101_0011_source_authorization_epoch.py`,
+which adds a non-null, per-binding `authorization_epoch` and backfills old
+bindings with independent random values. This is **NOT ON MAIN**, not part of
+frozen RC2, and not an approved deployment or release candidate. The source
+must not be treated as compatible with an unupgraded hosted database.
+
+For any **future independently reviewed and separately authorised** successor,
+rehearse the populated-database `20260919_0010` -> `20261101_0011` upgrade,
+strict single-head schema check, downgrade/re-upgrade and isolated restore on
+synthetic PostgreSQL data **before** an operator-approved migration window.
+Follow `docs/HOSTED_DEPLOYMENT.md` and `docs/DATABASE_MIGRATIONS.md`;
+do not migrate, connect to, or activate a real provider/broker here. Green CI
+and synthetic migration tests **do not** clear G3/G8/G9 or external acceptance.
+
 **STOP — frozen RC2 is NOT an MT5 broker-demo acceptance candidate.** Its final post-freeze CI #137 ([run 35462909294](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35462909294)) succeeded, but the official MetaEditor run compiling the **exact frozen RC2 source** `3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2` **FAILED with 18 errors / 4 warnings** ([run 35464044898](https://github.com/ben2harwood-lgtm/SignalGate/actions/runs/35464044898)). Later successful post-RC source compiles do not retroactively accept RC2. Preserve frozen RC2 and RC1 as historical evidence; do **not** start new MT5 broker-demo acceptance against RC2's failed EA. A separately pinned successor needs independent review, new exact-source CI, official 0-error/0-warning compilation with a fresh source-bound EX5, and subsequently genuine controlled demo-broker scenario receipts. External release gates remain open.
 
 ## Frozen RC2 compiler exception — verified 23 October 2026

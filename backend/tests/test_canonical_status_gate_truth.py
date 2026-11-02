@@ -116,3 +116,19 @@ def test_new_acceptance_receipt_identifiers_do_not_impersonate_frozen_rc2() -> N
     assert "must never" in naming
     assert "FAILED/HOLD" in naming
     assert "A naming convention supplies no such proof" in naming
+
+def test_pending_telegram_epoch_revision_is_distinct_from_main_and_rc2() -> None:
+    """Proposed schema changes must not masquerade as merged RC2/main facts."""
+    data = _status()
+    heading = "### Draft migration `20261101_0011` is not the RC2/main schema"
+    assert data.count(heading) == 1
+    draft = data.split(heading, 1)[1].split("\n## ", 1)[0]
+    assert "20260919_0010" in draft
+    assert "20261101_0011_source_authorization_epoch.py" in draft
+    assert "Unmerged draft PRs #168/#172" in draft
+    assert "NOT ON MAIN" in draft
+    assert "not an approved deployment" in draft
+    assert "populated-database" in draft
+    assert "isolated restore" in draft
+    assert "do not" in draft.lower()
+    assert "do not** clear G3/G8/G9" in draft
