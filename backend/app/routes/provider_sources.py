@@ -52,6 +52,7 @@ def _provider_binding_out(
         )
     return ProviderSourceBindingOut(
         binding_id=binding.id,
+        authorization_epoch=binding.authorization_epoch,
         provider_id=provider.id,
         provider_name=provider.name,
         provider_display_name=provider.brand_display_name,
@@ -260,6 +261,7 @@ def telegram_provider_source_extract(
     expected_binding_id: str,
     expected_provider_id: str,
     expected_feed_id: str,
+    expected_authorization_epoch: str,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     _bot: str = Depends(require_registration),
@@ -275,6 +277,7 @@ def telegram_provider_source_extract(
         expected_binding_id != binding.id
         or expected_provider_id != provider.id
         or expected_feed_id != feed.id
+        or expected_authorization_epoch != binding.authorization_epoch
     ):
         raise HTTPException(
             status_code=409,
@@ -316,6 +319,7 @@ def telegram_provider_source_extract(
         or current[0].id != expected_binding_id
         or current[1].id != expected_provider_id
         or current[2].id != expected_feed_id
+        or current[0].authorization_epoch != expected_authorization_epoch
     ):
         raise HTTPException(
             status_code=409,
@@ -403,6 +407,7 @@ def telegram_provider_source_signal(
         payload.expected_binding_id != binding.id
         or payload.expected_provider_id != provider.id
         or payload.expected_feed_id != feed.id
+        or payload.expected_authorization_epoch != binding.authorization_epoch
     ):
         raise HTTPException(
             status_code=409,
@@ -467,6 +472,7 @@ def telegram_provider_source_recipients(
         # Bind this receipt to the exact current Telegram source and feed.
         # The bot compares it to the previously persisted signal before send.
         "binding_id": binding.id,
+        "authorization_epoch": binding.authorization_epoch,
         "provider_id": provider.id,
         "feed_id": feed.id,
         "recipients": [

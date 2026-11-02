@@ -50,6 +50,7 @@ def _source_claim(binding):
         "expected_binding_id": binding["binding_id"],
         "expected_provider_id": binding["provider_id"],
         "expected_feed_id": binding["feed_id"],
+        "expected_authorization_epoch": binding["authorization_epoch"],
     }
 
 
@@ -1288,7 +1289,12 @@ def test_unbound_or_revoked_source_cannot_extract_create_or_broadcast(client, db
                     "telegram_user_id": "9209",
                     "raw_text": EUR_BUY,
                     "source_message_id": "1",
-                    **_source_claim({"binding_id": "ABSENT", "provider_id": "ABSENT", "feed_id": "ABSENT"}),
+                    **_source_claim({
+                        "binding_id": "ABSENT",
+                        "provider_id": "ABSENT",
+                        "feed_id": "ABSENT",
+                        "authorization_epoch": "a" * 32,
+                    }),
                 }
             },
         ),
@@ -1444,3 +1450,264 @@ def test_hosted_screenshot_previews_never_return_fabricated_fake_signal(
     finally:
         security.settings.require_license = prior_hosted
         security.settings.registration_api_key = prior_bot_key
+
+
+def test_revoke_then_same_feed_reconnect_refuses_stale_preview(client, db):
+    """A new invite to the same feed must not re-authorise a staged old preview.
+
+    This broker-free regression checks both refusal of obsolete claims and
+    successful signal creation under the newly rotated authorisation.
+    It does not establish external security or MT5 demo-broker acceptance.
+    """
+    provider, feed, key = _provider(db, "source-epoch-reconnect")
+    telegram_id = "9419"
+    first = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert first.status_code == 200, first.text
+    original_claim = _source_claim(first.json())
+
+    revoked = client.post(
+        f"/providers/me/source-bindings/{first.json()['binding_id']}/revoke",
+        headers=_headers(provider, key),
+    )
+    assert revoked.status_code == 200, revoked.text
+    inactive = client.get(
+        "/provider-sources/telegram/status",
+        params={"telegram_user_id": telegram_id},
+    )
+    assert inactive.status_code == 404, inactive.text
+
+    # This is a new, one-use invitation and a distinct authorisation event.
+    second = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "ACTIVE"
+    assert second.json()["binding_id"] == first.json()["binding_id"]
+    assert second.json()["provider_id"] == first.json()["provider_id"]
+    assert second.json()["feed_id"] == first.json()["feed_id"]
+    assert second.json()["authorization_epoch"] != first.json()["authorization_epoch"]
+
+    # The Telegram preview predates revocation; it must not create any
+    # signal or audit under the freshly authorised (but same) provider/feed.
+    stale = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": "9419:preview-before-revoke",
+            **original_claim,
+        },
+    )
+    assert stale.status_code == 409, stale.text
+    assert db.query(models.Signal).count() == 0
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "SIGNAL_CREATED"
+    ).count() == 0
+
+    # A fresh claim from the same feed must still work; rotating the
+    # authorisation may not permanently disable legitimate source activity.
+    fresh = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": "9419:after-reconnect",
+            **_source_claim(second.json()),
+        },
+    )
+    assert fresh.status_code == 200, fresh.text
+    assert fresh.json()["newly_created"] is True
+    assert fresh.json()["parser_status"] == "VALID"
+    assert fresh.json()["provider_id"] == provider.id
+    assert fresh.json()["feed_id"] == feed.id
+    assert db.query(models.Signal).count() == 1
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "SIGNAL_CREATED"
+    ).count() == 1
+
+
+def test_a_to_b_to_a_rebind_refuses_original_preview(client, db):
+    """Rebinding A -> B -> A must not resurrect the original A authorisation.
+
+    Two distinct one-time A invitations bracket a valid B invitation. No
+    Telegram message, model, customer data or broker call is involved.
+    """
+    provider_a, feed_a, key_a = _provider(db, "source-aba-a")
+    provider_b, feed_b, key_b = _provider(db, "source-aba-b")
+    telegram_id = "9420"
+
+    first = _connect(
+        client, _source_invite(client, provider_a, feed_a, key_a), telegram_id
+    )
+    assert first.status_code == 200, first.text
+    first_claim = _source_claim(first.json())
+
+    rebound_b = _connect(
+        client, _source_invite(client, provider_b, feed_b, key_b), telegram_id
+    )
+    assert rebound_b.status_code == 200, rebound_b.text
+    assert rebound_b.json()["provider_id"] == provider_b.id
+    assert rebound_b.json()["feed_id"] == feed_b.id
+
+    rebound_a = _connect(
+        client, _source_invite(client, provider_a, feed_a, key_a), telegram_id
+    )
+    assert rebound_a.status_code == 200, rebound_a.text
+    assert rebound_a.json()["binding_id"] == first.json()["binding_id"]
+    assert rebound_a.json()["provider_id"] == first.json()["provider_id"]
+    assert rebound_a.json()["feed_id"] == first.json()["feed_id"]
+
+    # Matching old scope identifiers must not re-authorise old A content.
+    stale = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": "9420:before-a-b-a",
+            **first_claim,
+        },
+    )
+    assert stale.status_code == 409, stale.text
+    assert db.query(models.Signal).count() == 0
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "SIGNAL_CREATED"
+    ).count() == 0
+
+
+def test_same_feed_reconnect_refuses_stale_screenshot_before_extractor(
+    client, db, monkeypatch,
+):
+    """Reconnected same-feed source cannot send an obsolete image to any model.
+
+    The offline stub would process the image if the expected-scope guard
+    misses the fresh authorisation generation. It never calls a paid model.
+    """
+    from types import SimpleNamespace
+    from app.routes import provider_sources
+
+    provider, feed, key = _provider(db, "source-stale-image")
+    telegram_id = "9421"
+    first = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert first.status_code == 200, first.text
+    old_scope = _source_claim(first.json())
+    revoked = client.post(
+        f"/providers/me/source-bindings/{first.json()['binding_id']}/revoke",
+        headers=_headers(provider, key),
+    )
+    assert revoked.status_code == 200, revoked.text
+    rebound = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert rebound.status_code == 200, rebound.text
+
+    extracted = []
+
+    class OfflineExtractor:
+        engine = "offline-test"
+
+        def extract(self, _image, *, mime):
+            extracted.append(mime)
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="high",
+                notes="",
+                raw_text=EUR_BUY,
+            )
+
+    monkeypatch.setattr(
+        provider_sources, "get_extractor", lambda: OfflineExtractor()
+    )
+    response = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": telegram_id, **old_scope},
+        files={"file": ("signal.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert response.status_code == 409, response.text
+    assert extracted == [], "Stale image reached extractor after reconnect"
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count() == 0
+
+
+def test_same_feed_reconnect_during_extraction_refuses_old_epoch_postgresql(
+    client, db, monkeypatch,
+):
+    """A separate real PostgreSQL transaction can renew A -> A mid-extraction.
+
+    The provider/feed/binding identifiers stay unchanged. Only the renewed
+    authorisation generation can distinguish the previously captured image.
+    No real Telegram, vision service, provider data or broker is involved.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from types import SimpleNamespace
+
+    from app.database import SessionLocal
+
+    provider, feed, key = _provider(db, "extract-inflight-same-feed")
+    telegram_id = "9422"
+    original = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    ).json()
+    renewal = _source_invite(client, provider, feed, key)
+    calls = []
+
+    class RenewDuringExtraction:
+        engine = "offline-test"
+
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG
+            assert mime == "image/png"
+            with SessionLocal() as writer:
+                # An accidentally held source lock must fail the test rather
+                # than hang the CI runner during this synchronous extraction.
+                conn = writer.connection()
+                conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+                conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+                _invite, binding, rebound_provider, rebound_feed = (
+                    crud.connect_telegram_provider_source(
+                        writer, renewal["connection_token"], telegram_id
+                    )
+                )
+                assert binding.id == original["binding_id"]
+                assert rebound_provider.id == provider.id
+                assert rebound_feed.id == feed.id
+                assert binding.authorization_epoch != original["authorization_epoch"]
+                writer.commit()
+            calls.append("renewed")
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="HIGH",
+                notes="",
+                raw_text=EUR_BUY,
+            )
+
+    monkeypatch.setattr(
+        "app.routes.provider_sources.get_extractor",
+        lambda: RenewDuringExtraction(),
+    )
+    before = db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count()
+    refused = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": telegram_id, **_source_claim(original)},
+        files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert calls == ["renewed"], "Extraction did not reach the renewal"
+    assert refused.status_code == 409, refused.text
+    db.expire_all()
+    binding = db.get(models.ProviderSourceBinding, original["binding_id"])
+    assert binding.provider_id == provider.id
+    assert binding.feed_id == feed.id
+    assert binding.authorization_epoch != original["authorization_epoch"]
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    ).count() == before, "Old-epoch extraction was incorrectly audited"

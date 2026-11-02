@@ -262,7 +262,7 @@ def check_screenshot_extraction_fail_closed() -> None:
 
     async def connected(_user_id):
         return {
-            "binding_id": "BINDING-OFFLINE",
+            "binding_id": "BINDING-OFFLINE", "authorization_epoch": "a" * 32,
             "provider_id": "PROVIDER-OFFLINE",
             "feed_id": "FEED-OFFLINE",
         }
@@ -292,6 +292,7 @@ def check_screenshot_extraction_fail_closed() -> None:
                 "expected_binding_id": "BINDING-OFFLINE",
                 "expected_provider_id": "PROVIDER-OFFLINE",
                 "expected_feed_id": "FEED-OFFLINE",
+                "expected_authorization_epoch": "a" * 32,
             }, "Hosted screenshot test lost its original source claim"
             if fail is not None:
                 raise RuntimeError(fail)
@@ -467,7 +468,7 @@ def check_shared_chat_preview_callbacks_fail_closed() -> None:
                 "pending_signal_text": "PRIVATE-SIGNAL-DO-NOT-DISCLOSE",
                 "pending_preview_token": "a" * 16,
                 "pending_provider_source_scope": {
-                    "binding_id": "BIND-PRIVATE", "provider_id": "PROVIDER-PRIVATE",
+                    "binding_id": "BIND-PRIVATE", "authorization_epoch": "a" * 32, "provider_id": "PROVIDER-PRIVATE",
                     "feed_id": "FEED-PRIVATE",
                 },
                 "awaiting_edit": True,
@@ -663,7 +664,7 @@ def check_shared_chat_text_edits_fail_closed() -> None:
                 "pending_signal_text": "PRIVATE-PREVIEW-SIGNAL",
                 "pending_preview_token": "a" * 16,
                 "pending_provider_source_scope": {
-                    "binding_id": "PRIVATE-BINDING",
+                    "binding_id": "PRIVATE-BINDING", "authorization_epoch": "a" * 32,
                     "provider_id": "PRIVATE-PROVIDER", "feed_id": "PRIVATE-FEED",
                 },
             }
@@ -883,7 +884,7 @@ def check_provider_source_status_requires_active_typed_binding() -> None:
     assert config.require_license is True
     secret = "OFFLINE-STATUS-PRIVATE-DIAGNOSTIC"
     valid = {
-        "binding_id": "BIND-OFFLINE",
+        "binding_id": "BIND-OFFLINE", "authorization_epoch": "a" * 32,
         "provider_id": "PROVIDER-OFFLINE",
         "provider_name": "Provider Offline",
         "feed_id": "FEED-OFFLINE",
@@ -907,6 +908,7 @@ def check_provider_source_status_requires_active_typed_binding() -> None:
         {**valid, "status": "REVOKED"},
         {**valid, "source_type": "OTHER"},
         {**valid, "binding_id": None},
+        {**valid, "authorization_epoch": "bad-epoch"},
         {**valid, "provider_id": 123},
         {**valid, "provider_name": {"debug": secret}},
         {**valid, "feed_name": ""},
@@ -1025,7 +1027,7 @@ def check_start_source_label_spoofing() -> None:
     """An ACTIVE source cannot forge safety text in a private /start reply."""
     assert config.require_license is True
     base = {
-        "binding_id": "BIND-OFFLINE", "provider_id": "PROVIDER-OFFLINE",
+        "binding_id": "BIND-OFFLINE", "authorization_epoch": "a" * 32, "provider_id": "PROVIDER-OFFLINE",
         "provider_name": "Northside Signals",
         "provider_display_name": "Café Signals",
         "feed_id": "FEED-OFFLINE", "feed_name": "London Session",
@@ -1466,7 +1468,7 @@ def check_connectprovider_success_receipt_integrity() -> None:
     secret = "OFFLINE-SOURCE-CONNECTION-PRIVATE-DIAGNOSTIC"
     token = "OFFLINE-ONE-TIME-SOURCE-TOKEN"
     valid = {
-        "binding_id": "BIND-OFFLINE", "provider_id": "PROVIDER-OFFLINE",
+        "binding_id": "BIND-OFFLINE", "authorization_epoch": "a" * 32, "provider_id": "PROVIDER-OFFLINE",
         "provider_name": "Provider Offline", "provider_display_name": None,
         "feed_id": "FEED-OFFLINE", "feed_name": "Feed Offline",
         "source_type": "TELEGRAM", "status": "ACTIVE",
@@ -1504,7 +1506,8 @@ def check_connectprovider_success_receipt_integrity() -> None:
         None, [], {}, {"detail": {"error": secret}},
         {**valid, "detail": ""}, {**valid, "status": "REVOKED"},
         {**valid, "source_type": "UNKNOWN"},
-        {**valid, "binding_id": None}, {**valid, "feed_id": ""},
+        {**valid, "binding_id": None},
+        {**valid, "authorization_epoch": "bad-epoch"}, {**valid, "feed_id": ""},
         {**valid, "provider_name": 45},
     )
     for value in negatives:
@@ -1939,7 +1942,7 @@ def check_overlapping_screenshot_attempts_fail_closed() -> None:
                 entered.set()
                 await release.wait()
             return {
-                "binding_id": "BINDING-OFFLINE",
+                "binding_id": "BINDING-OFFLINE", "authorization_epoch": "a" * 32,
                 "provider_id": "PROVIDER-OFFLINE",
                 "feed_id": "OFFLINE",
             }
@@ -1961,6 +1964,7 @@ def check_overlapping_screenshot_attempts_fail_closed() -> None:
                 "expected_binding_id": "BINDING-OFFLINE",
                 "expected_provider_id": "PROVIDER-OFFLINE",
                 "expected_feed_id": "OFFLINE",
+                    "expected_authorization_epoch": "a" * 32,
             }, "Delayed screenshot extraction lost its source snapshot"
             return httpx.Response(
                 200, json={
@@ -2017,7 +2021,7 @@ def check_broadcast_recipient_feed_binding() -> None:
             timespec="microseconds"
         )
     source = {
-        "binding_id": "BINDING-A",
+        "binding_id": "BINDING-A", "authorization_epoch": "a" * 32,
         "provider_id": "PROVIDER-A",
         "feed_id": "FEED-A",
         "expiry_minutes": 5,
@@ -2035,7 +2039,7 @@ def check_broadcast_recipient_feed_binding() -> None:
         "source": "FEED:FEED-A:TELEGRAM_BINDING:BINDING-A",
     }
     valid = {
-        "binding_id": "BINDING-A",
+        "binding_id": "BINDING-A", "authorization_epoch": "a" * 32,
         "provider_id": "PROVIDER-A",
         "feed_id": "FEED-A",
         "recipients": [{"telegram_user_id": "900000000011"}],
@@ -2049,8 +2053,8 @@ def check_broadcast_recipient_feed_binding() -> None:
 
     async def post(_path, **kwargs):
         claim = kwargs["json"]
-        assert {k: claim["expected_" + k] for k in ("binding_id", "provider_id", "feed_id")} == {
-            k: source[k] for k in ("binding_id", "provider_id", "feed_id")
+        assert {k: claim["expected_" + k] for k in ("binding_id", "provider_id", "feed_id", "authorization_epoch")} == {
+            k: source[k] for k in ("binding_id", "provider_id", "feed_id", "authorization_epoch")
         }, "Hosted signal creation must bind the original source snapshot"
         return response_signal
 
@@ -2077,9 +2081,11 @@ def check_broadcast_recipient_feed_binding() -> None:
         dict(valid, binding_id="BINDING-B"),
         dict(valid, provider_id="PROVIDER-B"),
         dict(valid, feed_id="FEED-B"),
+        # Same binding/provider/feed, but a renewed one-time source authority.
+        dict(valid, authorization_epoch="b" * 32),
         {"recipients": valid["recipients"]},
         {"detail": "backend error", **{"recipients": valid["recipients"]}},
-        {"binding_id": "BINDING-A", "provider_id": "PROVIDER-A",
+        {"binding_id": "BINDING-A", "authorization_epoch": "a" * 32, "provider_id": "PROVIDER-A",
          "feed_id": "FEED-A", "recipients": ["900000000011"]},
         dict(valid, recipients=[{"telegram_user_id": "900000000011"},
                                 {"telegram_user_id": "not-a-chat-id"}]),
@@ -2386,7 +2392,7 @@ def check_broadcast_failure_logs_are_private() -> None:
 
     async def source_status(_user_id):
         return {
-            "binding_id": "BINDING-OFFLINE",
+            "binding_id": "BINDING-OFFLINE", "authorization_epoch": "a" * 32,
             "provider_id": "PROVIDER-OFFLINE",
             "feed_id": "FEED-OFFLINE",
             "expiry_minutes": 5,
@@ -2485,7 +2491,7 @@ def check_signal_create_backend_errors_remain_private() -> None:
     received = []
 
     async def source_status(_user_id):
-        return {"binding_id": "BINDING-OFFLINE", "provider_id": "PROVIDER-OFFLINE",
+        return {"binding_id": "BINDING-OFFLINE", "authorization_epoch": "a" * 32, "provider_id": "PROVIDER-OFFLINE",
                 "feed_id": "FEED-OFFLINE", "expiry_minutes": 5}
 
     async def forbidden_recipients(_update, _source):
@@ -2552,20 +2558,28 @@ def check_signal_create_backend_errors_remain_private() -> None:
 
 
 
-def check_preview_source_rebind_blocks_confirmation() -> None:
-    """A screenshot preview for feed A cannot be confirmed/edited into feed B."""
+def check_preview_source_rebind_blocks_confirmation(
+    *, same_feed_epoch_rotation: bool = False
+) -> None:
+    """An old preview cannot be confirmed after feed rebind OR epoch-only renewal."""
     assert config.require_license is True
     source_a = {
-        "binding_id": "BINDING-A", "provider_id": "PROVIDER-A",
+        "binding_id": "BINDING-A", "authorization_epoch": "a" * 32, "provider_id": "PROVIDER-A",
         "provider_name": "Provider A", "feed_id": "FEED-A",
         "feed_name": "Feed A", "source_type": "TELEGRAM", "status": "ACTIVE",
     }
-    # Real backend rebinding reuses the binding ID; feed/provider still change.
-    source_b = {
-        "binding_id": "BINDING-A", "provider_id": "PROVIDER-B",
-        "provider_name": "Provider B", "feed_id": "FEED-B",
-        "feed_name": "Feed B", "source_type": "TELEGRAM", "status": "ACTIVE",
-    }
+    # The real backend reuses binding IDs. A new invite to the SAME feed
+    # must be detected from the rotated epoch alone, not from provider/feed.
+    source_b = (
+        {**source_a, "authorization_epoch": "b" * 32}
+        if same_feed_epoch_rotation
+        else {
+            "binding_id": "BINDING-A", "authorization_epoch": "a" * 32,
+            "provider_id": "PROVIDER-B", "provider_name": "Provider B",
+            "feed_id": "FEED-B", "feed_name": "Feed B",
+            "source_type": "TELEGRAM", "status": "ACTIVE",
+        }
+    )
     extracted = {
         "parser_status": "VALID", "extracted_text": "EURUSD BUY SL 1.05 TP1 1.07",
         "symbol": "EURUSD", "direction": "BUY", "initial_stop_loss": 1.05,
@@ -2581,6 +2595,7 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
             "expected_binding_id": "BINDING-A",
             "expected_provider_id": "PROVIDER-A",
             "expected_feed_id": "FEED-A",
+                "expected_authorization_epoch": "a" * 32,
         }, "Bot failed to pin screenshot extraction to its source snapshot"
         return httpx.Response(200, json=extracted)
 
@@ -2626,7 +2641,7 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
             backend_calls.append(("GET", path))
             assert path == "/provider-sources/telegram/recipients"
             return {
-                "binding_id": "BINDING-A", "provider_id": "PROVIDER-A",
+                "binding_id": "BINDING-A", "authorization_epoch": "a" * 32, "provider_id": "PROVIDER-A",
                 "feed_id": "FEED-A",
                 "recipients": [{"telegram_user_id": "900000000011"}],
             }
@@ -2668,7 +2683,7 @@ def check_preview_source_rebind_blocks_confirmation() -> None:
             )
             assert state["pending_signal_text"] == extracted["extracted_text"]
             assert state["pending_provider_source_scope"] == {
-                "binding_id": "BINDING-A", "provider_id": "PROVIDER-A",
+                "binding_id": "BINDING-A", "authorization_epoch": "a" * 32, "provider_id": "PROVIDER-A",
                 "feed_id": "FEED-A",
             }
             return state["pending_preview_token"]
@@ -3577,7 +3592,7 @@ def check_status_source_label_spoofing() -> None:
     """Source names may describe a binding, but cannot forge /status lines."""
     assert config.require_license is True
     base = {
-        "binding_id": "BIND-OFFLINE",
+        "binding_id": "BIND-OFFLINE", "authorization_epoch": "a" * 32,
         "provider_id": "PROVIDER-OFFLINE",
         "provider_name": "Northside Signals",
         "provider_display_name": "Café Signals",
@@ -3992,6 +4007,7 @@ def main() -> int:
     check_preview_callback_identity_and_single_use()
     check_shared_chat_preview_callbacks_fail_closed()
     check_preview_source_rebind_blocks_confirmation()
+    check_preview_source_rebind_blocks_confirmation(same_feed_epoch_rotation=True)
     check_edit_text_bound_to_preview_across_authorisation_await()
     check_shared_chat_text_edits_fail_closed()
     check_provider_source_status_requires_active_typed_binding()

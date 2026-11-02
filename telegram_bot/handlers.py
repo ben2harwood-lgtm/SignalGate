@@ -258,12 +258,16 @@ async def _provider_source_status(
     if data.get("status") != "ACTIVE" or data.get("source_type") != "TELEGRAM":
         return None
     required_fields = (
-        "binding_id", "provider_id", "provider_name", "feed_id", "feed_name",
+        "binding_id", "authorization_epoch", "provider_id",
+        "provider_name", "feed_id", "feed_name",
     )
     if any(
         not isinstance(data.get(field), str) or not data[field].strip()
         for field in required_fields
     ):
+        return None
+    # Old/partial responses are not hosted authority; each reconnect rotates.
+    if re.fullmatch(r"[0-9a-f]{32}", data["authorization_epoch"], re.ASCII) is None:
         return None
     # The status receipt must carry the effective expiry used by the server.
     # Null/missing and malformed values cannot safely label a human approval card.
@@ -285,7 +289,7 @@ async def _can_submit_provider_signal(update: Update) -> bool:
 
 def _source_scope(source: Any) -> Optional[Dict[str, str]]:
     """Return the immutable identity fields used to bind a screenshot preview."""
-    fields = ("binding_id", "provider_id", "feed_id")
+    fields = ("binding_id", "provider_id", "feed_id", "authorization_epoch")
     if not isinstance(source, dict) or any(
         not isinstance(source.get(field), str) or not source[field].strip()
         for field in fields
@@ -594,7 +598,8 @@ async def connect_provider_source(
         )
         return
     required_fields = (
-        "binding_id", "provider_id", "provider_name", "feed_id", "feed_name",
+        "binding_id", "authorization_epoch", "provider_id",
+        "provider_name", "feed_id", "feed_name",
     )
     if (
         result.get("status") != "ACTIVE"
@@ -603,6 +608,8 @@ async def connect_provider_source(
             not isinstance(result.get(field), str) or not result[field].strip()
             for field in required_fields
         )
+        or re.fullmatch(r"[0-9a-f]{32}", result["authorization_epoch"], re.ASCII)
+        is None
     ):
         await update.message.reply_text(
             "Provider source connection could not be confirmed. Check its status "
@@ -906,6 +913,7 @@ async def _create_and_broadcast(
                 "expected_binding_id": source["binding_id"],
                 "expected_provider_id": source["provider_id"],
                 "expected_feed_id": source["feed_id"],
+                "expected_authorization_epoch": source["authorization_epoch"],
             },
             headers=_registration_headers(),
         )
@@ -1607,7 +1615,9 @@ async def _active_recipients(
             or "detail" in data
             or any(
                 data.get(field) != source.get(field)
-                for field in ("binding_id", "provider_id", "feed_id")
+                for field in (
+                    "binding_id", "provider_id", "feed_id", "authorization_epoch"
+                )
             )
         ):
             # An error-shaped HTTP 200 is not a recipient authorisation even

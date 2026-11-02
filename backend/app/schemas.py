@@ -113,6 +113,7 @@ class ProviderSourceConnect(BaseModel):
 
 class ProviderSourceBindingOut(BaseModel):
     binding_id: str
+    authorization_epoch: str = Field(pattern=r"^[0-9a-f]{32}$")
     provider_id: str
     provider_name: str
     provider_display_name: Optional[str] = None
@@ -134,6 +135,8 @@ class ProviderSourceSignalCreate(BaseModel):
     expected_binding_id: str = Field(min_length=1, max_length=80)
     expected_provider_id: str = Field(min_length=1, max_length=80)
     expected_feed_id: str = Field(min_length=1, max_length=80)
+    # Required: old clients/previews cannot silently bypass the rebind guard.
+    expected_authorization_epoch: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
 class SubscriptionInviteCreate(BaseModel):

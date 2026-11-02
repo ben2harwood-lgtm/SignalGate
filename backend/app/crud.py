@@ -489,6 +489,7 @@ def connect_telegram_provider_source(
             feed_id=feed.id,
             source_type="TELEGRAM",
             external_identity=external_identity,
+            authorization_epoch=secrets.token_hex(16),
             status="ACTIVE",
         )
         db.add(binding)
@@ -500,6 +501,8 @@ def connect_telegram_provider_source(
         }
         binding.provider_id = provider.id
         binding.feed_id = feed.id
+        # Row lock + fresh generation invalidates old previews even on A->A.
+        binding.authorization_epoch = secrets.token_hex(16)
         binding.status = "ACTIVE"
         binding.updated_at = utcnow()
 
