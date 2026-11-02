@@ -53,6 +53,8 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
         "source_type VARCHAR(20) NOT NULL, "
         "external_identity VARCHAR(40) NOT NULL, "
         "status VARCHAR(20) NOT NULL, "
+        "created_at TIMESTAMP NOT NULL, "
+        "updated_at TIMESTAMP NOT NULL, "
         "CONSTRAINT fk_source_binding_provider "
         "FOREIGN KEY (provider_id) REFERENCES providers(id), "
         "CONSTRAINT fk_source_binding_feed "
@@ -74,25 +76,31 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
 
     conn.exec_driver_sql(
         "INSERT INTO provider_source_bindings "
-        "(id, provider_id, feed_id, source_type, external_identity, status) VALUES "
-        "('BIND-A', 'PROVIDER-A', 'FEED-A', 'TELEGRAM', '92001', 'ACTIVE'), "
-        "('BIND-B', 'PROVIDER-B', 'FEED-B', 'TELEGRAM', '92002', 'REVOKED'), "
-        "('BIND-C', 'PROVIDER-A', 'FEED-C', 'TELEGRAM', '92003', 'ACTIVE')"
+        "(id, provider_id, feed_id, source_type, external_identity, status, "
+        "created_at, updated_at) VALUES "
+        "('BIND-A', 'PROVIDER-A', 'FEED-A', 'TELEGRAM', '92001', 'ACTIVE', "
+        "'2026-09-19 12:34:56', '2026-10-21 09:00:00'), "
+        "('BIND-B', 'PROVIDER-B', 'FEED-B', 'TELEGRAM', '92002', 'REVOKED', "
+        "'2026-09-20 10:00:00', '2026-10-22 09:00:00'), "
+        "('BIND-C', 'PROVIDER-A', 'FEED-C', 'TELEGRAM', '92003', 'ACTIVE', "
+        "'2026-09-21 11:00:00', '2026-10-23 09:00:00')"
     )
     original_scopes = conn.exec_driver_sql(
-        "SELECT id, provider_id, feed_id, source_type, external_identity, status "
-        "FROM provider_source_bindings ORDER BY id"
+        "SELECT id, provider_id, feed_id, source_type, external_identity, status, "
+        "created_at, updated_at FROM provider_source_bindings ORDER BY id"
     ).all()
 
     def assert_unique_source_identity() -> None:
         # Supply a valid new non-null epoch after 0011. Otherwise the duplicate
         # INSERT could fail on epoch NOT NULL even if the source UNIQUE
         # constraint had accidentally disappeared during table reconstruction.
-        columns = "id, provider_id, feed_id, source_type, external_identity, status"
+        columns = ("id, provider_id, feed_id, source_type, external_identity, status, "
+                   "created_at, updated_at")
         # Both parents must exist: otherwise the old assertion passed from
         # FK rejection even when source-identity uniqueness was missing.
         # Use the *other* tenant/feed to prove uniqueness across scopes.
-        values = "'BIND-D', 'PROVIDER-B', 'FEED-B', 'TELEGRAM', '92001', 'ACTIVE'"
+        values = ("'BIND-D', 'PROVIDER-B', 'FEED-B', 'TELEGRAM', '92001', 'ACTIVE', "
+                  "'2026-10-22 08:00:00', '2026-10-22 08:00:00'")
         if "authorization_epoch" in {
             col["name"] for col in sa.inspect(conn).get_columns("provider_source_bindings")
         }:
@@ -108,9 +116,17 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
         )
 
     def assert_scope_preserved() -> None:
+        # Revision 0009 stores immutable origin and updated timestamps. Keep
+        # distinct, non-null synthetic values across every 0011 schema stage.
+        historical_columns = {
+            column["name"]: column
+            for column in sa.inspect(conn).get_columns("provider_source_bindings")
+        }
+        assert historical_columns["created_at"]["nullable"] is False
+        assert historical_columns["updated_at"]["nullable"] is False
         assert conn.exec_driver_sql(
-            "SELECT id, provider_id, feed_id, source_type, external_identity, status "
-            "FROM provider_source_bindings ORDER BY id"
+            "SELECT id, provider_id, feed_id, source_type, external_identity, status, "
+            "created_at, updated_at FROM provider_source_bindings ORDER BY id"
         ).all() == original_scopes
         assert_unique_source_identity()
         foreign_keys = {
@@ -137,10 +153,12 @@ def _exercise_populated_migration(conn, *, postgres: bool) -> None:
             ("BIND-MISSING-PROVIDER", "NO-PROVIDER", "FEED-A"),
             ("BIND-MISSING-FEED", "PROVIDER-A", "NO-FEED"),
         ):
-            columns = "id, provider_id, feed_id, source_type, external_identity, status"
+            columns = ("id, provider_id, feed_id, source_type, external_identity, status, "
+                   "created_at, updated_at")
             values = (
                 f"'{binding_id}', '{provider_id}', '{feed_id}', "
-                f"'TELEGRAM', '{binding_id}', 'ACTIVE'"
+                f"'TELEGRAM', '{binding_id}', 'ACTIVE', "
+                "'2026-10-22 08:00:00', '2026-10-22 08:00:00'"
             )
             if has_epoch:
                 columns += ", authorization_epoch"
