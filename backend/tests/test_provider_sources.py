@@ -2078,3 +2078,55 @@ def test_same_feed_reconnect_during_extraction_refuses_old_epoch_postgresql(
     assert db.query(models.AuditLog).filter(
         models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
     ).count() == before, "Old-epoch extraction was incorrectly audited"
+
+def test_paused_source_cannot_replay_or_create_signals(client, db):
+    """A pause blocks both new source messages and replay of old VALID rows.
+
+    A previously persisted signal cannot be returned as an apparently usable
+    receipt while either the feed or its provider is paused. Synthetic HTTP
+    and database only; no Telegram sends, brokerage, or execution.
+    """
+    provider, feed, key = _provider(db, "paused-source-replay")
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), "9452"
+    )
+    assert connected.status_code == 200, connected.text
+    payload = {
+        "telegram_user_id": "9452",
+        "raw_text": EUR_BUY,
+        "source_message_id": "9452:original",
+        **_source_claim(connected.json()),
+    }
+    first = client.post("/provider-sources/telegram/signals", json=payload)
+    assert first.status_code == 200, first.text
+    assert first.json()["newly_created"] is True
+    assert first.json()["status"] == "VALID"
+    signal_id = first.json()["id"]
+
+    for paused_scope in (feed, provider):
+        paused_scope.paused = True
+        db.commit()
+        for message_id in ("9452:original", "9452:new-while-paused"):
+            response = client.post(
+                "/provider-sources/telegram/signals",
+                json={**payload, "source_message_id": message_id},
+            )
+            assert response.status_code == 400, response.text
+            assert "paused" in response.json()["detail"].lower()
+        db.expire_all()
+        assert db.query(models.Signal).count() == 1
+        assert db.query(models.AuditLog).filter(
+            models.AuditLog.event_type == "SIGNAL_CREATED",
+            models.AuditLog.entity_id == signal_id,
+        ).count() == 1
+        paused_scope.paused = False
+        db.commit()
+
+    # Unpausing restores access but never grants new-delivery authority
+    # for the original message, even though the persisted row was VALID.
+    replay = client.post("/provider-sources/telegram/signals", json=payload)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == signal_id
+    assert replay.json()["newly_created"] is False
+    assert db.query(models.Signal).count() == 1
+
