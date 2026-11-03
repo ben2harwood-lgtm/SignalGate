@@ -2130,3 +2130,66 @@ def test_paused_source_cannot_replay_or_create_signals(client, db):
     assert replay.json()["newly_created"] is False
     assert db.query(models.Signal).count() == 1
 
+def test_inactive_provider_or_feed_blocks_existing_source_receipts(client, db):
+    """A source binding alone cannot enumerate recipients or replay signals
+    after its owning feed/provider is deactivated.
+
+    This is synthetic HTTP/SQLite/PostgreSQL regression proof only.
+    """
+    provider, feed, key = _provider(db, "inactive-source-receipt")
+    subscriber = register_user(
+        client, "9454", "inactive_recipient", "Inactive Recipient"
+    )
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber["id"])
+    )
+    db.commit()
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), "9455"
+    )
+    assert connected.status_code == 200, connected.text
+    payload = {
+        "telegram_user_id": "9455",
+        "raw_text": EUR_BUY,
+        "source_message_id": "9455:original",
+        **_source_claim(connected.json()),
+    }
+    created = client.post("/provider-sources/telegram/signals", json=payload)
+    assert created.status_code == 200, created.text
+    assert created.json()["newly_created"] is True
+
+    lookup_params = {"telegram_user_id": "9455"}
+    initial_recipients = client.get(
+        "/provider-sources/telegram/recipients", params=lookup_params
+    )
+    assert initial_recipients.status_code == 200, initial_recipients.text
+    assert [r["telegram_user_id"] for r in initial_recipients.json()["recipients"]] == [
+        "9454"
+    ]
+
+    for inactive_scope in (feed, provider):
+        inactive_scope.status = "INACTIVE"
+        db.commit()
+        for message_id in ("9455:original", "9455:fresh-while-inactive"):
+            denied = client.post(
+                "/provider-sources/telegram/signals",
+                json={**payload, "source_message_id": message_id},
+            )
+            assert denied.status_code == 403, denied.text
+        denied_recipients = client.get(
+            "/provider-sources/telegram/recipients", params=lookup_params
+        )
+        assert denied_recipients.status_code == 403, denied_recipients.text
+        assert "recipients" not in denied_recipients.json()
+        db.expire_all()
+        assert db.query(models.Signal).count() == 1
+        inactive_scope.status = "ACTIVE"
+        db.commit()
+
+    # Restoring eligibility cannot turn the original message into a new
+    # subscriber-card authority; it remains an idempotent replay.
+    replay = client.post("/provider-sources/telegram/signals", json=payload)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == created.json()["id"]
+    assert replay.json()["newly_created"] is False
+    assert db.query(models.Signal).count() == 1
