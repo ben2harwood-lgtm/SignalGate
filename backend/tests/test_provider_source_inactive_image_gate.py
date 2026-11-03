@@ -183,6 +183,108 @@ def test_deactivation_mid_extraction_refuses_audit_postgresql(
     ), "Deactivated source created a post-extraction audit receipt"
 
 
+class _PausedDuringExtractionAccess(AssertionError):
+    """Known release-blocking screenshot pause race during offline model I/O."""
+
+
+@pytest.mark.parametrize("paused_scope_name", ("provider", "feed"))
+@pytest.mark.xfail(
+    strict=True,
+    raises=_PausedDuringExtractionAccess,
+    reason=(
+        "RELEASE HOLD: a committed provider/feed pause during screenshot "
+        "extraction is not rechecked before preview/audit; requires "
+        "source-owner repair and PostgreSQL transaction-lock review"
+    ),
+)
+def test_pause_mid_extraction_refuses_preview_postgresql(
+    client, db, monkeypatch, paused_scope_name
+):
+    """RED-before witness: pause commits in independent PG session during I/O.
+
+    The synthetic extractor is the synchronization point. The source is
+    ACTIVE and unpaused when extraction begins; a second transaction then
+    commits paused=True while the first request is in progress. Neither a
+    post-pause preview nor an extraction audit is acceptable. Strict XFAIL
+    records the known defect, not acceptance of the pause policy.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from app.database import SessionLocal
+
+    provider, feed, key = _provider(
+        db, f"paused-during-image-{paused_scope_name}"
+    )
+    telegram_id = "9503" if paused_scope_name == "provider" else "9504"
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert connected.status_code == 200, connected.text
+    snapshot = connected.json()
+    target_model = (
+        models.Provider if paused_scope_name == "provider" else models.Feed
+    )
+    target_id = provider.id if paused_scope_name == "provider" else feed.id
+    calls = []
+
+    class PauseDuringExtraction:
+        engine = "offline-mid-pause-hold"
+
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG
+            assert mime == "image/png"
+            calls.append(paused_scope_name)
+            with SessionLocal() as writer:
+                conn = writer.connection()
+                conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+                conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+                target = writer.get(target_model, target_id)
+                assert target is not None
+                assert target.status == "ACTIVE"
+                assert target.paused is False
+                target.paused = True
+                writer.commit()
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="HIGH",
+                notes="",
+                raw_text=EUR_BUY,
+            )
+
+    monkeypatch.setattr(
+        provider_sources, "get_extractor", lambda: PauseDuringExtraction()
+    )
+    audit_query = db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+    )
+    before = audit_query.count()
+    response = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": telegram_id, **_source_claim(snapshot)},
+        files={"file": ("synthetic.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+
+    assert calls == [paused_scope_name], "The offline model path was not reached"
+    db.expire_all()
+    authoritative = db.get(target_model, target_id)
+    assert authoritative is not None
+    assert authoritative.status == "ACTIVE"
+    assert authoritative.paused is True, "Independent pause did not commit"
+    assert (
+        db.get(models.ProviderSourceBinding, snapshot["binding_id"]).status
+        == "ACTIVE"
+    ), "This scenario pauses scope without deactivating its binding"
+    after = audit_query.count()
+    if response.status_code != 409 or after != before:
+        raise _PausedDuringExtractionAccess(
+            "Paused scope yielded a post-I/O preview or audit: "
+            f"scope={paused_scope_name}, HTTP={response.status_code}, "
+            f"new_audits={after - before}"
+        )
+
+
 @pytest.mark.parametrize(
     ("raw_text", "expected_status"),
     (
