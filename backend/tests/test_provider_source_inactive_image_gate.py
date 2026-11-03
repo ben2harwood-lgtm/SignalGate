@@ -181,3 +181,78 @@ def test_deactivation_mid_extraction_refuses_audit_postgresql(
         .count()
         == before
     ), "Deactivated source created a post-extraction audit receipt"
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "expected_status"),
+    (
+        (EUR_BUY, "VALID"),
+        ("SYNTHETIC_PRIVATE_UNPARSEABLE_SIGNAL_7C91", "REJECTED"),
+    ),
+)
+def test_image_extraction_audit_omits_raw_model_content(
+    client, db, monkeypatch, raw_text, expected_status
+):
+    """Only allowlisted extraction metadata belongs in the durable audit log.
+
+    Both a valid preview and a rejected model output may contain sensitive
+    source material. They may be returned to the requesting demo bot, but must
+    not be copied into persistent extraction-audit payloads. All inputs are
+    synthetic and extraction is entirely in-process; no provider/model/broker.
+    """
+    provider, feed, key = _provider(
+        db, f"extraction-audit-privacy-{expected_status.lower()}"
+    )
+    telegram_id = "9492" if expected_status == "VALID" else "9493"
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert connected.status_code == 200, connected.text
+    private_notes = "SYNTHETIC_PRIVATE_IMAGE_NOTES_9F30"
+    calls = []
+
+    class PrivateOfflineExtractor:
+        engine = "offline-audit-privacy"
+
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG
+            assert mime == "image/png"
+            calls.append(1)
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="HIGH",
+                notes=private_notes,
+                raw_text=raw_text,
+            )
+
+    monkeypatch.setattr(
+        provider_sources, "get_extractor", lambda: PrivateOfflineExtractor()
+    )
+    response = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": telegram_id, **_source_claim(connected.json())},
+        files={"file": ("synthetic.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert response.status_code == 200, response.text
+    assert calls == [1], "Test did not invoke the synthetic extractor"
+    assert response.json()["extracted_text"] == raw_text
+    assert response.json()["notes"] == private_notes
+    assert response.json()["parser_status"] == expected_status
+
+    db.expire_all()
+    rows = (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED",
+            models.AuditLog.entity_id == connected.json()["binding_id"],
+        )
+        .all()
+    )
+    assert len(rows) == 1, "Exactly one metadata-only extraction audit is expected"
+    payload = rows[0].payload_json or ""
+    assert "offline-audit-privacy" in payload, "Audit control was not exercised"
+    assert raw_text not in payload, "Model text leaked into the durable audit"
+    assert private_notes not in payload, "Model notes leaked into the durable audit"
+    assert "raw_text" not in payload and "extracted_text" not in payload
+    assert key not in payload, "Synthetic provider credential leaked into audit"
