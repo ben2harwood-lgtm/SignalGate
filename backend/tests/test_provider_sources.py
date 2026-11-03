@@ -876,6 +876,81 @@ def test_same_feed_reconnect_replay_is_not_new_delivery(client, db):
     assert db.query(models.Signal).count() == 2
 
 
+
+def test_return_to_original_feed_does_not_rebroadcast_old_message(client, db):
+    """A->B->A changes authority but must not re-mint A's old Telegram message.
+
+    The returning source gets a new authorization epoch, while feed-bound
+    replay identity remains stable. Synthetic backend/database only.
+    """
+    provider_a, feed_a, key_a = _provider(db, "replay-aba-source-a")
+    provider_b, feed_b, key_b = _provider(db, "replay-aba-source-b")
+    telegram_id = "9451"
+    message_id = "9451:before-reconnect"
+
+    def connect(provider, feed, key):
+        response = _connect(
+            client, _source_invite(client, provider, feed, key), telegram_id
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def submit(binding, *, raw_text=EUR_BUY):
+        return client.post(
+            "/provider-sources/telegram/signals",
+            json={
+                "telegram_user_id": telegram_id,
+                "raw_text": raw_text,
+                "source_message_id": message_id,
+                **_source_claim(binding),
+            },
+        )
+
+    first_a = connect(provider_a, feed_a, key_a)
+    first = submit(first_a)
+    assert first.status_code == 200, first.text
+    assert first.json()["newly_created"] is True
+    assert first.json()["provider_id"] == provider_a.id
+    assert first.json()["feed_id"] == feed_a.id
+
+    binding_b = connect(provider_b, feed_b, key_b)
+    second = submit(binding_b)
+    assert second.status_code == 200, second.text
+    assert second.json()["newly_created"] is True
+    assert second.json()["id"] != first.json()["id"]
+    assert second.json()["provider_id"] == provider_b.id
+
+    returning_a = connect(provider_a, feed_a, key_a)
+    assert returning_a["binding_id"] == first_a["binding_id"]
+    assert returning_a["authorization_epoch"] not in {
+        first_a["authorization_epoch"],
+        binding_b["authorization_epoch"],
+    }
+
+    # Matching tenant/feed/binding names cannot resurrect a stale epoch.
+    stale = submit(first_a)
+    assert stale.status_code == 409, stale.text
+
+    # Current authority can see A's old message only as a non-fresh replay:
+    # no second subscriber-card authority, regardless of intervening B use.
+    replay = submit(returning_a)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["newly_created"] is False
+    assert replay.json()["id"] == first.json()["id"]
+    assert replay.json()["source"] == first.json()["source"]
+    assert replay.json()["id"] != second.json()["id"]
+
+    conflicting = submit(returning_a, raw_text=GBPJPY_SELL)
+    assert conflicting.status_code == 409, conflicting.text
+    db.expire_all()
+    stored_a = db.get(models.Signal, first.json()["id"])
+    stored_b = db.get(models.Signal, second.json()["id"])
+    assert stored_a.raw_text == stored_b.raw_text == EUR_BUY
+    assert (stored_a.provider_id, stored_a.feed_id) == (provider_a.id, feed_a.id)
+    assert (stored_b.provider_id, stored_b.feed_id) == (provider_b.id, feed_b.id)
+    assert db.query(models.Signal).count() == 2
+
+
 def test_hosted_signal_post_pins_source_binding(client, db, monkeypatch):
     """The write route must request a locked source snapshot, not a plain GET."""
     provider, feed, key = _provider(db, "source-post-lock")
