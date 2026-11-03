@@ -265,3 +265,66 @@ def test_image_extraction_audit_omits_raw_model_content(
     assert private_notes not in payload, "Model notes leaked into the durable audit"
     assert "raw_text" not in payload and "extracted_text" not in payload
     assert key not in payload, "Synthetic provider credential leaked into audit"
+
+
+
+@pytest.mark.parametrize(
+    ("content_type", "payload", "expected_status"),
+    (
+        ("application/octet-stream", _FAKE_PNG, 415),
+        (
+            "image/png",
+            b"x" * (provider_sources.MAX_SIGNAL_IMAGE_BYTES + 1),
+            413,
+        ),
+    ),
+)
+def test_invalid_screenshot_upload_rejected_before_extractor(
+    client, db, monkeypatch, content_type, payload, expected_status
+):
+    """Reject invalid image metadata/size before model I/O or a durable record.
+
+    Exact-size boundaries are derived from the route constant; all bytes,
+    identities and source claims are synthetic. No network or broker is used.
+    """
+    provider, feed, key = _provider(
+        db, f"invalid-screenshot-{expected_status}"
+    )
+    telegram_id = f"949{expected_status}"
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert connected.status_code == 200, connected.text
+
+    def forbidden_extractor():
+        raise AssertionError("Invalid upload reached model extractor")
+
+    monkeypatch.setattr(
+        provider_sources, "get_extractor", forbidden_extractor
+    )
+    tracked_models = (
+        models.AuditLog,
+        models.Signal,
+        models.Command,
+        models.Execution,
+    )
+    before = tuple(db.query(model).count() for model in tracked_models)
+
+    response = client.post(
+        "/provider-sources/telegram/extract",
+        params={
+            "telegram_user_id": telegram_id,
+            **_source_claim(connected.json()),
+        },
+        files={
+            "file": ("synthetic-image.bin", io.BytesIO(payload), content_type)
+        },
+    )
+
+    assert response.status_code == expected_status, response.text
+    db.expire_all()
+    after = tuple(db.query(model).count() for model in tracked_models)
+    assert after == before, (
+        "Rejected screenshot created durable audit or execution state: "
+        f"{before} -> {after}"
+    )
