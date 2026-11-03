@@ -328,3 +328,102 @@ def test_invalid_screenshot_upload_rejected_before_extractor(
         "Rejected screenshot created durable audit or execution state: "
         f"{before} -> {after}"
     )
+
+
+class _PausedScreenshotAccess(AssertionError):
+    """Known release-blocking paused-but-ACTIVE screenshot policy gap."""
+
+
+@pytest.mark.parametrize("paused_scope_name", ("provider", "feed"))
+@pytest.mark.xfail(
+    strict=True,
+    raises=_PausedScreenshotAccess,
+    reason=(
+        "RELEASE HOLD: paused-but-ACTIVE provider/feed image preview "
+        "is not yet refused before model I/O; policy/locking fix requires "
+        "source-owner clearance, PostgreSQL tests, and independent review"
+    ),
+)
+def test_paused_but_active_scope_extraction_hold(
+    client, db, monkeypatch, paused_scope_name
+):
+    """Executable RED-before witness, not an accepted safety fix.
+
+    A pause is distinct from changing status to INACTIVE: prior successful
+    deactivation tests do not cover it. The strict expected failure allows
+    CI to stay usable while the hold is owned; an eventual unexpected pass
+    must break CI until this marker is removed after independent review.
+    The test asserts a valid active positive control first, and only the
+    precisely identified paused-access violation is classified as XFAIL.
+    """
+    provider, feed, key = _provider(
+        db, f"paused-image-hold-{paused_scope_name}"
+    )
+    telegram_id = "9501" if paused_scope_name == "provider" else "9502"
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert connected.status_code == 200, connected.text
+    claim = _source_claim(connected.json())
+    calls = []
+
+    class OfflineExtractor:
+        engine = "offline-paused-image-hold"
+
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG
+            assert mime == "image/png"
+            calls.append(1)
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="HIGH",
+                notes="",
+                raw_text=EUR_BUY,
+            )
+
+    monkeypatch.setattr(provider_sources, "get_extractor", OfflineExtractor)
+
+    def preview():
+        return client.post(
+            "/provider-sources/telegram/extract",
+            params={"telegram_user_id": telegram_id, **claim},
+            files={"file": ("synthetic.png", io.BytesIO(_FAKE_PNG), "image/png")},
+        )
+
+    def audit_count():
+        db.expire_all()
+        return (
+            db.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
+            )
+            .count()
+        )
+
+    active = preview()
+    assert active.status_code == 200, active.text
+    assert calls == [1], "Active positive control did not invoke extractor"
+    assert audit_count() == 1
+
+    scope = provider if paused_scope_name == "provider" else feed
+    scope.paused = True
+    db.commit()
+    db.expire_all()
+    assert db.get(type(scope), scope.id).status == "ACTIVE"
+    assert db.get(type(scope), scope.id).paused is True
+    before_audits = audit_count()
+
+    paused_response = preview()
+    after_audits = audit_count()
+    if (
+        paused_response.status_code != 403
+        or calls != [1]
+        or after_audits != before_audits
+    ):
+        raise _PausedScreenshotAccess(
+            "Paused-but-ACTIVE scope still allowed screenshot work: "
+            f"scope={paused_scope_name}, HTTP={paused_response.status_code}, "
+            f"extractor_calls={len(calls)}, "
+            f"new_audits={after_audits - before_audits}"
+        )
