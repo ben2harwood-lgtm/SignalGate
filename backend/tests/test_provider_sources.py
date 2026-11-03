@@ -732,6 +732,79 @@ def test_rebind_replay_uses_new_tenant_namespace(client, db):
     assert db.query(models.Signal).count() == 2
 
 
+def test_rebind_replay_uses_new_feed_namespace_within_provider(client, db):
+    """Two feeds of one provider must not share source-message replay identity.
+
+    This is synthetic local API/database proof, never Telegram or broker proof.
+    """
+    provider, first_feed, key = _provider(db, "replay-two-feeds")
+    second_feed = crud.create_feed(
+        db, provider, "replay two feeds secondary", "replay-two-feeds-secondary"
+    )
+    db.commit()
+    telegram_id = "9449"
+    message_id = "9449:same-message-id"
+
+    first_binding = _connect(
+        client, _source_invite(client, provider, first_feed, key), telegram_id
+    )
+    assert first_binding.status_code == 200, first_binding.text
+
+    def post_from(binding):
+        return client.post(
+            "/provider-sources/telegram/signals",
+            json={
+                "telegram_user_id": telegram_id,
+                "raw_text": EUR_BUY,
+                "source_message_id": message_id,
+                **_source_claim(binding),
+            },
+        )
+
+    initial = post_from(first_binding.json())
+    assert initial.status_code == 200, initial.text
+    assert initial.json()["newly_created"] is True
+    assert initial.json()["feed_id"] == first_feed.id
+
+    rebound = _connect(
+        client, _source_invite(client, provider, second_feed, key), telegram_id
+    )
+    assert rebound.status_code == 200, rebound.text
+    assert rebound.json()["binding_id"] == first_binding.json()["binding_id"]
+    assert rebound.json()["provider_id"] == provider.id
+    assert rebound.json()["authorization_epoch"] != first_binding.json()["authorization_epoch"]
+
+    # Same provider and source binding, but a different feed. A provider-only
+    # replay namespace would incorrectly return the first feed's private row.
+    stale = post_from(first_binding.json())
+    assert stale.status_code == 409, stale.text
+    assert db.query(models.Signal).count() == 1
+
+    moved = post_from(rebound.json())
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["newly_created"] is True
+    assert moved.json()["id"] != initial.json()["id"]
+    assert moved.json()["provider_id"] == provider.id
+    assert moved.json()["feed_id"] == second_feed.id
+    assert moved.json()["source"] != initial.json()["source"]
+
+    retried = post_from(rebound.json())
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["newly_created"] is False
+    assert retried.json()["id"] == moved.json()["id"]
+
+    db.expire_all()
+    stored_first = db.get(models.Signal, initial.json()["id"])
+    stored_second = db.get(models.Signal, moved.json()["id"])
+    assert (stored_first.provider_id, stored_first.feed_id) == (
+        provider.id, first_feed.id
+    )
+    assert (stored_second.provider_id, stored_second.feed_id) == (
+        provider.id, second_feed.id
+    )
+    assert db.query(models.Signal).count() == 2
+
+
 def test_hosted_signal_post_pins_source_binding(client, db, monkeypatch):
     """The write route must request a locked source snapshot, not a plain GET."""
     provider, feed, key = _provider(db, "source-post-lock")
