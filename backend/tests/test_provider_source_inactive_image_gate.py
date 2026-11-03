@@ -229,6 +229,10 @@ def test_image_extraction_audit_omits_raw_model_content(
     monkeypatch.setattr(
         provider_sources, "get_extractor", lambda: PrivateOfflineExtractor()
     )
+    # A screenshot preview, VALID or REJECTED, is not a human-authorised
+    # signal submission and must never generate downstream execution state.
+    tracked_models = (models.Signal, models.Command, models.Execution)
+    before_trades = tuple(db.query(model).count() for model in tracked_models)
     response = client.post(
         "/provider-sources/telegram/extract",
         params={"telegram_user_id": telegram_id, **_source_claim(connected.json())},
@@ -241,6 +245,11 @@ def test_image_extraction_audit_omits_raw_model_content(
     assert response.json()["parser_status"] == expected_status
 
     db.expire_all()
+    after_trades = tuple(db.query(model).count() for model in tracked_models)
+    assert after_trades == before_trades, (
+        "Screenshot preview created a signal/command/execution without "
+        f"human authorisation: {before_trades} -> {after_trades}"
+    )
     rows = (
         db.query(models.AuditLog)
         .filter(
