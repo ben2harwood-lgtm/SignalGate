@@ -656,6 +656,82 @@ def test_rebind_refuses_stale_source_claim_before_cross_tenant_signal_write(clie
     assert db.query(models.Signal).count() == 1
 
 
+
+def test_rebind_replay_uses_new_tenant_namespace(client, db):
+    """Reusing a Telegram message ID after an A->B source rebind must not
+    return tenant A's already-stored signal as tenant B's replay receipt.
+
+    This is synthetic API/database proof, not actual Telegram or broker proof.
+    """
+    provider_a, feed_a, key_a = _provider(db, "replay-rebind-a")
+    provider_b, feed_b, key_b = _provider(db, "replay-rebind-b")
+    telegram_id = "9448"
+    message_id = "9448:same-message-id"
+
+    first_binding = _connect(
+        client, _source_invite(client, provider_a, feed_a, key_a), telegram_id
+    )
+    assert first_binding.status_code == 200, first_binding.text
+    first = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": message_id,
+            **_source_claim(first_binding.json()),
+        },
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["newly_created"] is True
+    assert first.json()["provider_id"] == provider_a.id
+
+    rebound = _connect(
+        client, _source_invite(client, provider_b, feed_b, key_b), telegram_id
+    )
+    assert rebound.status_code == 200, rebound.text
+    assert rebound.json()["binding_id"] == first_binding.json()["binding_id"]
+    assert rebound.json()["authorization_epoch"] != first_binding.json()["authorization_epoch"]
+
+    # Same binding ID, same message ID AND same content. A replay lookup that
+    # drops the feed namespace would incorrectly return A's private ledger row.
+    second = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": message_id,
+            **_source_claim(rebound.json()),
+        },
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["newly_created"] is True
+    assert second.json()["id"] != first.json()["id"]
+    assert second.json()["provider_id"] == provider_b.id
+    assert second.json()["feed_id"] == feed_b.id
+    assert second.json()["source"] != first.json()["source"]
+
+    # A retry in B is still idempotent and neither response can change
+    # the original A signal's provider/feed ownership.
+    retry = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": message_id,
+            **_source_claim(rebound.json()),
+        },
+    )
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["newly_created"] is False
+    assert retry.json()["id"] == second.json()["id"]
+    db.expire_all()
+    stored_a = db.get(models.Signal, first.json()["id"])
+    stored_b = db.get(models.Signal, second.json()["id"])
+    assert (stored_a.provider_id, stored_a.feed_id) == (provider_a.id, feed_a.id)
+    assert (stored_b.provider_id, stored_b.feed_id) == (provider_b.id, feed_b.id)
+    assert db.query(models.Signal).count() == 2
+
+
 def test_hosted_signal_post_pins_source_binding(client, db, monkeypatch):
     """The write route must request a locked source snapshot, not a plain GET."""
     provider, feed, key = _provider(db, "source-post-lock")
