@@ -805,6 +805,77 @@ def test_rebind_replay_uses_new_feed_namespace_within_provider(client, db):
     assert db.query(models.Signal).count() == 2
 
 
+
+def test_same_feed_reconnect_replay_is_not_new_delivery(client, db):
+    """Rotating source authority on the same feed must not re-mint a signal.
+
+    Identical message identity/content after reconnect returns the original
+    ledger receipt with newly_created=False. Neither that retry nor a changed
+    payload may create a second authorisation to broadcast a Telegram card.
+    Synthetic HTTP and database only; no Telegram network or broker call.
+    """
+    provider, feed, key = _provider(db, "same-feed-replay-epoch")
+    telegram_id = "9450"
+    original = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert original.status_code == 200, original.text
+    old_claim = _source_claim(original.json())
+    payload = {
+        "telegram_user_id": telegram_id,
+        "raw_text": EUR_BUY,
+        "source_message_id": "9450:original-message",
+        **old_claim,
+    }
+    created = client.post("/provider-sources/telegram/signals", json=payload)
+    assert created.status_code == 200, created.text
+    assert created.json()["newly_created"] is True
+
+    # A fresh one-time token rotates authority, even if tenant/feed do not.
+    reconnected = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert reconnected.status_code == 200, reconnected.text
+    assert reconnected.json()["binding_id"] == original.json()["binding_id"]
+    assert reconnected.json()["authorization_epoch"] != old_claim[
+        "expected_authorization_epoch"
+    ]
+
+    refused = client.post("/provider-sources/telegram/signals", json=payload)
+    assert refused.status_code == 409, refused.text
+    assert db.query(models.Signal).count() == 1
+
+    current_payload = {**payload, **_source_claim(reconnected.json())}
+    duplicate = client.post(
+        "/provider-sources/telegram/signals", json=current_payload
+    )
+    assert duplicate.status_code == 200, duplicate.text
+    assert duplicate.json()["id"] == created.json()["id"]
+    assert duplicate.json()["newly_created"] is False
+    assert duplicate.json()["source"] == created.json()["source"]
+
+    conflicting = client.post(
+        "/provider-sources/telegram/signals",
+        json={**current_payload, "raw_text": GBPJPY_SELL},
+    )
+    assert conflicting.status_code == 409, conflicting.text
+    db.expire_all()
+    stored = db.get(models.Signal, created.json()["id"])
+    assert stored.raw_text == EUR_BUY
+    assert (stored.provider_id, stored.feed_id) == (provider.id, feed.id)
+    assert db.query(models.Signal).count() == 1
+
+    # A genuinely new message under current authority remains allowed.
+    fresh = client.post(
+        "/provider-sources/telegram/signals",
+        json={**current_payload, "source_message_id": "9450:new-message"},
+    )
+    assert fresh.status_code == 200, fresh.text
+    assert fresh.json()["newly_created"] is True
+    assert fresh.json()["id"] != created.json()["id"]
+    assert db.query(models.Signal).count() == 2
+
+
 def test_hosted_signal_post_pins_source_binding(client, db, monkeypatch):
     """The write route must request a locked source snapshot, not a plain GET."""
     provider, feed, key = _provider(db, "source-post-lock")
