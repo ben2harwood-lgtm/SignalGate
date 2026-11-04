@@ -167,16 +167,17 @@ def test_committed_pause_cannot_be_overtaken_by_signal_commit_postgresql(
             f"{paused_scope_name} pause committed while SIGNAL_CREATED was "
             "held before commit; the stale signal then committed afterwards"
         )
-@pytest.mark.parametrize("paused_scope_name", ("provider", "feed"))
-def test_unrelated_tenant_pause_can_commit_during_signal_creation_postgresql(
+@pytest.mark.parametrize("paused_scope_name", ("provider", "feed", "sibling_feed"))
+def test_independent_scope_pause_can_commit_during_signal_creation_postgresql(
     db, monkeypatch, paused_scope_name
 ):
-    """A pending signal for tenant A must not block tenant B's pause.
+    """A pending signal must not block unrelated scopes from pausing.
 
     A future pause-serialization fix needs row-scoped provider/feed locks,
-    not a table-wide or global lock. Unlike the same-tenant strict XFAILs
-    above, this is a positive independent-tenant control. A real PostgreSQL
-    commit must occur while tenant A is held before its SIGNAL_CREATED audit.
+    not table-wide or global locks. Tenant B and a different feed under
+    tenant A's provider must remain independently pausable. Unlike the
+    same-feed strict XFAILs above, these are positive PostgreSQL controls.
+    A real pause commit must occur while A is held before SIGNAL_CREATED.
     All records are synthetic; no MT5, model or Telegram calls are made.
     """
     if db.get_bind().dialect.name != "postgresql":
@@ -185,15 +186,25 @@ def test_unrelated_tenant_pause_can_commit_during_signal_creation_postgresql(
     owner, owner_feed, _ = _provider(
         db, f"pause-isolation-owner-{paused_scope_name}"
     )
-    other, other_feed, _ = _provider(
-        db, f"pause-isolation-other-{paused_scope_name}"
-    )
-    target_model = (
-        models.Provider if paused_scope_name == "provider" else models.Feed
-    )
-    unrelated_id = (
-        other.id if paused_scope_name == "provider" else other_feed.id
-    )
+    if paused_scope_name == "sibling_feed":
+        sibling = crud.create_feed(
+            db, owner, "Independent sibling feed", "pause-isolation-sibling"
+        )
+        db.commit()
+        target_model, unrelated_id = models.Feed, sibling.id
+        assert sibling.provider_id == owner.id
+        assert unrelated_id != owner_feed.id
+    else:
+        other, other_feed, _ = _provider(
+            db, f"pause-isolation-other-{paused_scope_name}"
+        )
+        target_model = (
+            models.Provider if paused_scope_name == "provider" else models.Feed
+        )
+        unrelated_id = (
+            other.id if paused_scope_name == "provider" else other_feed.id
+        )
+        assert other.organization_id != owner.organization_id
     owner_id, owner_feed_id = owner.id, owner_feed.id
     staged = Event()
     release = Event()
@@ -226,7 +237,7 @@ def test_unrelated_tenant_pause_can_commit_during_signal_creation_postgresql(
             session.commit()
             return signal.id
 
-    def pause_other_tenant():
+    def pause_independent_scope():
         with SessionLocal() as session:
             conn = session.connection()
             conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
@@ -237,17 +248,17 @@ def test_unrelated_tenant_pause_can_commit_during_signal_creation_postgresql(
             assert target.paused is False
             target.paused = True
             session.commit()
-            # This function returning is proof that the independent UPDATE
-            # really committed before the first transaction was released.
+            # This function returning proves that the independent UPDATE
+            # committed before the first transaction was released.
             return not release.is_set()
 
     with ThreadPoolExecutor(max_workers=2) as workers:
         owner_future = workers.submit(create_owner_signal)
         try:
             assert staged.wait(timeout=8), "Owner signal never reached audit gate"
-            pause_future = workers.submit(pause_other_tenant)
+            pause_future = workers.submit(pause_independent_scope)
             assert pause_future.result(timeout=8) is True, (
-                "A pending tenant-A signal blocked independent tenant-B pause"
+                "A pending signal blocked an independent provider/feed pause"
             )
         finally:
             release.set()
@@ -261,6 +272,11 @@ def test_unrelated_tenant_pause_can_commit_during_signal_creation_postgresql(
         assert owner_row is not None and owner_row.paused is False
         assert owner_feed_row is not None and owner_feed_row.paused is False
         assert other_row is not None and other_row.paused is True
+        if paused_scope_name == "sibling_feed":
+            assert other_row.provider_id == owner_id
+            assert other_row.id != owner_feed_id
+        elif paused_scope_name == "feed":
+            assert other_row.provider_id != owner_id
         assert signal is not None
         assert signal.provider_id == owner_id
         assert signal.feed_id == owner_feed_id
