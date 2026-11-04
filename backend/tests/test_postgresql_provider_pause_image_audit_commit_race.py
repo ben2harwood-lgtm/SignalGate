@@ -628,9 +628,19 @@ def test_feed_policy_commit_during_image_io_controls_preview_postgresql(
             )
             .all()
         )
-        assert len(audit_rows) == before_audits + 1
-        assert '"parser_status": "REJECTED"' in (
-            audit_rows[-1].payload_json or ""
+        assert before_audits == 0, (
+            "A new source binding must have no pre-existing image audits"
+        )
+        assert len(audit_rows) == 1, (
+            "Exactly one extraction audit must commit for the new binding"
+        )
+        audit = audit_rows[0]
+        assert audit.entity_type == "provider_source_binding"
+        audit_payload = audit.payload_json or ""
+        assert f'"provider_id": "{provider.id}"' in audit_payload
+        assert f'"feed_id": "{feed.id}"' in audit_payload
+        assert '"parser_status": "REJECTED"' in audit_payload, (
+            "The extraction audit must agree with the rejected preview"
         )
         assert tuple(
             check.query(model).count()
