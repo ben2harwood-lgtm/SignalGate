@@ -733,14 +733,19 @@ def test_feed_expiry_commit_during_image_io_controls_preview_postgresql(
     with SessionLocal() as check:
         current = check.get(models.Feed, feed_id)
         assert current is not None and current.expiry_minutes == 23
-        assert (
+        audits = (
             check.query(models.AuditLog)
             .filter(
                 models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED",
                 models.AuditLog.entity_id == claim["expected_binding_id"],
             )
-            .count()
-        ) == before_audits + 1
+            .all()
+        )
+        assert before_audits == 0, "New binding unexpectedly has prior image audits"
+        assert len(audits) == 1, "Exactly one image audit must be committed"
+        assert '"parser_status": "VALID"' in (audits[0].payload_json or ""), (
+            "The image audit disagrees with the successful preview parser status"
+        )
         assert tuple(
             check.query(model).count()
             for model in (models.Signal, models.Command, models.Execution)
