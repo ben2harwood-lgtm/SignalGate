@@ -523,3 +523,111 @@ def test_pause_during_offline_image_io_blocks_later_signal_postgresql(
             .filter(models.AuditLog.event_type == "SIGNAL_CREATED")
             .count()
         ) == before_created_audits
+
+
+def test_feed_policy_commit_during_image_io_controls_preview_postgresql(
+    client, db, monkeypatch
+):
+    """Use the committed tenant feed allowlist, not the pre-I/O snapshot.
+
+    A policy change during synthetic image extraction must commit without a
+    database row lock being held across model I/O. The eventual preview must
+    be REJECTED under the newly restrictive feed policy, with only metadata
+    audited and no signal or execution written. No external service is used.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    provider, feed, key = _provider(db, "image-policy-update-during-io")
+    crud.update_feed_policy(db, feed, {"allowed_symbols": ["EURUSD"]})
+    db.commit()
+    feed_id = feed.id
+    telegram_id = "9536"
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert connected.status_code == 200, connected.text
+    claim = _source_claim(connected.json())
+    policy_commit_observed = []
+
+    with SessionLocal() as check:
+        before_audits = (
+            check.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED",
+                models.AuditLog.entity_id == claim["expected_binding_id"],
+            )
+            .count()
+        )
+        before_trading = tuple(
+            check.query(model).count()
+            for model in (models.Signal, models.Command, models.Execution)
+        )
+
+    class OfflinePolicyChangeExtractor:
+        engine = "offline-policy-change-during-io"
+
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG and mime == "image/png"
+            with SessionLocal() as writer:
+                conn = writer.connection()
+                conn.exec_driver_sql("SET LOCAL lock_timeout = '4s'")
+                conn.exec_driver_sql("SET LOCAL statement_timeout = '6s'")
+                current_feed = writer.get(models.Feed, feed_id)
+                assert current_feed is not None
+                assert current_feed.status == "ACTIVE"
+                assert current_feed.paused is False
+                assert crud.feed_allowed_symbols(current_feed) == {"EURUSD"}
+                crud.update_feed_policy(
+                    writer, current_feed, {"allowed_symbols": ["XAUUSD"]}
+                )
+                writer.commit()
+            policy_commit_observed.append(feed_id)
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="HIGH",
+                notes="",
+                raw_text=EUR_BUY,
+            )
+
+    monkeypatch.setattr(
+        provider_sources, "get_extractor",
+        lambda: OfflinePolicyChangeExtractor(),
+    )
+    response = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": telegram_id, **claim},
+        files={"file": ("synthetic.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert policy_commit_observed == [feed_id], (
+        "The independent feed policy update did not commit during extraction"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["symbol"] == "EURUSD"
+    assert response.json()["parser_status"] == "REJECTED", (
+        "Preview accepted a symbol after its feed policy was revoked"
+    )
+    assert "not enabled" in (response.json()["parser_error"] or "").lower()
+
+    with SessionLocal() as check:
+        committed_feed = check.get(models.Feed, feed_id)
+        assert committed_feed is not None
+        assert crud.feed_allowed_symbols(committed_feed) == {"XAUUSD"}
+        audit_rows = (
+            check.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED",
+                models.AuditLog.entity_id == claim["expected_binding_id"],
+            )
+            .all()
+        )
+        assert len(audit_rows) == before_audits + 1
+        assert '"parser_status": "REJECTED"' in (
+            audit_rows[-1].payload_json or ""
+        )
+        assert tuple(
+            check.query(model).count()
+            for model in (models.Signal, models.Command, models.Execution)
+        ) == before_trading, "Image preview wrote trading or execution state"
+
