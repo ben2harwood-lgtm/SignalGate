@@ -422,3 +422,104 @@ def test_independent_pause_commits_while_image_audit_is_held_postgresql(
             check.query(model).count()
             for model in (models.Signal, models.Command, models.Execution)
         ) == before_executions, "A preview must never create trading state"
+
+
+@pytest.mark.parametrize("paused_scope", ("provider", "feed"))
+def test_pause_during_offline_image_io_blocks_later_signal_postgresql(
+    client, db, monkeypatch, paused_scope
+):
+    """A provider/feed pause must commit during model I/O, without trading state.
+
+    This deliberately does not decide whether an already-paused source can
+    receive a *preview*: that policy requires the runtime source owner's
+    decision. The later signal POST must always fail closed. Synthetic only.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    provider, feed, key = _provider(db, f"image-io-pause-{paused_scope}")
+    telegram_id = "9524" if paused_scope == "provider" else "9525"
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert connected.status_code == 200, connected.text
+    claim = _source_claim(connected.json())
+    model = models.Provider if paused_scope == "provider" else models.Feed
+    target_id = provider.id if paused_scope == "provider" else feed.id
+    pause_commits = []
+
+    with SessionLocal() as check:
+        before_trading = tuple(
+            check.query(m).count()
+            for m in (models.Signal, models.Command, models.Execution)
+        )
+        before_created_audits = (
+            check.query(models.AuditLog)
+            .filter(models.AuditLog.event_type == "SIGNAL_CREATED")
+            .count()
+        )
+
+    class OfflinePauseExtractor:
+        engine = "offline-image-io-pause"
+
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG and mime == "image/png"
+            with SessionLocal() as writer:
+                conn = writer.connection()
+                # A repair must never lock provider/feed rows over model I/O.
+                conn.exec_driver_sql("SET LOCAL lock_timeout = '4s'")
+                conn.exec_driver_sql("SET LOCAL statement_timeout = '6s'")
+                target = writer.get(model, target_id)
+                assert target is not None
+                assert target.status == "ACTIVE" and target.paused is False
+                target.paused = True
+                writer.commit()
+            pause_commits.append(paused_scope)
+            return SimpleNamespace(
+                engine=self.engine, readable=True, confidence="HIGH",
+                notes="", raw_text=EUR_BUY,
+            )
+
+    monkeypatch.setattr(
+        provider_sources, "get_extractor", lambda: OfflinePauseExtractor()
+    )
+    preview = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": telegram_id, **claim},
+        files={"file": ("synthetic.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert pause_commits == [paused_scope], (
+        "Provider/feed pause did not commit during extractor I/O"
+    )
+    # Preview refusal policy is separately HELD; never treat 200 as approval.
+    assert preview.status_code in (200, 403, 409), preview.text
+
+    rejected = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": f"{telegram_id}:after-pause",
+            **claim,
+        },
+    )
+    assert rejected.status_code == 400, rejected.text
+    assert "paused" in rejected.json()["detail"].lower()
+    with SessionLocal() as check:
+        target = check.get(model, target_id)
+        binding = check.get(
+            models.ProviderSourceBinding, claim["expected_binding_id"]
+        )
+        assert target is not None
+        assert target.status == "ACTIVE" and target.paused is True
+        assert binding is not None and binding.status == "ACTIVE"
+        assert binding.provider_id == provider.id and binding.feed_id == feed.id
+        assert tuple(
+            check.query(m).count()
+            for m in (models.Signal, models.Command, models.Execution)
+        ) == before_trading, "Paused source created trading state"
+        assert (
+            check.query(models.AuditLog)
+            .filter(models.AuditLog.event_type == "SIGNAL_CREATED")
+            .count()
+        ) == before_created_audits
