@@ -210,3 +210,152 @@ def test_committed_pause_cannot_be_overtaken_by_image_audit_postgresql(
         assert after_count == before_count + 1, (
             "Audit was not committed before the later provider/feed pause"
         )
+
+
+def test_sibling_feed_pause_commits_while_image_audit_is_held_postgresql(
+    client, db, monkeypatch
+):
+    """A screenshot audit lock must not block a sibling feed's independent pause.
+
+    The bound feed's image-audit transaction is held at its pre-commit gate
+    while a distinct feed of the SAME provider commits paused=True in another
+    PostgreSQL session. This is a passing isolation control, not a repair of
+    the two same-scope strict XFAILs above. All data and extraction are offline.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires two independent PostgreSQL transactions")
+
+    provider, feed, key = _provider(db, "image-audit-sibling-feed")
+    sibling = crud.create_feed(
+        db, provider, "Unrelated sibling feed", "image-audit-sibling"
+    )
+    db.commit()
+    provider_id, feed_id, sibling_id = provider.id, feed.id, sibling.id
+    assert sibling.provider_id == provider_id and sibling_id != feed_id
+
+    telegram_id = "9513"
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert connected.status_code == 200, connected.text
+    claim = _source_claim(connected.json())
+
+    audit_reached = Event()
+    release_audit = Event()
+    extractor_called = Event()
+    original_add_audit = crud.add_audit
+
+    class OfflineExtractor:
+        engine = "offline-sibling-feed-pause"
+
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG and mime == "image/png"
+            extractor_called.set()
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="HIGH",
+                notes="",
+                raw_text=EUR_BUY,
+            )
+
+    monkeypatch.setattr(
+        provider_sources, "get_extractor", lambda: OfflineExtractor()
+    )
+
+    def hold_image_audit(session, event_type, entity_type, entity_id, payload):
+        if event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED":
+            audit_reached.set()
+            assert release_audit.wait(timeout=18), (
+                "Synthetic image-audit transaction was not released"
+            )
+        return original_add_audit(
+            session, event_type, entity_type, entity_id, payload
+        )
+
+    monkeypatch.setattr(crud, "add_audit", hold_image_audit)
+
+    def preview_bound_feed():
+        return client.post(
+            "/provider-sources/telegram/extract",
+            params={"telegram_user_id": telegram_id, **claim},
+            files={
+                "file": (
+                    "synthetic.png", io.BytesIO(_FAKE_PNG), "image/png"
+                ),
+            },
+        )
+
+    def pause_sibling_feed():
+        with SessionLocal() as writer:
+            connection = writer.connection()
+            connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            unrelated = writer.get(models.Feed, sibling_id)
+            assert unrelated is not None
+            assert unrelated.provider_id == provider_id
+            assert unrelated.status == "ACTIVE" and unrelated.paused is False
+            unrelated.paused = True
+            writer.commit()
+            return not release_audit.is_set()
+
+    with SessionLocal() as check:
+        before_audits = (
+            check.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED",
+                models.AuditLog.entity_id == claim["expected_binding_id"],
+            )
+            .count()
+        )
+        before_executions = tuple(
+            check.query(model).count()
+            for model in (models.Signal, models.Command, models.Execution)
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        image_future = workers.submit(preview_bound_feed)
+        try:
+            assert audit_reached.wait(timeout=8), (
+                "Bound feed did not reach its pre-commit screenshot audit gate"
+            )
+            assert extractor_called.is_set(), "Offline extractor was not called"
+            pause_future = workers.submit(pause_sibling_feed)
+            assert pause_future.result(timeout=9) is True, (
+                "A held image audit blocked an independent sibling feed pause"
+            )
+        finally:
+            release_audit.set()
+        image_response = image_future.result(timeout=22)
+
+    assert image_response.status_code == 200, image_response.text
+    with SessionLocal() as check:
+        bound_provider = check.get(models.Provider, provider_id)
+        bound_feed = check.get(models.Feed, feed_id)
+        paused_sibling = check.get(models.Feed, sibling_id)
+        assert bound_provider is not None and bound_provider.paused is False
+        assert bound_feed is not None and bound_feed.paused is False
+        assert paused_sibling is not None and paused_sibling.paused is True
+        assert paused_sibling.provider_id == provider_id
+        audit_rows = (
+            check.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED",
+                models.AuditLog.entity_id == claim["expected_binding_id"],
+            )
+            .all()
+        )
+        assert len(audit_rows) == before_audits + 1, (
+            "Exactly one bound-source image audit must commit"
+        )
+        assert audit_rows[-1].entity_type == "provider_source_binding"
+        assert f'"provider_id": "{provider_id}"' in (
+            audit_rows[-1].payload_json or ""
+        )
+        assert f'"feed_id": "{feed_id}"' in (
+            audit_rows[-1].payload_json or ""
+        )
+        assert tuple(
+            check.query(model).count()
+            for model in (models.Signal, models.Command, models.Execution)
+        ) == before_executions, "A preview must never create trading state"
