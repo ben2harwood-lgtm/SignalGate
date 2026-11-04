@@ -167,15 +167,19 @@ def test_committed_pause_cannot_be_overtaken_by_signal_commit_postgresql(
             f"{paused_scope_name} pause committed while SIGNAL_CREATED was "
             "held before commit; the stale signal then committed afterwards"
         )
-@pytest.mark.parametrize("paused_scope_name", ("provider", "feed", "sibling_feed"))
+@pytest.mark.parametrize(
+    "paused_scope_name",
+    ("provider", "feed", "sibling_feed", "same_org_provider", "same_org_feed"),
+)
 def test_independent_scope_pause_can_commit_during_signal_creation_postgresql(
     db, monkeypatch, paused_scope_name
 ):
     """A pending signal must not block unrelated scopes from pausing.
 
     A future pause-serialization fix needs row-scoped provider/feed locks,
-    not table-wide or global locks. Tenant B and a different feed under
-    tenant A's provider must remain independently pausable. Unlike the
+    not table-wide or global locks. Another organisation, a second provider
+    within the same organisation, and a sibling feed must remain pausable.
+    Unlike the
     same-feed strict XFAILs above, these are positive PostgreSQL controls.
     A real pause commit must occur while A is held before SIGNAL_CREATED.
     All records are synthetic; no MT5, model or Telegram calls are made.
@@ -194,6 +198,33 @@ def test_independent_scope_pause_can_commit_during_signal_creation_postgresql(
         target_model, unrelated_id = models.Feed, sibling.id
         assert sibling.provider_id == owner.id
         assert unrelated_id != owner_feed.id
+    elif paused_scope_name.startswith("same_org_"):
+        # Two independent providers within one organisation are distinct
+        # pause-lock scopes even though their organisation ID matches.
+        other = crud.create_provider(
+            db,
+            owner.organization_id,
+            f"Independent same-org provider {paused_scope_name}",
+            f"pause-isolation-{paused_scope_name}",
+        )
+        other_feed = crud.create_feed(
+            db,
+            other,
+            "Independent same-org feed",
+            f"pause-isolation-feed-{paused_scope_name}",
+        )
+        db.commit()
+        target_model = (
+            models.Provider if paused_scope_name == "same_org_provider"
+            else models.Feed
+        )
+        unrelated_id = (
+            other.id if paused_scope_name == "same_org_provider"
+            else other_feed.id
+        )
+        assert other.organization_id == owner.organization_id
+        assert other.id != owner.id
+        assert other_feed.provider_id == other.id
     else:
         other, other_feed, _ = _provider(
             db, f"pause-isolation-other-{paused_scope_name}"
@@ -275,6 +306,16 @@ def test_independent_scope_pause_can_commit_during_signal_creation_postgresql(
         if paused_scope_name == "sibling_feed":
             assert other_row.provider_id == owner_id
             assert other_row.id != owner_feed_id
+        elif paused_scope_name.startswith("same_org_"):
+            other_provider = (
+                other_row if paused_scope_name == "same_org_provider"
+                else check.get(models.Provider, other_row.provider_id)
+            )
+            assert other_provider is not None
+            assert other_provider.id != owner_id
+            assert other_provider.organization_id == owner_row.organization_id
+            if paused_scope_name == "same_org_feed":
+                assert other_row.provider_id == other_provider.id
         elif paused_scope_name == "feed":
             assert other_row.provider_id != owner_id
         assert signal is not None
