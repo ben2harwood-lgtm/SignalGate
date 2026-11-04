@@ -83,16 +83,21 @@ def test_paused_provider_recipient_lookup_refuses_enumeration(
         # A strict XFAIL raised below must never mask an execution side effect.
         assert db.query(models.Command).count() == 0
         assert db.query(models.Execution).count() == 0
-        if (
-            paused_response.status_code != 403
-            or "recipients" in paused_response.json()
-        ):
+        # Only the *observed* 200 + exact scoped subscriber leak is the
+        # documented XFAIL. Unexpected 4xx/5xx, missing data or broader
+        # enumeration must fail CI rather than masquerade as the known gap.
+        if paused_response.status_code == 200:
+            leaked = paused_response.json().get("recipients")
+            assert isinstance(leaked, list)
+            assert [(row["user_id"], row["telegram_user_id"]) for row in leaked] == [
+                (user["id"], telegram_id)
+            ], "Unexpected paused recipient payload, not the known policy gap"
             raise _PausedProviderRecipientEnumeration(
                 "Paused generic provider recipient endpoint enumerated "
-                f"subscriber data: scope={paused_scope_name}, "
-                f"HTTP={paused_response.status_code}, "
-                f"recipient_key_present={'recipients' in paused_response.json()}"
+                f"the exact synthetic subscriber: scope={paused_scope_name}"
             )
+        assert paused_response.status_code == 403, paused_response.text
+        assert "recipients" not in paused_response.json()
         assert "paused" in paused_response.json().get("detail", "").lower()
     finally:
         security.settings.require_license = original_license_setting
