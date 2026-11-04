@@ -786,9 +786,12 @@ def test_operator_expiry_commit_during_image_io_controls_preview_postgresql(
         pytest.skip("Requires an independently committed PostgreSQL setting")
 
     provider, feed, key = _provider(db, "image-operator-expiry-during-io")
-    assert feed.expiry_minutes is None
+    # create_feed starts with a concrete expiry override. Explicitly inherit the
+    # operator setting so this test exercises the fallback rather than the feed.
+    feed.expiry_minutes = None
     crud.set_setting(db, "default_signal_expiry_minutes", "7")
     db.commit()
+    assert feed.expiry_minutes is None
     telegram_id = "9538"
     connected = _connect(
         client, _source_invite(client, provider, feed, key), telegram_id
