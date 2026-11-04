@@ -212,26 +212,76 @@ def test_committed_pause_cannot_be_overtaken_by_image_audit_postgresql(
         )
 
 
-def test_sibling_feed_pause_commits_while_image_audit_is_held_postgresql(
-    client, db, monkeypatch
+@pytest.mark.parametrize(
+    "independent_scope",
+    (
+        "sibling_feed",
+        "same_org_provider",
+        "same_org_feed",
+        "cross_org_provider",
+        "cross_org_feed",
+    ),
+)
+def test_independent_pause_commits_while_image_audit_is_held_postgresql(
+    client, db, monkeypatch, independent_scope
 ):
-    """A screenshot audit lock must not block a sibling feed's independent pause.
+    """A held screenshot audit cannot block unrelated providers or feeds.
 
-    The bound feed's image-audit transaction is held at its pre-commit gate
-    while a distinct feed of the SAME provider commits paused=True in another
-    PostgreSQL session. This is a passing isolation control, not a repair of
-    the two same-scope strict XFAILs above. All data and extraction are offline.
+    The bound feed's image-audit transaction is held at its pre-commit gate,
+    while a different feed of the same provider, another provider in the SAME
+    organisation, or a provider in a different organisation pauses in a real
+    second PostgreSQL transaction. These are passing isolation controls, not
+    repairs of the two same-scope strict XFAILs. Offline synthetic data only.
     """
     if db.get_bind().dialect.name != "postgresql":
         pytest.skip("Requires two independent PostgreSQL transactions")
 
-    provider, feed, key = _provider(db, "image-audit-sibling-feed")
-    sibling = crud.create_feed(
-        db, provider, "Unrelated sibling feed", "image-audit-sibling"
+    provider, feed, key = _provider(db, f"image-audit-owner-{independent_scope}")
+    provider_id, feed_id = provider.id, feed.id
+    if independent_scope == "sibling_feed":
+        sibling = crud.create_feed(
+            db, provider, "Unrelated sibling feed", "image-audit-sibling"
+        )
+        db.commit()
+        target_model, target_id = models.Feed, sibling.id
+        assert sibling.provider_id == provider_id
+    elif independent_scope.startswith("same_org_"):
+        other = crud.create_provider(
+            db,
+            provider.organization_id,
+            f"Independent image provider {independent_scope}",
+            f"image-audit-{independent_scope}",
+        )
+        other_feed = crud.create_feed(
+            db, other, "Independent image feed",
+            f"image-audit-feed-{independent_scope}",
+        )
+        db.commit()
+        target_model = (
+            models.Provider if independent_scope == "same_org_provider"
+            else models.Feed
+        )
+        target_id = (
+            other.id if target_model is models.Provider else other_feed.id
+        )
+        assert other.id != provider_id
+        assert other.organization_id == provider.organization_id
+        assert other_feed.provider_id == other.id
+    else:
+        other, other_feed, _ = _provider(
+            db, f"image-audit-other-{independent_scope}"
+        )
+        target_model = (
+            models.Provider if independent_scope == "cross_org_provider"
+            else models.Feed
+        )
+        target_id = (
+            other.id if target_model is models.Provider else other_feed.id
+        )
+        assert other.organization_id != provider.organization_id
+    assert target_id != (
+        provider_id if target_model is models.Provider else feed_id
     )
-    db.commit()
-    provider_id, feed_id, sibling_id = provider.id, feed.id, sibling.id
-    assert sibling.provider_id == provider_id and sibling_id != feed_id
 
     telegram_id = "9513"
     connected = _connect(
@@ -286,15 +336,16 @@ def test_sibling_feed_pause_commits_while_image_audit_is_held_postgresql(
             },
         )
 
-    def pause_sibling_feed():
+    def pause_independent_scope():
         with SessionLocal() as writer:
             connection = writer.connection()
             connection.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
             connection.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
-            unrelated = writer.get(models.Feed, sibling_id)
+            unrelated = writer.get(target_model, target_id)
             assert unrelated is not None
-            assert unrelated.provider_id == provider_id
             assert unrelated.status == "ACTIVE" and unrelated.paused is False
+            if independent_scope == "sibling_feed":
+                assert unrelated.provider_id == provider_id
             unrelated.paused = True
             writer.commit()
             return not release_audit.is_set()
@@ -320,9 +371,9 @@ def test_sibling_feed_pause_commits_while_image_audit_is_held_postgresql(
                 "Bound feed did not reach its pre-commit screenshot audit gate"
             )
             assert extractor_called.is_set(), "Offline extractor was not called"
-            pause_future = workers.submit(pause_sibling_feed)
+            pause_future = workers.submit(pause_independent_scope)
             assert pause_future.result(timeout=9) is True, (
-                "A held image audit blocked an independent sibling feed pause"
+                f"A held image audit blocked {independent_scope} pause"
             )
         finally:
             release_audit.set()
@@ -332,11 +383,23 @@ def test_sibling_feed_pause_commits_while_image_audit_is_held_postgresql(
     with SessionLocal() as check:
         bound_provider = check.get(models.Provider, provider_id)
         bound_feed = check.get(models.Feed, feed_id)
-        paused_sibling = check.get(models.Feed, sibling_id)
+        paused_target = check.get(target_model, target_id)
         assert bound_provider is not None and bound_provider.paused is False
         assert bound_feed is not None and bound_feed.paused is False
-        assert paused_sibling is not None and paused_sibling.paused is True
-        assert paused_sibling.provider_id == provider_id
+        assert paused_target is not None and paused_target.paused is True
+        if independent_scope == "sibling_feed":
+            assert paused_target.provider_id == provider_id
+        else:
+            other_provider = (
+                paused_target if target_model is models.Provider
+                else check.get(models.Provider, paused_target.provider_id)
+            )
+            assert other_provider is not None
+            assert other_provider.id != provider_id
+            if independent_scope.startswith("same_org_"):
+                assert other_provider.organization_id == bound_provider.organization_id
+            else:
+                assert other_provider.organization_id != bound_provider.organization_id
         audit_rows = (
             check.query(models.AuditLog)
             .filter(
