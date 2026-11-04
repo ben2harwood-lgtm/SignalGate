@@ -770,3 +770,135 @@ def test_feed_expiry_commit_during_image_io_controls_preview_postgresql(
             check.query(model).count()
             for model in (models.Signal, models.Command, models.Execution)
         ) == before_trading, "Expiry preview created trading state"
+
+
+def test_operator_expiry_commit_during_image_io_controls_preview_postgresql(
+    client, db, monkeypatch
+):
+    """A changed persisted operator default, not a stale status, governs preview.
+
+    A feed with no expiry override inherits the operator DB setting. A separate
+    PostgreSQL transaction changes that setting during synthetic extractor I/O.
+    The final preview and its metadata-only audit must use the newly committed
+    default; neither a network extractor nor execution is involved.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires an independently committed PostgreSQL setting")
+
+    provider, feed, key = _provider(db, "image-operator-expiry-during-io")
+    assert feed.expiry_minutes is None
+    crud.set_setting(db, "default_signal_expiry_minutes", "7")
+    db.commit()
+    telegram_id = "9538"
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert connected.status_code == 200, connected.text
+    claim = _source_claim(connected.json())
+    before_status = client.get(
+        "/provider-sources/telegram/status",
+        params={"telegram_user_id": telegram_id},
+    )
+    assert before_status.status_code == 200, before_status.text
+    assert before_status.json()["expiry_minutes"] == 7
+    baseline = parse_signal(EUR_BUY, expiry_minutes=7)
+    assert baseline.parser_status == "VALID", baseline.parser_error
+
+    observed_expiries = []
+    committed = []
+    original_parse_signal = provider_sources.parse_signal
+
+    def record_expiry(raw_text, *, expiry_minutes, allowed_symbols=None):
+        observed_expiries.append(expiry_minutes)
+        return original_parse_signal(
+            raw_text,
+            expiry_minutes=expiry_minutes,
+            allowed_symbols=allowed_symbols,
+        )
+
+    class OfflineOperatorChangeExtractor:
+        engine = "offline-operator-expiry-during-io"
+
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG and mime == "image/png"
+            with SessionLocal() as writer:
+                conn = writer.connection()
+                conn.exec_driver_sql("SET LOCAL lock_timeout = '4s'")
+                conn.exec_driver_sql("SET LOCAL statement_timeout = '6s'")
+                assert (
+                    crud.get_setting_int(
+                        writer, "default_signal_expiry_minutes", -1
+                    )
+                    == 7
+                )
+                crud.set_setting(writer, "default_signal_expiry_minutes", "23")
+                writer.commit()
+            committed.append("23")
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="HIGH",
+                notes="",
+                raw_text=EUR_BUY,
+            )
+
+    with SessionLocal() as check:
+        prior_audits = (
+            check.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED",
+                models.AuditLog.entity_id == claim["expected_binding_id"],
+            )
+            .count()
+        )
+        prior_trading = tuple(
+            check.query(model).count()
+            for model in (models.Signal, models.Command, models.Execution)
+        )
+
+    monkeypatch.setattr(
+        provider_sources, "get_extractor",
+        lambda: OfflineOperatorChangeExtractor(),
+    )
+    monkeypatch.setattr(provider_sources, "parse_signal", record_expiry)
+    response = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": telegram_id, **claim},
+        files={"file": ("synthetic.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert committed == ["23"], "Operator change did not commit during I/O"
+    assert response.status_code == 200, response.text
+    assert response.json()["parser_status"] == "VALID", response.text
+    assert observed_expiries == [23], (
+        "Preview parsed using the earlier operator expiry setting"
+    )
+    after_status = client.get(
+        "/provider-sources/telegram/status",
+        params={"telegram_user_id": telegram_id},
+    )
+    assert after_status.status_code == 200, after_status.text
+    assert after_status.json()["expiry_minutes"] == 23
+
+    with SessionLocal() as check:
+        assert crud.get_setting_int(
+            check, "default_signal_expiry_minutes", -1
+        ) == 23
+        audits = (
+            check.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED",
+                models.AuditLog.entity_id == claim["expected_binding_id"],
+            )
+            .all()
+        )
+        assert prior_audits == 0
+        assert len(audits) == 1
+        assert audits[0].entity_type == "provider_source_binding"
+        payload = json.loads(audits[0].payload_json or "{}")
+        assert payload.get("provider_id") == provider.id
+        assert payload.get("feed_id") == feed.id
+        assert payload.get("parser_status") == "VALID"
+        assert tuple(
+            check.query(model).count()
+            for model in (models.Signal, models.Command, models.Execution)
+        ) == prior_trading, "Preview wrote trading or execution state"
