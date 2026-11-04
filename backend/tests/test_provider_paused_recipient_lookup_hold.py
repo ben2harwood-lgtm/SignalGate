@@ -79,6 +79,10 @@ def test_paused_provider_recipient_lookup_refuses_enumeration(
         assert current.status == "ACTIVE" and current.paused is True
 
         paused_response = lookup()
+        # Check these invariants on the actual expected-failure path too.
+        # A strict XFAIL raised below must never mask an execution side effect.
+        assert db.query(models.Command).count() == 0
+        assert db.query(models.Execution).count() == 0
         if (
             paused_response.status_code != 403
             or "recipients" in paused_response.json()
@@ -90,7 +94,5 @@ def test_paused_provider_recipient_lookup_refuses_enumeration(
                 f"recipient_key_present={'recipients' in paused_response.json()}"
             )
         assert "paused" in paused_response.json().get("detail", "").lower()
-        assert db.query(models.Command).count() == 0
-        assert db.query(models.Execution).count() == 0
     finally:
         security.settings.require_license = original_license_setting
