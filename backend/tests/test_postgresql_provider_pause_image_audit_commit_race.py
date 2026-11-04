@@ -11,6 +11,7 @@ mean the pause protection has been implemented or externally accepted.
 from __future__ import annotations
 
 import io
+import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 from types import SimpleNamespace
@@ -753,7 +754,16 @@ def test_feed_expiry_commit_during_image_io_controls_preview_postgresql(
         )
         assert before_audits == 0, "New binding unexpectedly has prior image audits"
         assert len(audits) == 1, "Exactly one image audit must be committed"
-        assert '"parser_status": "VALID"' in (audits[0].payload_json or ""), (
+        audit = audits[0]
+        assert audit.entity_type == "provider_source_binding"
+        payload = json.loads(audit.payload_json or "{}")
+        assert payload.get("provider_id") == provider.id, (
+            "Expiry preview audit must preserve the originating provider"
+        )
+        assert payload.get("feed_id") == feed.id, (
+            "Expiry preview audit must preserve the originating feed"
+        )
+        assert payload.get("parser_status") == "VALID", (
             "The image audit disagrees with the successful preview parser status"
         )
         assert tuple(
