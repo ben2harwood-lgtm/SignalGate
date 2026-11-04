@@ -12,9 +12,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
+from time import monotonic, sleep
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text as sql_text
 
 from app import models
 from app.database import SessionLocal
@@ -50,12 +51,15 @@ def test_postgresql_pause_update_conflicts_with_correct_shared_lock(
     release_reader = Event()
     writer_update_attempted = Event()
     writer_committed = Event()
+    reader_backend_pid: list[int] = []
+    writer_backend_pid: list[int] = []
 
     def locked_reader():
         with SessionLocal() as session:
             conn = session.connection()
             conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
             conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            reader_backend_pid.append(conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one())
             statement = (
                 select(model)
                 .where(model.id == target_id)
@@ -84,6 +88,8 @@ def test_postgresql_pause_update_conflicts_with_correct_shared_lock(
             conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
             conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
 
+            writer_backend_pid.append(conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one())
+
             def observed_update(_conn, _cursor, sql, _params, _ctx, _many):
                 if sql.lstrip().lower().startswith(
                     f"update {model.__tablename__} set"
@@ -110,12 +116,34 @@ def test_postgresql_pause_update_conflicts_with_correct_shared_lock(
             assert writer_update_attempted.wait(timeout=8), (
                 "Independent writer did not attempt paused-field UPDATE"
             )
-            # A KEY SHARE reader permits an ordinary non-key UPDATE.
-            # A SHARE reader must make the writer wait for commit.
-            commit_while_held = writer_committed.wait(timeout=2)
-            assert commit_while_held is (not writer_must_wait), (
-                f"{scope_name} {mode}: unexpected pause commit ordering"
-            )
+            # Do not mistake a slow test worker for a real row lock. For
+            # FOR SHARE, query the server's live wait graph and prove that
+            # this exact UPDATE is blocked by the reader backend PID.
+            # FOR KEY SHARE must let the same UPDATE commit before release.
+            if writer_must_wait:
+                with SessionLocal() as observer:
+                    deadline = monotonic() + 4.0
+                    while monotonic() < deadline:
+                        blockers = observer.scalar(
+                            sql_text("SELECT pg_blocking_pids(:writer_pid)"),
+                            {"writer_pid": writer_backend_pid[0]},
+                        )
+                        if reader_backend_pid[0] in blockers:
+                            break
+                        sleep(0.05)
+                    else:
+                        pytest.fail(
+                            f"{scope_name} {mode}: PostgreSQL did not report "
+                            "the reader as the pause UPDATE blocker"
+                        )
+                assert not writer_committed.is_set(), (
+                    f"{scope_name} {mode}: pause committed despite row lock"
+                )
+            else:
+                assert writer_committed.wait(timeout=8), (
+                    f"{scope_name} {mode}: pause UPDATE did not commit "
+                    "under FOR KEY SHARE before reader release"
+                )
         finally:
             release_reader.set()
         read_future.result(timeout=18)
