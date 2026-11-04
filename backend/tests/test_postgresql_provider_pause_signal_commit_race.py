@@ -321,5 +321,29 @@ def test_independent_scope_pause_can_commit_during_signal_creation_postgresql(
         assert signal is not None
         assert signal.provider_id == owner_id
         assert signal.feed_id == owner_feed_id
+        assert signal.source_message_id == f"owner-{paused_scope_name}"
+        assert (
+            check.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "SIGNAL_CREATED",
+                models.AuditLog.entity_id == signal_id,
+            )
+            .count()
+            == 1
+        ), "Independent pause must not suppress or duplicate SIGNAL_CREATED audit"
+        if target_model is models.Provider:
+            assert (
+                check.query(models.Signal)
+                .filter(models.Signal.provider_id == unrelated_id)
+                .count()
+                == 0
+            ), "Signal leaked to independently paused provider"
+        else:
+            assert (
+                check.query(models.Signal)
+                .filter(models.Signal.feed_id == unrelated_id)
+                .count()
+                == 0
+            ), "Signal leaked to independently paused feed"
         assert check.query(models.Command).count() == 0
         assert check.query(models.Execution).count() == 0
