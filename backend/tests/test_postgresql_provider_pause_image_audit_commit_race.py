@@ -637,3 +637,111 @@ def test_feed_policy_commit_during_image_io_controls_preview_postgresql(
             for model in (models.Signal, models.Command, models.Execution)
         ) == before_trading, "Image preview wrote trading or execution state"
 
+def test_feed_expiry_commit_during_image_io_controls_preview_postgresql(
+    client, db, monkeypatch
+):
+    """An independently committed feed expiry update governs the final preview.
+
+    The source status can have shown a seven-minute expiry before extraction.
+    A policy writer must be able to commit a 23-minute override while offline
+    model I/O runs, and the later parser must use that committed setting.
+    This tests preview consistency only, not executable-trade authorization.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    provider, feed, key = _provider(db, "image-expiry-update-during-io")
+    crud.update_feed_policy(db, feed, {"expiry_minutes": 7})
+    db.commit()
+    feed_id = feed.id
+    assert feed.expiry_minutes == 7
+    telegram_id = "9537"
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert connected.status_code == 200, connected.text
+    claim = _source_claim(connected.json())
+    observed_expiries = []
+    committed = []
+    original_parse_signal = provider_sources.parse_signal
+
+    def record_expiry(raw_text, *, expiry_minutes, allowed_symbols=None):
+        observed_expiries.append(expiry_minutes)
+        return original_parse_signal(
+            raw_text,
+            expiry_minutes=expiry_minutes,
+            allowed_symbols=allowed_symbols,
+        )
+
+    class OfflineExpiryChangeExtractor:
+        engine = "offline-expiry-update-during-io"
+
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG and mime == "image/png"
+            with SessionLocal() as writer:
+                conn = writer.connection()
+                conn.exec_driver_sql("SET LOCAL lock_timeout = '4s'")
+                conn.exec_driver_sql("SET LOCAL statement_timeout = '6s'")
+                current = writer.get(models.Feed, feed_id)
+                assert current is not None and current.status == "ACTIVE"
+                assert not current.paused and current.expiry_minutes == 7
+                crud.update_feed_policy(
+                    writer, current, {"expiry_minutes": 23}
+                )
+                writer.commit()
+            committed.append(feed_id)
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="HIGH",
+                notes="",
+                raw_text=EUR_BUY,
+            )
+
+    with SessionLocal() as reader:
+        before_audits = (
+            reader.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED",
+                models.AuditLog.entity_id == claim["expected_binding_id"],
+            )
+            .count()
+        )
+        before_trading = tuple(
+            reader.query(model).count()
+            for model in (models.Signal, models.Command, models.Execution)
+        )
+
+    monkeypatch.setattr(
+        provider_sources, "get_extractor",
+        lambda: OfflineExpiryChangeExtractor(),
+    )
+    monkeypatch.setattr(provider_sources, "parse_signal", record_expiry)
+    response = client.post(
+        "/provider-sources/telegram/extract",
+        params={"telegram_user_id": telegram_id, **claim},
+        files={"file": ("synthetic.png", io.BytesIO(_FAKE_PNG), "image/png")},
+    )
+    assert committed == [feed_id], (
+        "The independent feed expiry update did not commit during extraction"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["parser_status"] == "VALID", response.text
+    assert observed_expiries == [23], (
+        "Preview parsed with pre-I/O expiry rather than committed feed policy"
+    )
+    with SessionLocal() as check:
+        current = check.get(models.Feed, feed_id)
+        assert current is not None and current.expiry_minutes == 23
+        assert (
+            check.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED",
+                models.AuditLog.entity_id == claim["expected_binding_id"],
+            )
+            .count()
+        ) == before_audits + 1
+        assert tuple(
+            check.query(model).count()
+            for model in (models.Signal, models.Command, models.Execution)
+        ) == before_trading, "Expiry preview created trading state"
