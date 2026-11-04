@@ -20,6 +20,7 @@ from sqlalchemy import event
 
 from app import crud, models
 from app.database import SessionLocal
+from app.parser import parse_signal
 from app.routes import provider_sources
 
 from .test_provider_sources import (
@@ -541,6 +542,11 @@ def test_feed_policy_commit_during_image_io_controls_preview_postgresql(
     provider, feed, key = _provider(db, "image-policy-update-during-io")
     crud.update_feed_policy(db, feed, {"allowed_symbols": ["EURUSD"]})
     db.commit()
+    # Prove the original text is genuinely valid under the starting policy.
+    # Otherwise a stale-policy preview could pass this test by rejecting an
+    # independently malformed signal rather than honoring the mid-I/O update.
+    baseline = parse_signal(EUR_BUY, allowed_symbols=crud.feed_allowed_symbols(feed))
+    assert baseline.parser_status == "VALID", baseline.parser_error
     feed_id = feed.id
     telegram_id = "9536"
     connected = _connect(
