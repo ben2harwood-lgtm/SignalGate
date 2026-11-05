@@ -465,3 +465,79 @@ def test_restricted_feed_authentication_and_tenant_ownership_precede_denial(
         assert db.query(models.Execution).count() == 0
     finally:
         security.settings.require_license = original_license_setting
+
+
+@pytest.mark.parametrize(
+    "restricted_state",
+    ("provider_paused", "feed_paused", "feed_inactive"),
+)
+def test_rotated_provider_key_stays_unauthorised_for_restricted_feed(
+    client, db, restricted_state
+):
+    """A revoked key must fail authentication before a restricted-feed decision.
+
+    Rotation must not resurrect a former credential when an owner later adds
+    paused/inactive feed denial. This uses only invented users, an isolated DB
+    and local HTTP; it does not exercise Telegram, brokers or trade execution.
+    """
+    provider, feed, old_key = _provider_fixture(
+        db, f"recipient-revoked-precedence-{restricted_state}"
+    )
+    telegram_id = "4699"
+    user = register_user(
+        client, telegram_id, f"revoked_precedence_{restricted_state}",
+        "Synthetic Subscriber",
+    )
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, user["id"])
+    )
+    db.commit()
+
+    original_license_setting = security.settings.require_license
+    security.settings.require_license = True
+    try:
+        def lookup(key):
+            return client.get(
+                "/signals/recipients",
+                params={"feed_id": feed.id},
+                headers=_headers(provider, key),
+            )
+
+        before = lookup(old_key)
+        assert before.status_code == 200, before.text
+        expected = {"recipients": [{
+            "user_id": user["id"], "telegram_user_id": telegram_id,
+        }]}
+        assert before.json() == expected
+
+        _rotated, new_key = crud.rotate_provider_credential(db, provider)
+        if restricted_state == "provider_paused":
+            provider.paused = True
+        elif restricted_state == "feed_paused":
+            feed.paused = True
+        else:
+            feed.status = "INACTIVE"
+        db.commit()
+        db.expire_all()
+
+        old_access = lookup(old_key)
+        assert old_access.status_code == 401, old_access.text
+        assert "recipients" not in old_access.json()
+
+        # Only check the new credential once the feed is active again: the
+        # restricted-path policy is a *separately held* expected failure.
+        if restricted_state == "provider_paused":
+            db.get(models.Provider, provider.id).paused = False
+        elif restricted_state == "feed_paused":
+            db.get(models.Feed, feed.id).paused = False
+        else:
+            db.get(models.Feed, feed.id).status = "ACTIVE"
+        db.commit()
+        db.expire_all()
+        new_access = lookup(new_key)
+        assert new_access.status_code == 200, new_access.text
+        assert new_access.json() == expected
+        assert db.query(models.Command).count() == 0
+        assert db.query(models.Execution).count() == 0
+    finally:
+        security.settings.require_license = original_license_setting
