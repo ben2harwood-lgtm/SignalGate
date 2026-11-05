@@ -330,3 +330,62 @@ def test_inactive_feed_refuses_recipient_lookup(client, db):
                    for term in ("inactive", "not active", "disabled"))
     finally:
         security.settings.require_license = original_license_setting
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_InactiveFeedRecipientEnumeration,
+    reason=(
+        "RELEASE HOLD: a non-ACTIVE empty feed still receives an HTTP 200 "
+        "recipient lookup response; deny before subscriber enumeration"
+    ),
+)
+def test_inactive_empty_feed_refuses_recipient_lookup(client, db):
+    """Inactive feed denial must not depend on having any subscribers.
+
+    Synthetic offline counterpart to the inactive-feed subscribed regression.
+    The active empty baseline must remain accessible, while the same feed
+    after deactivation must fail closed without trading side effects.
+    """
+    provider, feed, raw_key = _provider_fixture(
+        db, "recipient-inactive-empty-feed"
+    )
+    original_license_setting = security.settings.require_license
+    security.settings.require_license = True
+    try:
+        def lookup():
+            return client.get(
+                "/signals/recipients",
+                params={"feed_id": feed.id},
+                headers=_headers(provider, raw_key),
+            )
+
+        active = lookup()
+        assert active.status_code == 200, active.text
+        assert active.json() == {"recipients": []}
+
+        feed.status = "INACTIVE"
+        db.commit()
+        db.expire_all()
+        assert db.get(models.Feed, feed.id).status == "INACTIVE"
+        assert db.get(models.Provider, provider.id).status == "ACTIVE"
+
+        response = lookup()
+        # Assert no execution side effects *before* the deliberate XFAIL.
+        assert db.query(models.Command).count() == 0
+        assert db.query(models.Execution).count() == 0
+        if response.status_code == 200:
+            assert response.json() == {"recipients": []}, (
+                "Unexpected inactive empty-feed payload, not the known gap"
+            )
+            raise _InactiveFeedRecipientEnumeration(
+                "Inactive empty feed returned HTTP 200 to recipient lookup"
+            )
+        assert response.status_code == 403, response.text
+        assert "recipients" not in response.json()
+        assert any(
+            word in response.json().get("detail", "").lower()
+            for word in ("inactive", "not active", "disabled")
+        )
+    finally:
+        security.settings.require_license = original_license_setting
