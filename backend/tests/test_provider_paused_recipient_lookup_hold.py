@@ -389,3 +389,79 @@ def test_inactive_empty_feed_refuses_recipient_lookup(client, db):
         )
     finally:
         security.settings.require_license = original_license_setting
+
+
+@pytest.mark.parametrize(
+    "restricted_state",
+    ("provider_paused", "feed_paused", "feed_inactive"),
+)
+def test_restricted_feed_authentication_and_tenant_ownership_precede_denial(
+    client, db, restricted_state
+):
+    """An eventual pause fix must not turn bad credentials or foreign feeds into 403.
+
+    This positive security regression is synthetic and broker-free. The owner
+    endpoint currently lacks pause enforcement; this test intentionally checks
+    only independently required 401/404 precedence, not that known missing gate.
+    """
+    owner, feed, owner_key = _provider_fixture(
+        db, f"recipient-precedence-owner-{restricted_state}"
+    )
+    foreign, _foreign_feed, foreign_key = _provider_fixture(
+        db, f"recipient-precedence-foreign-{restricted_state}"
+    )
+    synthetic_user = register_user(
+        client, "4691", f"precedence_{restricted_state}", "Synthetic Subscriber"
+    )
+    crud.subscribe_user_to_feed(
+        db, owner, feed, db.get(models.User, synthetic_user["id"])
+    )
+    db.commit()
+
+    if restricted_state == "provider_paused":
+        owner.paused = True
+    elif restricted_state == "feed_paused":
+        feed.paused = True
+    else:
+        feed.status = "INACTIVE"
+    db.commit()
+    db.expire_all()
+
+    assert (
+        db.get(models.Provider, owner.id).paused is True
+        if restricted_state == "provider_paused"
+        else db.get(models.Feed, feed.id).paused is True
+        if restricted_state == "feed_paused"
+        else db.get(models.Feed, feed.id).status == "INACTIVE"
+    )
+
+    original_license_setting = security.settings.require_license
+    security.settings.require_license = True
+    try:
+        bad_credentials = (
+            _headers(owner, owner_key + "-wrong"),
+            {"X-Provider-Id": owner.id},  # Missing key, not local demo authority.
+            _headers(foreign, owner_key),  # Valid key, forged provider identity.
+        )
+        for supplied_headers in bad_credentials:
+            denied = client.get(
+                "/signals/recipients",
+                params={"feed_id": feed.id},
+                headers=supplied_headers,
+            )
+            assert denied.status_code == 401, denied.text
+            assert "recipients" not in denied.json()
+
+        foreign_scope = client.get(
+            "/signals/recipients",
+            params={"feed_id": feed.id},
+            headers=_headers(foreign, foreign_key),
+        )
+        # Ownership privacy precedes scope state: never reveal a paused or
+        # inactive *foreign* feed exists by returning a distinguishable 403.
+        assert foreign_scope.status_code == 404, foreign_scope.text
+        assert "recipients" not in foreign_scope.json()
+        assert db.query(models.Command).count() == 0
+        assert db.query(models.Execution).count() == 0
+    finally:
+        security.settings.require_license = original_license_setting
