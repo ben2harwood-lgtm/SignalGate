@@ -260,3 +260,73 @@ def test_paused_empty_feed_refuses_recipient_lookup(client, db, paused_scope_nam
         assert "paused" in response.json().get("detail", "").lower()
     finally:
         security.settings.require_license = original_license_setting
+
+
+class _InactiveFeedRecipientEnumeration(AssertionError):
+    """Known policy discrepancy: non-ACTIVE feed still exposes recipients."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_InactiveFeedRecipientEnumeration,
+    reason=(
+        "RELEASE HOLD: generic provider /signals/recipients still enumerates "
+        "subscribers when the feed status is not ACTIVE; source-owner review"
+    ),
+)
+def test_inactive_feed_refuses_recipient_lookup(client, db):
+    """A disabled feed is not made eligible by a valid provider credential.
+
+    This is an offline, invented-identity regression. Source-bound Telegram
+    lookup already filters non-ACTIVE feed state. The provider principal remains
+    ACTIVE; only the feed is disabled to isolate the missing state gate.
+    """
+    provider, feed, raw_key = _provider_fixture(db, "recipient-inactive-feed")
+    user = register_user(
+        client, "4681", "inactive_feed_subscriber", "Synthetic Subscriber",
+    )
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, user["id"])
+    )
+    db.commit()
+
+    original_license_setting = security.settings.require_license
+    security.settings.require_license = True
+    try:
+        def lookup():
+            return client.get(
+                "/signals/recipients",
+                params={"feed_id": feed.id},
+                headers=_headers(provider, raw_key),
+            )
+
+        active = lookup()
+        assert active.status_code == 200, active.text
+        assert active.json()["recipients"] == [{
+            "user_id": user["id"],
+            "telegram_user_id": "4681",
+        }]
+
+        feed.status = "INACTIVE"
+        db.commit()
+        db.expire_all()
+        assert db.get(models.Feed, feed.id).status == "INACTIVE"
+        assert db.get(models.Provider, provider.id).status == "ACTIVE"
+
+        response = lookup()
+        assert db.query(models.Command).count() == 0
+        assert db.query(models.Execution).count() == 0
+        if response.status_code == 200:
+            assert response.json() == {"recipients": [{
+                "user_id": user["id"],
+                "telegram_user_id": "4681",
+            }]}, "Unexpected inactive-feed payload, not the known policy gap"
+            raise _InactiveFeedRecipientEnumeration(
+                "Non-ACTIVE feed still exposed the exact synthetic recipient"
+            )
+        assert response.status_code == 403, response.text
+        assert "recipients" not in response.json()
+        assert any(term in response.json().get("detail", "").lower()
+                   for term in ("inactive", "not active", "disabled"))
+    finally:
+        security.settings.require_license = original_license_setting
