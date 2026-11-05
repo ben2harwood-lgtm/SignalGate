@@ -180,3 +180,55 @@ def test_paused_scope_does_not_hide_unaffected_recipient_feeds(
         assert db.query(models.Execution).count() == 0
     finally:
         security.settings.require_license = original_license_setting
+
+
+@pytest.mark.parametrize("paused_scope_name", ("provider", "feed"))
+@pytest.mark.xfail(
+    strict=True,
+    raises=_PausedProviderRecipientEnumeration,
+    reason=(
+        "RELEASE HOLD: paused /signals/recipients returns HTTP 200 even "
+        "for an empty subscriber feed; pause denial must not depend on "
+        "whether recipients happen to exist"
+    ),
+)
+def test_paused_empty_feed_refuses_recipient_lookup(client, db, paused_scope_name):
+    """Paused feed/provider must fail closed even without subscribers.
+
+    Synthetic empty feed, isolated DB, no Telegram/broker/command. The
+    source-owner fix must enforce pause before enumerating users; checking
+    only whether the recipient list is nonempty is insufficient.
+    """
+    provider, feed, raw_key = _provider_fixture(
+        db, f"recipient-pause-empty-{paused_scope_name}"
+    )
+    target = provider if paused_scope_name == "provider" else feed
+    target.paused = True
+    db.commit()
+    db.expire_all()
+    current = db.get(type(target), target.id)
+    assert current is not None
+    assert current.status == "ACTIVE" and current.paused is True
+
+    original_license_setting = security.settings.require_license
+    security.settings.require_license = True
+    try:
+        response = client.get(
+            "/signals/recipients",
+            params={"feed_id": feed.id},
+            headers=_headers(provider, raw_key),
+        )
+        assert db.query(models.Command).count() == 0
+        assert db.query(models.Execution).count() == 0
+        if response.status_code == 200:
+            assert response.json() == {"recipients": []}, (
+                "Unexpected paused empty-feed payload, not the known policy gap"
+            )
+            raise _PausedProviderRecipientEnumeration(
+                f"Paused empty {paused_scope_name} scope returned HTTP 200"
+            )
+        assert response.status_code == 403, response.text
+        assert "recipients" not in response.json()
+        assert "paused" in response.json().get("detail", "").lower()
+    finally:
+        security.settings.require_license = original_license_setting
