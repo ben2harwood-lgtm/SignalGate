@@ -101,3 +101,82 @@ def test_paused_provider_recipient_lookup_refuses_enumeration(
         assert "paused" in paused_response.json().get("detail", "").lower()
     finally:
         security.settings.require_license = original_license_setting
+
+@pytest.mark.parametrize("paused_scope_name", ("provider", "feed"))
+def test_paused_scope_does_not_hide_unaffected_recipient_feeds(
+    client, db, paused_scope_name
+):
+    """A pause must not hide an active sibling feed or unrelated provider.
+
+    Positive tenant-scope guard for the eventual paused-recipient fix; no bot,
+    broker, external provider, or executable command is involved.
+    """
+    target_provider, target_feed, target_key = _provider_fixture(
+        db, f"pause-isolation-{paused_scope_name}"
+    )
+    if paused_scope_name == "provider":
+        other_provider, other_feed, other_key = _provider_fixture(
+            db, "pause-isolation-independent"
+        )
+    else:
+        other_provider, other_key = target_provider, target_key
+        # Complete HTTP registration before the fixture session has pending
+        # writes, to avoid a SQLite cross-session lock on synthetic users.
+        other_feed = None
+
+    target_user = register_user(
+        client, "4673" if paused_scope_name == "provider" else "4675",
+        f"paused_isolation_target_{paused_scope_name}", "Synthetic Target",
+    )
+    other_telegram_id = "4674" if paused_scope_name == "provider" else "4676"
+    other_user = register_user(
+        client, other_telegram_id,
+        f"paused_isolation_other_{paused_scope_name}", "Synthetic Unaffected",
+    )
+    if other_feed is None:
+        other_feed = crud.create_feed(
+            db, target_provider, "unpaused sibling", "pause-isolation-sibling"
+        )
+    crud.subscribe_user_to_feed(
+        db, target_provider, target_feed,
+        db.get(models.User, target_user["id"]),
+    )
+    crud.subscribe_user_to_feed(
+        db, other_provider, other_feed,
+        db.get(models.User, other_user["id"]),
+    )
+    db.commit()
+
+    target = target_provider if paused_scope_name == "provider" else target_feed
+    target.paused = True
+    db.commit()
+    db.expire_all()
+    assert db.get(type(target), target.id).paused is True
+    assert db.get(models.Provider, other_provider.id).paused is False
+    assert db.get(models.Feed, other_feed.id).paused is False
+
+    original_license_setting = security.settings.require_license
+    security.settings.require_license = True
+    try:
+        unaffected = client.get(
+            "/signals/recipients",
+            params={"feed_id": other_feed.id},
+            headers=_headers(other_provider, other_key),
+        )
+        assert unaffected.status_code == 200, unaffected.text
+        assert unaffected.json()["recipients"] == [{
+            "user_id": other_user["id"],
+            "telegram_user_id": other_telegram_id,
+        }]
+        if paused_scope_name == "provider":
+            # Even the paused provider's valid key must not cross tenants.
+            cross_tenant = client.get(
+                "/signals/recipients",
+                params={"feed_id": other_feed.id},
+                headers=_headers(target_provider, target_key),
+            )
+            assert cross_tenant.status_code == 404, cross_tenant.text
+        assert db.query(models.Command).count() == 0
+        assert db.query(models.Execution).count() == 0
+    finally:
+        security.settings.require_license = original_license_setting
