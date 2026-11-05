@@ -182,6 +182,34 @@ def test_paused_scope_does_not_hide_unaffected_recipient_feeds(
         security.settings.require_license = original_license_setting
 
 
+def test_active_empty_feed_remains_queryable(client, db):
+    """Do not fix paused-empty lookup by rejecting every empty feed.
+
+    A valid, unpaused provider's empty feed has no recipients but should still
+    return the normal successful empty result. Synthetic, offline and no trade.
+    """
+    provider, feed, raw_key = _provider_fixture(
+        db, "recipient-pause-active-empty-control"
+    )
+    assert provider.status == "ACTIVE" and provider.paused is False
+    assert feed.status == "ACTIVE" and feed.paused is False
+
+    original_license_setting = security.settings.require_license
+    security.settings.require_license = True
+    try:
+        response = client.get(
+            "/signals/recipients",
+            params={"feed_id": feed.id},
+            headers=_headers(provider, raw_key),
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {"recipients": []}
+        assert db.query(models.Command).count() == 0
+        assert db.query(models.Execution).count() == 0
+    finally:
+        security.settings.require_license = original_license_setting
+
+
 @pytest.mark.parametrize("paused_scope_name", ("provider", "feed"))
 @pytest.mark.xfail(
     strict=True,
