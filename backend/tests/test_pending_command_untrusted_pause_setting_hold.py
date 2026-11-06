@@ -84,6 +84,9 @@ def test_pending_command_denied_on_untrusted_admin_pause_setting(
     # Any setup error or unrelated assertion must be a genuine CI failure.
     if payload["command"] is not None:
         assert payload["command"]["command_id"] == command_id
+        assert command.status == "SENT_TO_EA"
+        assert sent_audits == 1
+        assert executions == 0
         raise _UntrustedPauseStateDelivered(
             f"EA received {command_id} with admin_paused={broken_setting}"
         )
