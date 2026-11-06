@@ -178,6 +178,10 @@ def test_real_admin_pause_endpoint_waits_for_shared_settings_lock(client, db):
                 with SessionLocal() as observer:
                     deadline = monotonic() + 5.0
                     while monotonic() < deadline:
+                        # pg_stat_activity query snapshots can be cached for a
+                        # transaction. Refresh each probe so a writer that
+                        # starts after the first sample remains observable.
+                        observer.execute(sql_text("SELECT pg_stat_clear_snapshot()"))
                         waiting = observer.execute(
                             sql_text(
                                 "SELECT pid, query, pg_blocking_pids(pid) "
