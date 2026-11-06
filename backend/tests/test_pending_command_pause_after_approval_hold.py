@@ -82,6 +82,8 @@ def test_pending_command_is_not_delivered_after_admin_pause(client):
         assert payload["command"]["command_id"] == command_id
         assert command.status == "SENT_TO_EA"
         assert sent_audits == 1
+        # An execution side effect must fail CI, not be hidden by strict XFAIL.
+        assert executions == 0
         raise _PausedCommandDelivered(
             f"EA received {command_id} after the committed admin pause"
         )
