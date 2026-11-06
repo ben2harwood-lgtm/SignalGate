@@ -99,9 +99,7 @@ def test_committed_admin_pause_cannot_overtake_command_claim_postgresql(
             crud.set_setting(session, "admin_paused", "true")
             crud.add_audit(session, "ADMIN_PAUSE", "settings", "admin_paused")
             session.commit()
-            overtook = not release_claim.is_set()
             pause_committed.set()
-            return overtook
 
     with ThreadPoolExecutor(max_workers=2) as workers:
         claim_future = workers.submit(claim_pending)
@@ -114,11 +112,14 @@ def test_committed_admin_pause_cannot_overtake_command_claim_postgresql(
             # Under the unfixed implementation, pause commits while the
             # in-flight claim is intentionally held. Under a shared-row lock,
             # pause waits until the earlier claim commits.
-            pause_committed.wait(timeout=1.5)
+            # Capture the observed commit while the claim is STILL held.
+            # Reading release_claim in the pause worker after its commit can
+            # miss a pause that overtook the claim just after we release it.
+            pause_overtook_held_claim = pause_committed.wait(timeout=2.5)
         finally:
             release_claim.set()
         assert claim_future.result(timeout=22) == command_id
-        overtook = pause_future.result(timeout=22)
+        pause_future.result(timeout=22)
 
     # Prove both transactions committed, with exactly one claim, one pause,
     # and no fabricated execution. Do not count a deadlock/timeout as proof.
@@ -150,7 +151,7 @@ def test_committed_admin_pause_cannot_overtake_command_claim_postgresql(
             == 1
         )
 
-    if overtook:
+    if pause_overtook_held_claim:
         raise _PauseCommittedBeforeClaim(
             "Admin pause committed before the held COMMAND_SENT_TO_EA claim "
             "transaction, but that old claim committed afterwards"
