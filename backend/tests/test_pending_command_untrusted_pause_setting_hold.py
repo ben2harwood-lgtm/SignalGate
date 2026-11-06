@@ -195,3 +195,64 @@ def test_missing_pause_row_not_reseeded_after_command_approval(client):
     assert command.status == "PENDING"
     assert sent_audits == 0
     assert executions == 0
+
+
+class _EstablishedDatabaseSilentlyUnpaused(AssertionError):
+    """An existing database lost pause state and was silently reopened."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_EstablishedDatabaseSilentlyUnpaused,
+    reason=(
+        "RELEASE HOLD: a database with persisted users must not recreate a "
+        "missing admin_paused=false merely because it has no pending commands"
+    ),
+)
+def test_established_database_without_commands_does_not_reseed_missing_pause(client):
+    """No command-based heuristic may classify an existing database as new.
+
+    A persisted user proves this database was previously initialized. This
+    invokes the startup helper only, not a process restart or any MT5 activity.
+    """
+    from app.main import seed_settings
+
+    user = register_user(client, "990006")
+    with SessionLocal() as session:
+        row = session.scalar(
+            select(models.Setting).where(models.Setting.key == "admin_paused")
+        )
+        assert row is not None and row.value == "false"
+        assert session.get(models.User, user["id"]) is not None
+        assert session.query(models.Command).count() == 0
+        session.delete(row)
+        session.commit()
+
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(models.Setting).where(models.Setting.key == "admin_paused")
+        ) is None
+        assert session.get(models.User, user["id"]) is not None
+
+    seed_settings()
+
+    with SessionLocal() as session:
+        row = session.scalar(
+            select(models.Setting).where(models.Setting.key == "admin_paused")
+        )
+        value = row.value if row is not None else None
+        assert session.get(models.User, user["id"]) is not None
+        assert session.query(models.Command).count() == 0
+        assert session.query(models.Execution).count() == 0
+        assert session.query(models.AuditLog).filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA"
+        ).count() == 0
+
+    if value == "false":
+        raise _EstablishedDatabaseSilentlyUnpaused(
+            "Existing user persisted, zero commands, but startup silently "
+            "recreated admin_paused=false without authenticated resume"
+        )
+    # A future owner-reviewed policy may leave it missing or initialize a
+    # trusted paused state. A deliberate startup refusal needs its own test.
+    assert value is None or value == "true"
