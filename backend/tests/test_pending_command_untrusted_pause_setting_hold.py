@@ -96,3 +96,102 @@ def test_pending_command_denied_on_untrusted_admin_pause_setting(
     assert command.status == "PENDING"
     assert sent_audits == 0
     assert executions == 0
+
+
+class _StartupReopenedUntrustedPause(AssertionError):
+    """A missing persisted pause row was silently re-created as unpaused."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_StartupReopenedUntrustedPause,
+    reason=(
+        "RELEASE HOLD: startup settings seeding may not silently authorize "
+        "already-approved EA commands when a persisted admin pause row is missing"
+    ),
+)
+def test_missing_pause_row_not_reseeded_after_command_approval(client):
+    """Synthetic restart-seeder regression; no process, broker, or EA is started.
+
+    First-install defaults are a separate case. Here an existing approved
+    PENDING command makes this an established database, so absence of the
+    pause setting is untrusted state, not consent to resume command delivery.
+    Invoke the actual startup seeder directly to isolate the policy gap.
+    """
+    from app.main import seed_settings
+
+    user = register_user(client, "990005")
+    signal = create_signal(client, VALID)
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": user["telegram_user_id"]},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+
+    with SessionLocal() as session:
+        row = session.scalar(
+            select(models.Setting).where(models.Setting.key == "admin_paused")
+        )
+        assert row is not None and row.value == "false"
+        session.delete(row)
+        session.commit()
+
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(models.Setting).where(models.Setting.key == "admin_paused")
+        ) is None
+        pending = session.get(models.Command, command_id)
+        assert pending is not None and pending.status == "PENDING"
+
+    # Exact helper run by the app lifespan on startup. This deliberately
+    # exposes missing-row auto-recovery without changing production state.
+    seed_settings()
+    with SessionLocal() as session:
+        reseeded = session.scalar(
+            select(models.Setting).where(models.Setting.key == "admin_paused")
+        )
+        pause_value = reseeded.value if reseeded is not None else None
+
+    polled = client.get(
+        "/commands/pending",
+        params={"user_id": user["id"]},
+        headers=EA_HEADERS,
+    )
+    assert polled.status_code == 200
+    payload = polled.json()
+    assert "command" in payload
+
+    with SessionLocal() as session:
+        command = session.get(models.Command, command_id)
+        assert command is not None
+        sent_audits = (
+            session.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count()
+        )
+        executions = session.query(models.Execution).count()
+
+    # The named XFAIL is allowed ONLY after proving an existing database
+    # was reopened permissively and delivery/audit actually occurred.
+    if pause_value == "false" and payload["command"] is not None:
+        assert payload["command"]["command_id"] == command_id
+        assert command.status == "SENT_TO_EA"
+        assert sent_audits == 1
+        assert executions == 0
+        raise _StartupReopenedUntrustedPause(
+            "Startup seeded missing admin_paused=false and delivered a "
+            "previously approved pending command without explicit resume"
+        )
+
+    # A poll-only guard is insufficient if startup still silently seeds
+    # untrusted persisted state to 'false'. Require both to be safe.
+    assert pause_value != "false"
+    assert payload["command"] is None
+    assert command.status == "PENDING"
+    assert sent_audits == 0
+    assert executions == 0
