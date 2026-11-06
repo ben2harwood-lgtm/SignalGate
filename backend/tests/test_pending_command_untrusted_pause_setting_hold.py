@@ -12,7 +12,7 @@ from sqlalchemy import select
 from app import models
 from app.database import SessionLocal
 
-from .conftest import EA_HEADERS, create_signal, register_user
+from .conftest import ADMIN_HEADERS, EA_HEADERS, create_signal, register_user
 
 
 VALID = "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363"
@@ -256,3 +256,73 @@ def test_established_database_without_commands_does_not_reseed_missing_pause(cli
     # A future owner-reviewed policy may leave it missing or initialize a
     # trusted paused state. A deliberate startup refusal needs its own test.
     assert value is None or value == "true"
+
+
+class _OperatorReportedUntrustedPauseAsClear(AssertionError):
+    """Operational status falsely represented untrusted pause state as clear."""
+
+
+@pytest.mark.parametrize("broken_setting", ("missing", "invalid-value"))
+@pytest.mark.xfail(
+    strict=True,
+    raises=_OperatorReportedUntrustedPauseAsClear,
+    reason=(
+        "RELEASE HOLD: admin status and metrics must not report an absent or "
+        "malformed persisted pause setting as authoritatively unpaused"
+    ),
+)
+def test_admin_status_and_metrics_fail_closed_on_untrusted_pause(client, broken_setting):
+    """Offline operator-status regression, without commands or broker activity.
+
+    A misleading green/unpaused dashboard can conceal the same corrupted
+    setting that currently allows unsafe EA polling. This is an independently
+    observable operator contract, not a real monitoring or deployment test.
+    """
+    with SessionLocal() as session:
+        row = session.scalar(
+            select(models.Setting).where(models.Setting.key == "admin_paused")
+        )
+        assert row is not None and row.value == "false"
+        assert session.query(models.Command).count() == 0
+        if broken_setting == "missing":
+            session.delete(row)
+        else:
+            row.value = "not-a-boolean"
+        session.commit()
+
+    status = client.get("/admin/status", headers=ADMIN_HEADERS)
+    metrics = client.get("/admin/metrics", headers=ADMIN_HEADERS)
+    assert status.status_code == 200
+    assert metrics.status_code == 200
+    status_body = status.json()
+    metrics_body = metrics.json()
+    assert status_body["settings"].get("admin_paused") == (
+        None if broken_setting == "missing" else "not-a-boolean"
+    )
+    assert isinstance(status_body["admin_paused"], bool)
+    assert isinstance(metrics_body["mode"]["admin_paused"], bool)
+
+    with SessionLocal() as session:
+        assert session.query(models.Command).count() == 0
+        assert session.query(models.Execution).count() == 0
+        assert session.query(models.AuditLog).count() == 0
+
+    misleading = [
+        name
+        for name, value in (
+            ("admin/status", status_body["admin_paused"]),
+            ("admin/metrics", metrics_body["mode"]["admin_paused"]),
+        )
+        if value is False
+    ]
+    if misleading:
+        raise _OperatorReportedUntrustedPauseAsClear(
+            f"admin_paused={broken_setting} was reported as unpaused by "
+            + ", ".join(misleading)
+        )
+
+    # With a reviewed fix this becomes the ordinary passing safety contract;
+    # remove strict XFAIL only after both operator endpoints and EA polling
+    # reject/reflect untrusted persisted pause state.
+    assert status_body["admin_paused"] is True
+    assert metrics_body["mode"]["admin_paused"] is True
