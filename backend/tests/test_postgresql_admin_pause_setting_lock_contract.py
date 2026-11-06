@@ -140,15 +140,35 @@ def test_global_admin_pause_update_conflicts_with_correct_lock(
         assert check.query(models.Execution).count() == 0
 
 
-def test_real_admin_pause_endpoint_waits_for_shared_settings_lock(client, db):
-    """The authenticated HTTP pause writer must serialize with FOR SHARE.
+@pytest.mark.parametrize(
+    ("action", "initial_value", "final_value", "audit_event"),
+    (
+        ("pause", "false", "true", "ADMIN_PAUSE"),
+        ("resume", "true", "false", "ADMIN_RESUME"),
+    ),
+)
+def test_real_admin_pause_endpoint_waits_for_shared_settings_lock(
+    client, db, action, initial_value, final_value, audit_event
+):
+    """Both authenticated HTTP pause and resume must serialize with FOR SHARE.
 
-    This checks the actual /admin/pause transaction rather than only
+    This checks the actual /admin/pause and /admin/resume transactions, not only
     crud.set_setting. It does NOT assert that EA polling already acquires
     the required lock; the negative poll/claim XFAILs remain release holds.
     """
     if db.get_bind().dialect.name != "postgresql":
         pytest.skip("Requires independent PostgreSQL HTTP and reader sessions")
+
+    if action == "resume":
+        # Start the resume case from a trusted paused row. Setup alone
+        # does not count as an HTTP action or external acceptance evidence.
+        with SessionLocal() as setup:
+            row = setup.scalar(
+                select(models.Setting).where(models.Setting.key == "admin_paused")
+            )
+            assert row is not None and row.value == "false"
+            crud.set_setting(setup, "admin_paused", "true")
+            setup.commit()
 
     # TestClient uses a separate app DB session; this reader owns the
     # settings-row lock until the coordinated release below.
@@ -164,7 +184,7 @@ def test_real_admin_pause_endpoint_waits_for_shared_settings_lock(client, db):
             .where(models.Setting.key == "admin_paused")
             .with_for_update(read=True)
         )
-        assert pause_setting is not None and pause_setting.value == "false"
+        assert pause_setting is not None and pause_setting.value == initial_value
 
         # The real endpoint must block at UPDATE settings (not merely be
         # slow to schedule). PostgreSQL identifies the exact blocker PID.
@@ -172,7 +192,7 @@ def test_real_admin_pause_endpoint_waits_for_shared_settings_lock(client, db):
 
         with ThreadPoolExecutor(max_workers=1) as workers:
             future = workers.submit(
-                client.post, "/admin/pause", headers=ADMIN_HEADERS
+                client.post, f"/admin/{action}", headers=ADMIN_HEADERS
             )
             try:
                 with SessionLocal() as observer:
@@ -207,23 +227,23 @@ def test_real_admin_pause_endpoint_waits_for_shared_settings_lock(client, db):
                         sleep(0.05)
                     else:
                         pytest.fail(
-                            "Real /admin/pause UPDATE was not observed blocked "
+                            f"Real /admin/{action} UPDATE was not observed blocked "
                             "by the FOR SHARE settings reader; "
                             f"blocked queries: {[(pid, str(query)[:160]) for pid, query in blocked]}"
                         )
 
                     assert not future.done(), (
-                        "Admin pause returned before the settings lock was released"
+                        f"Admin {action} returned before the settings lock was released"
                     )
-                    still_unpaused = observer.scalar(
+                    still_unchanged = observer.scalar(
                         select(models.Setting).where(
                             models.Setting.key == "admin_paused"
                         )
                     )
-                    assert still_unpaused is not None
-                    assert still_unpaused.value == "false"
+                    assert still_unchanged is not None
+                    assert still_unchanged.value == initial_value
                     assert observer.query(models.AuditLog).filter(
-                        models.AuditLog.event_type == "ADMIN_PAUSE"
+                        models.AuditLog.event_type == audit_event
                     ).count() == 0
             finally:
                 # Always release the row lock, including on test failures.
@@ -232,14 +252,15 @@ def test_real_admin_pause_endpoint_waits_for_shared_settings_lock(client, db):
             response = future.result(timeout=12)
 
     assert response.status_code == 200, response.text
-    assert response.json()["admin_paused"] is True
+    assert response.json()["admin_paused"] is (action == "pause")
     with SessionLocal() as check:
         setting = check.scalar(
             select(models.Setting).where(models.Setting.key == "admin_paused")
         )
-        assert setting is not None and setting.value == "true"
+        assert setting is not None and setting.value == final_value
         assert check.query(models.AuditLog).filter(
-            models.AuditLog.event_type == "ADMIN_PAUSE"
+            models.AuditLog.event_type == audit_event
         ).count() == 1
+        assert check.query(models.AuditLog).count() == 1
         assert check.query(models.Command).count() == 0
         assert check.query(models.Execution).count() == 0
