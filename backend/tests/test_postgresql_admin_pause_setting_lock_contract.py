@@ -180,20 +180,32 @@ def test_real_admin_pause_endpoint_waits_for_shared_settings_lock(client, db):
                     while monotonic() < deadline:
                         waiting = observer.execute(
                             sql_text(
-                                "SELECT pid, pg_blocking_pids(pid) "
+                                "SELECT pid, query, pg_blocking_pids(pid) "
                                 "FROM pg_stat_activity "
                                 "WHERE datname = current_database() "
-                                "AND state = 'active' "
-                                "AND query ILIKE 'UPDATE settings SET%'"
+                                "AND pid <> pg_backend_pid()"
                             )
                         ).all()
-                        if any(reader_pid in blockers for _, blockers in waiting):
+                        # The SQL text need not *start* with UPDATE: drivers
+                        # may include statement prefixes. Keep the actual
+                        # blocked-settings-writer assertion, not a timing guess.
+                        blocked = [
+                            (pid, query)
+                            for pid, query, blockers in waiting
+                            if reader_pid in blockers
+                        ]
+                        if any(
+                            "update" in (query or "").lower()
+                            and "settings" in (query or "").lower()
+                            for _, query in blocked
+                        ):
                             break
                         sleep(0.05)
                     else:
                         pytest.fail(
                             "Real /admin/pause UPDATE was not observed blocked "
-                            "by the FOR SHARE settings reader"
+                            "by the FOR SHARE settings reader; "
+                            f"blocked queries: {[(pid, str(query)[:160]) for pid, query in blocked]}"
                         )
 
                     assert not future.done(), (
