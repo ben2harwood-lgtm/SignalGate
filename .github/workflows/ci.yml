@@ -32,7 +32,7 @@ jobs:
         run: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
       - name: Run backend tests
         working-directory: backend
-        run: python -m pytest -q -rx
+        run: python -m pytest -q -rx --xfail-tb
       - name: Exact-commit broker-free rehearsal (not broker acceptance)
         run: |
           python scripts/run_broker_free_rehearsal.py \
@@ -89,7 +89,7 @@ jobs:
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
       - name: Run full backend suite on PostgreSQL
         working-directory: backend
-        run: python -m pytest -q -rx
+        run: python -m pytest -q -rx --xfail-tb
 
   static-security:
     runs-on: ubuntu-latest
