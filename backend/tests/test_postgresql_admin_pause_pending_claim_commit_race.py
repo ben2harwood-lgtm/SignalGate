@@ -156,3 +156,141 @@ def test_committed_admin_pause_cannot_overtake_command_claim_postgresql(
             "Admin pause committed before the held COMMAND_SENT_TO_EA claim "
             "transaction, but that old claim committed afterwards"
         )
+
+
+class _ClaimOvertookUncommittedPause(AssertionError):
+    """EA command claim committed after a pause writer already locked the row."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_ClaimOvertookUncommittedPause,
+    reason=(
+        "RELEASE HOLD: an EA claim starting after a pause writer locks the "
+        "settings row must wait for that pause commit, then refuse delivery"
+    ),
+)
+def test_paused_settings_writer_blocks_later_command_claim(client, db):
+    """Inverse PostgreSQL race: pause writer owns row BEFORE EA claim starts.
+
+    Unlike the earlier claim-first case, this holds the settings UPDATE
+    uncommitted while the independent EA claim begins. The intended reader
+    FOR SHARE must wait on the writer; once the writer commits 'true',
+    the EA poll must see pause and leave the command PENDING. A strict
+    XFAIL records only the current unsafe command delivery; scheduling
+    errors, unexpected exceptions and execution side effects fail CI.
+    Synthetic/local database sessions only; no EA or broker is contacted.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires two independent PostgreSQL transactions")
+
+    from time import monotonic, sleep
+    from sqlalchemy import text as sql_text
+
+    user = register_user(client, "990004")
+    signal = create_signal(client, VALID)
+    response = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": user["telegram_user_id"]},
+    )
+    assert response.status_code == 200
+    assert response.json()["result"] == "APPROVED"
+    command_id = response.json()["command_id"]
+
+    claim_query_attempted = Event()
+    claim_pids: list[int] = []
+
+    def claim_after_pause_writer():
+        with SessionLocal() as session:
+            conn = session.connection()
+            conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            claim_pids.append(
+                conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
+            )
+
+            def observe_select(_conn, _cursor, statement, _params, _ctx, _many):
+                lowered = statement.lstrip().lower()
+                if lowered.startswith("select") and (
+                    "settings" in lowered or "commands" in lowered
+                ):
+                    claim_query_attempted.set()
+
+            event.listen(conn, "before_cursor_execute", observe_select)
+            command = crud.get_pending_command_for_user(session, user["id"])
+            session.commit()
+            return command.id if command is not None else None
+
+    with SessionLocal() as pause_writer:
+        pause_conn = pause_writer.connection()
+        pause_conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+        pause_pid = pause_conn.exec_driver_sql(
+            "SELECT pg_backend_pid()"
+        ).scalar_one()
+        current = pause_writer.scalar(
+            select(models.Setting).where(models.Setting.key == "admin_paused")
+        )
+        assert current is not None and current.value == "false"
+        # This real UPDATE holds a PostgreSQL row lock before the EA reader
+        # starts. Do not add an audit until after claim coordination:
+        # audit advisory locks would mask the settings-row race being tested.
+        crud.set_setting(pause_writer, "admin_paused", "true")
+
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            claim_future = workers.submit(claim_after_pause_writer)
+            blocked_on_pause = False
+            try:
+                assert claim_query_attempted.wait(timeout=8), (
+                    "EA claim never attempted its first settings/commands SELECT"
+                )
+                with SessionLocal() as observer:
+                    deadline = monotonic() + 2.0
+                    while monotonic() < deadline:
+                        observer.execute(sql_text("SELECT pg_stat_clear_snapshot()"))
+                        blockers = observer.scalar(
+                            sql_text("SELECT pg_blocking_pids(:claim_pid)"),
+                            {"claim_pid": claim_pids[0]},
+                        )
+                        if pause_pid in blockers:
+                            blocked_on_pause = True
+                            break
+                        if claim_future.done():
+                            break
+                        sleep(0.05)
+                early_delivery = claim_future.done()
+                if not early_delivery:
+                    assert blocked_on_pause, (
+                        "EA claim was not observed waiting for the settings "
+                        "row locked by the earlier pause writer"
+                    )
+            finally:
+                # Commit/release the pause row even when an assertion fails.
+                pause_writer.commit()
+            claimed_id = claim_future.result(timeout=15)
+
+    with SessionLocal() as check:
+        pause_row = check.scalar(
+            select(models.Setting).where(models.Setting.key == "admin_paused")
+        )
+        command = check.get(models.Command, command_id)
+        assert pause_row is not None and pause_row.value == "true"
+        assert command is not None
+        sent_audits = check.query(models.AuditLog).filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id == command_id,
+        ).count()
+        executions = check.query(models.Execution).count()
+
+    assert executions == 0  # Never conceal this failure inside an XFAIL.
+    if early_delivery and claimed_id == command_id:
+        assert command.status == "SENT_TO_EA"
+        assert sent_audits == 1
+        raise _ClaimOvertookUncommittedPause(
+            "EA claim delivered while earlier admin pause UPDATE held its "
+            "settings-row lock; pause committed afterward"
+        )
+
+    assert blocked_on_pause
+    assert claimed_id is None
+    assert command.status == "PENDING"
+    assert sent_audits == 0
