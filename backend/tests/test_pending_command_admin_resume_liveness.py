@@ -6,6 +6,7 @@ liveness on synthetic demo data; it is not an MT5 or broker receipt.
 """
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
 
 from app import models
@@ -17,7 +18,8 @@ from .conftest import ADMIN_HEADERS, EA_HEADERS, create_signal, register_user
 VALID = "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363"
 
 
-def test_approved_pending_command_delivered_once_after_admin_resume(client):
+@pytest.mark.parametrize("before_resume", ("paused", "missing", "invalid"))
+def test_approved_pending_command_delivered_once_after_admin_resume(client, before_resume):
     """YES -> pause -> resume -> one poll claim, with no invented execution."""
     user = register_user(client, "990004")
     signal = create_signal(client, VALID)
@@ -39,6 +41,34 @@ def test_approved_pending_command_delivered_once_after_admin_resume(client):
         command = session.get(models.Command, command_id)
         assert row is not None and row.value == "true"
         assert command is not None and command.status == "PENDING"
+
+    # Recovery liveness is essential to a future fail-closed poll guard: even
+    # if the global pause record goes missing or becomes invalid, an explicit
+    # administrator resume must restore a trusted unpaused record without
+    # consuming or duplicating the already-approved command.
+    # Do not poll while the setting is untrusted: that known unsafe behaviour
+    # is covered by the separate strict-XFAIL negative regression.
+    if before_resume != "paused":
+        with SessionLocal() as session:
+            row = session.scalar(
+                select(models.Setting).where(models.Setting.key == "admin_paused")
+            )
+            assert row is not None and row.value == "true"
+            if before_resume == "missing":
+                session.delete(row)
+            else:
+                row.value = "not-a-boolean"
+            session.commit()
+        with SessionLocal() as session:
+            row = session.scalar(
+                select(models.Setting).where(models.Setting.key == "admin_paused")
+            )
+            if before_resume == "missing":
+                assert row is None
+            else:
+                assert row is not None and row.value == "not-a-boolean"
+            command = session.get(models.Command, command_id)
+            assert command is not None and command.status == "PENDING"
 
     # No EA poll while paused: that separate known unsafe path is covered by
     # test_pending_command_pause_after_approval_hold.py (strict XFAIL).
