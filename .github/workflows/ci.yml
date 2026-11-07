@@ -440,6 +440,115 @@ jobs:
           print("PASS: populated canonical 0010→0011→0010→0011; "
                 "synthetic scopes/data, non-null epochs, FK/index preservation")
           PY
+      - name: Prove PostgreSQL 0011 migration lock timeout and clean retry
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import time
+          from urllib.parse import urlparse
+
+          import psycopg2
+
+          url = os.environ["DATABASE_URL"]
+          target = urlparse(url)
+          assert os.environ.get("CI") == "true"
+          assert (target.scheme, target.hostname, target.path) == (
+              "postgresql", "127.0.0.1", "/signalgate"
+          ), "Refuse migration testing outside the disposable loopback CI database"
+
+          def migrate(*args, env=None):
+              return subprocess.run(
+                  ["alembic", "-c", "alembic.ini", *args],
+                  check=env is None, env=env, capture_output=env is not None,
+                  text=env is not None, timeout=20,
+              )
+
+          def query(sql):
+              with psycopg2.connect(url) as db:
+                  with db.cursor() as cur:
+                      cur.execute(sql)
+                      return cur.fetchall()
+
+          rows_sql = (
+              "SELECT id, provider_id, feed_id, status "
+              "FROM provider_source_bindings "
+              "WHERE id LIKE 'BND-CI-EPOCH-%' ORDER BY id"
+          )
+          migrate("downgrade", "20260919_0010")
+          original = query(rows_sql)
+          assert len(original) == 2 and original[0][1] != original[1][1]
+          assert query("SELECT version_num FROM alembic_version") == [
+              ("20260919_0010",)
+          ]
+          assert query(
+              "SELECT column_name FROM information_schema.columns "
+              "WHERE table_schema='public' AND table_name='provider_source_bindings' "
+              "AND column_name='authorization_epoch'"
+          ) == []
+
+          # An ordinary reader holds ACCESS SHARE until transaction end.
+          # PostgreSQL ADD COLUMN requires ACCESS EXCLUSIVE: the migration
+          # must time out cleanly rather than silently yielding a partial schema.
+          holder = psycopg2.connect(url)
+          try:
+              with holder.cursor() as cur:
+                  cur.execute(
+                      "SELECT id FROM provider_source_bindings "
+                      "WHERE id LIKE 'BND-CI-EPOCH-%'"
+                  )
+                  assert len(cur.fetchall()) == 2
+              limited = dict(
+                  os.environ,
+                  PGOPTIONS="-c lock_timeout=500ms -c statement_timeout=5000ms",
+              )
+              started = time.monotonic()
+              attempt = migrate("upgrade", "head", env=limited)
+              elapsed = time.monotonic() - started
+              log = (attempt.stdout + attempt.stderr).lower()
+              assert attempt.returncode != 0, "Contended migration unexpectedly succeeded"
+              assert "lock timeout" in log, (
+                  "Migration failed for a reason other than PostgreSQL lock timeout: "
+                  + log[-1800:]
+              )
+              assert elapsed < 15, "Lock timeout did not bound migration wait"
+          finally:
+              holder.rollback()
+              holder.close()
+
+          assert query("SELECT version_num FROM alembic_version") == [
+              ("20260919_0010",)
+          ], "Failed DDL advanced the Alembic revision"
+          assert query(rows_sql) == original, "Failed DDL changed synthetic tenant data"
+          assert not query(
+              "SELECT column_name FROM information_schema.columns "
+              "WHERE table_schema='public' AND table_name='provider_source_bindings' "
+              "AND column_name='authorization_epoch'"
+          ), "Lock timeout left a partial migration"
+
+          migrate("upgrade", "head")
+          migrated = query(
+              "SELECT id, provider_id, feed_id, status, authorization_epoch "
+              "FROM provider_source_bindings "
+              "WHERE id LIKE 'BND-CI-EPOCH-%' ORDER BY id"
+          )
+          assert [row[:4] for row in migrated] == original
+          epochs = [row[4] for row in migrated]
+          assert len(set(epochs)) == 2
+          assert all(
+              isinstance(epoch, str) and re.fullmatch(r"[0-9a-f]{32}", epoch)
+              for epoch in epochs
+          )
+          assert query("SELECT version_num FROM alembic_version") == [
+              ("20261101_0011",)
+          ]
+          print(
+              f"PASS: PostgreSQL 0011 lock timeout in {elapsed:.2f}s; "
+              "rollback preserved tenants/schema; clean retry migrated source epochs"
+          )
+          PY
       - name: Verify historical baseline shape
         run: |
           cd backend
