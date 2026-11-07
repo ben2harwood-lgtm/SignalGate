@@ -322,6 +322,11 @@ def test_locked_feed_pause_allows_same_provider_sibling_claim(client, db):
     feed_b = crud.create_feed(
         db, provider, "Sibling active feed", "pg-feed-sibling-source"
     )
+    # create_feed appends an audit and holds PostgreSQL's transaction-scoped
+    # audit-chain advisory lock. Release it before register_user opens an HTTP
+    # transaction that must append its own audit; otherwise this test deadlocks
+    # against its own fixture session before either race worker starts.
+    db.commit()
     user_b = register_user(
         client, "990095", "synthetic_sibling_liveness", "Synthetic B"
     )
