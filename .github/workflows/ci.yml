@@ -265,6 +265,127 @@ jobs:
           print("audit hash-chain backfill verified")
           PY
           alembic -c alembic.ini check
+      - name: Prove populated 0010 to 0011 PostgreSQL source epoch migration
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          from urllib.parse import urlparse
+          import psycopg2
+
+          url = os.environ["DATABASE_URL"]
+          target = urlparse(url)
+          assert os.environ.get("CI") == "true"
+          assert (target.scheme, target.hostname, target.path) == (
+              "postgresql", "127.0.0.1", "/signalgate"
+          ), "Only the disposable GitHub CI PostgreSQL database is allowed"
+
+          def migrate(*args):
+              subprocess.run(["alembic", "-c", "alembic.ini", *args], check=True)
+
+          def query(sql):
+              with psycopg2.connect(url) as connection:
+                  with connection.cursor() as cursor:
+                      cursor.execute(sql)
+                      return cursor.fetchall()
+
+          base_columns = (
+              "id, provider_id, feed_id, status, source_type, external_identity"
+          )
+          target_rows = (
+              "FROM provider_source_bindings "
+              "WHERE id LIKE 'BND-CI-EPOCH-%' ORDER BY id"
+          )
+          migrate("downgrade", "20260919_0010")
+          assert query("SELECT version_num FROM alembic_version") == [
+              ("20260919_0010",)
+          ]
+          assert not query(
+              "SELECT column_name FROM information_schema.columns "
+              "WHERE table_schema='public' AND table_name='provider_source_bindings' "
+              "AND column_name='authorization_epoch'"
+          )
+
+          with psycopg2.connect(url) as connection:
+              with connection.cursor() as cursor:
+                  cursor.execute(
+                      "INSERT INTO organizations "
+                      "(id, name, slug, status, created_at, updated_at) "
+                      "VALUES ('ORG-CI-EPOCH', 'Synthetic Epoch Org', "
+                      "'ci-epoch', 'ACTIVE', NOW(), NOW())"
+                  )
+                  cursor.execute(
+                      "INSERT INTO providers "
+                      "(id, organization_id, name, slug, status, paused, "
+                      "created_at, updated_at) VALUES "
+                      "('PRV-CI-EPOCH', 'ORG-CI-EPOCH', 'Synthetic Provider', "
+                      "'ci-epoch', 'ACTIVE', TRUE, NOW(), NOW())"
+                  )
+                  cursor.execute(
+                      "INSERT INTO feeds "
+                      "(id, provider_id, name, source_namespace, status, paused, "
+                      "created_at, updated_at) VALUES "
+                      "('FED-CI-EPOCH', 'PRV-CI-EPOCH', 'Synthetic Feed', "
+                      "'CI-EPOCH', 'ACTIVE', TRUE, NOW(), NOW())"
+                  )
+                  cursor.execute(
+                      "INSERT INTO provider_source_bindings "
+                      "(id, provider_id, feed_id, source_type, external_identity, "
+                      "status, created_at, updated_at) VALUES "
+                      "('BND-CI-EPOCH-1', 'PRV-LEGACY', 'FED-LEGACY', "
+                      "'TELEGRAM', 'ci-epoch-10001', 'ACTIVE', NOW(), NOW()), "
+                      "('BND-CI-EPOCH-2', 'PRV-CI-EPOCH', 'FED-CI-EPOCH', "
+                      "'TELEGRAM', 'ci-epoch-20002', 'REVOKED', NOW(), NOW())"
+                  )
+          before = query(f"SELECT {base_columns} {target_rows}")
+          assert len(before) == 2 and before[0][1] != before[1][1]
+          migrate("upgrade", "head")
+          after = query(
+              f"SELECT {base_columns}, authorization_epoch {target_rows}"
+          )
+          assert [row[:6] for row in after] == before
+          epochs = [row[6] for row in after]
+          assert all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value)
+                     for value in epochs)
+          assert len(set(epochs)) == 2
+          assert query(
+              "SELECT is_nullable FROM information_schema.columns "
+              "WHERE table_schema='public' AND table_name='provider_source_bindings' "
+              "AND column_name='authorization_epoch'"
+          ) == [("NO",)]
+          constraints = dict(query(
+              "SELECT contype, count(*) FROM pg_constraint "
+              "WHERE conrelid='public.provider_source_bindings'::regclass "
+              "GROUP BY contype"
+          ))
+          assert constraints["f"] == 2 and constraints["u"] == 1
+          assert query(
+              "SELECT count(*) FROM pg_indexes WHERE schemaname='public' "
+              "AND tablename='provider_source_bindings' AND indexname IN "
+              "('ix_provider_source_bindings_provider_id', "
+              "'ix_provider_source_bindings_feed_id', "
+              "'ix_provider_source_bindings_external_identity')"
+          ) == [(3,)]
+
+          migrate("downgrade", "20260919_0010")
+          assert query(f"SELECT {base_columns} {target_rows}") == before
+          assert not query(
+              "SELECT column_name FROM information_schema.columns "
+              "WHERE table_schema='public' AND table_name='provider_source_bindings' "
+              "AND column_name='authorization_epoch'"
+          )
+          migrate("upgrade", "head")
+          retried = query(
+              f"SELECT {base_columns}, authorization_epoch {target_rows}"
+          )
+          assert [row[:6] for row in retried] == before
+          assert all(re.fullmatch(r"[0-9a-f]{32}", row[6]) for row in retried)
+          assert all(retried[i][6] != epochs[i] for i in range(2))
+          print("PASS: populated canonical 0010→0011→0010→0011; "
+                "synthetic scopes/data, non-null epochs, FK/index preservation")
+          PY
       - name: Verify historical baseline shape
         run: |
           cd backend
