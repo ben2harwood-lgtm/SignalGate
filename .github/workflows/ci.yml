@@ -369,7 +369,8 @@ jobs:
               return "0" * 31 + "1"
 
           revision.secrets = SimpleNamespace(token_hex=interrupted_epoch)
-          engine = sa.create_engine(url)
+          # Hosted CI includes psycopg2, not the newer psycopg DBAPI.
+          engine = sa.create_engine(url.replace("postgresql://", "postgresql+psycopg2://", 1))
           try:
               try:
                   with engine.begin() as connection:
