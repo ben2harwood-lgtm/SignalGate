@@ -97,13 +97,18 @@ jobs:
         # Bound pytest itself at five minutes so even if GitHub's redirected
         # job-log blob is missing, an always-uploaded short-lived artifact
         # retains the last named test and any native 45-second traceback.
-        # pipefail ensures a timeout or pytest failure still fails this gate.
+        # Avoid tee in the timeout pipeline: detached descendants can keep
+        # the pipe open after pytest is killed, preventing the step from ending
+        # and blocking the always-uploaded diagnostic artifact.
+        # Capture to a finite file, print it, and preserve the exact exit status.
         run: |
-          set -o pipefail
+          pytest_exit=0
           timeout --signal=TERM --kill-after=10s 5m \
             python -m pytest -vv -rx --xfail-tb \
               -o faulthandler_timeout=45 -o faulthandler_exit_on_timeout=true \
-            2>&1 | tee pg-pytest-full.log
+            > pg-pytest-full.log 2>&1 || pytest_exit=$?
+          cat pg-pytest-full.log
+          exit "$pytest_exit"
       - name: Preserve PostgreSQL diagnostic output on failure or success
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
