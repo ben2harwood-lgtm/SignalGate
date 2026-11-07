@@ -89,9 +89,10 @@ jobs:
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
       - name: Run full backend suite on PostgreSQL
         working-directory: backend
-        # Keep the complete suite and 15-minute gate; print the running test
-        # so a stalled PostgreSQL execution can be identified from CI logs.
-        run: python -m pytest -vv -rx --xfail-tb
+        # Keep the full suite and 15-minute gate. Name the running test, and
+        # fail with a thread dump rather than silently hanging on a deadlock.
+        # This is diagnostics, not a relaxation of expected-failure assertions.
+        run: python -m pytest -vv -rx --xfail-tb -o faulthandler_timeout=45 -o faulthandler_exit_on_timeout=true
 
   static-security:
     runs-on: ubuntu-latest
