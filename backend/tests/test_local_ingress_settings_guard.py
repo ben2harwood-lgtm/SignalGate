@@ -415,9 +415,32 @@ def test_local_ingress_refuses_forwarded_proxy_metadata_despite_loopback_host(
         and "LOCAL_DEMO_INGRESS_REFUSED" in record.getMessage()
     ]
     assert len(events) == 1
-    logged = json.dumps(events[0])
-    assert proxy_value not in logged
+    event = events[0]
+    # Keep a strict allowlist: no forwarding header or its original value may
+    # become a log field. A fresh random request_id (or timing measurement)
+    # can coincidentally contain short header values such as "443", however,
+    # without having copied them from the request.
+    assert set(event) == {
+        "event", "request_id", "method", "path", "status",
+        "latency_ms", "security_event",
+    }
+    assert event["event"] == "http_request"
+    assert event["method"] == "GET"
+    assert event["path"] == "[local-ingress-refused]"
+    assert event["status"] == 403
+    assert event["security_event"] == "LOCAL_DEMO_INGRESS_REFUSED"
+    assert event["request_id"] == response.headers["X-Request-Id"]
+    logged = json.dumps(event)
+    assert proxy_header.lower() not in logged.lower()
     assert "untrusted-proxy-marker" not in logged
+    # Inspect only fields which could contain a forwarded header. The random
+    # request ID and elapsed time cannot be treated as evidence of echoing.
+    privacy_fields = {
+        key: value
+        for key, value in event.items()
+        if key not in {"request_id", "latency_ms"}
+    }
+    assert proxy_value not in json.dumps(privacy_fields)
 
 
 def test_hosted_routes_do_not_apply_local_proxy_metadata_refusal(client, monkeypatch):
