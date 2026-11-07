@@ -87,6 +87,16 @@ jobs:
             backend/requirements-hosted.txt
       - name: Install hosted backend dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
+      # Isolate the new sibling-feed liveness witness before the full suite.
+      # If it passes alone but the full run stalls, fixture ordering matters;
+      # if it fails alone, the 45-second stack dump identifies the blocker.
+      # No test is skipped or xfailed; the mandatory full matrix still follows.
+      - name: Diagnose standalone sibling-feed PostgreSQL liveness
+        working-directory: backend
+        run: >-
+          python -m pytest -vv -s -rx --xfail-tb
+          -o faulthandler_timeout=45 -o faulthandler_exit_on_timeout=true
+          tests/test_postgresql_postapproval_feed_pause_pending_claim_race.py::test_locked_feed_pause_allows_same_provider_sibling_claim
       - name: Run full backend suite on PostgreSQL
         working-directory: backend
         # Keep the full suite and 15-minute gate. Name the running test, and
