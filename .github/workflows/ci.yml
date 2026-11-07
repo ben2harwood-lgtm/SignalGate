@@ -549,6 +549,105 @@ jobs:
               "rollback preserved tenants/schema; clean retry migrated source epochs"
           )
           PY
+      - name: Prove populated PostgreSQL 0011 epoch rotation at synthetic volume
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import time
+          from urllib.parse import urlparse
+
+          import psycopg2
+
+          url = os.environ["DATABASE_URL"]
+          target = urlparse(url)
+          assert os.environ.get("CI") == "true"
+          assert (target.scheme, target.hostname, target.path) == (
+              "postgresql", "127.0.0.1", "/signalgate"
+          ), "Refuse volume test outside the disposable loopback CI database"
+
+          def migrate(*args):
+              subprocess.run(
+                  ["alembic", "-c", "alembic.ini", *args],
+                  check=True, timeout=120,
+              )
+
+          def query(sql):
+              with psycopg2.connect(url) as db:
+                  with db.cursor() as cur:
+                      cur.execute(sql)
+                      return cur.fetchall()
+
+          original_sql = (
+              "SELECT id, provider_id, feed_id, status "
+              "FROM provider_source_bindings "
+              "WHERE id LIKE 'BND-CI-VOLUME-%' ORDER BY id"
+          )
+          migrated_sql = original_sql.replace(
+              "status FROM", "status, authorization_epoch FROM"
+          )
+          migrate("downgrade", "20260919_0010")
+          assert query("SELECT version_num FROM alembic_version") == [
+              ("20260919_0010",)
+          ]
+          assert query(original_sql) == []
+          # The provider/feed were created earlier in this same isolated CI job.
+          # Never generate production identifiers or use a network/broker.
+          with psycopg2.connect(url) as db:
+              with db.cursor() as cur:
+                  cur.execute(
+                      "INSERT INTO provider_source_bindings "
+                      "(id, provider_id, feed_id, source_type, external_identity, "
+                      "status, created_at, updated_at) "
+                      "SELECT 'BND-CI-VOLUME-' || lpad(n::text, 5, '0'), "
+                      "'PRV-CI-EPOCH', 'FED-CI-EPOCH', 'TELEGRAM', "
+                      "'ci-volume-' || n::text, 'ACTIVE', NOW(), NOW() "
+                      "FROM generate_series(1, 1200) AS n"
+                  )
+          original = query(original_sql)
+          assert len(original) == 1200
+          assert all(row[1:4] == (
+              "PRV-CI-EPOCH", "FED-CI-EPOCH", "ACTIVE"
+          ) for row in original)
+
+          began = time.monotonic()
+          migrate("upgrade", "head")
+          first_seconds = time.monotonic() - began
+          first = query(migrated_sql)
+          assert [row[:4] for row in first] == original
+          epochs = [row[4] for row in first]
+          assert len(set(epochs)) == len(original), "Epoch collision in fixture"
+          assert all(
+              isinstance(epoch, str) and re.fullmatch(r"[0-9a-f]{32}", epoch)
+              for epoch in epochs
+          )
+          assert query("SELECT version_num FROM alembic_version") == [
+              ("20261101_0011",)
+          ]
+          migrate("downgrade", "20260919_0010")
+          assert query(original_sql) == original
+          began = time.monotonic()
+          migrate("upgrade", "head")
+          second_seconds = time.monotonic() - began
+          second = query(migrated_sql)
+          assert [row[:4] for row in second] == original
+          assert len({row[4] for row in second}) == len(original)
+          assert all(
+              isinstance(row[4], str)
+              and re.fullmatch(r"[0-9a-f]{32}", row[4])
+              and row[4] != first[index][4]
+              for index, row in enumerate(second)
+          )
+          print(
+              "PASS: 1200 synthetic bindings retained tenant ownership, "
+              "status and distinct rotating epochs across full-schema "
+              f"PostgreSQL 0010→0011→0010→0011; "
+              f"upgrade timings {first_seconds:.2f}s/{second_seconds:.2f}s "
+              "(CI fixture, NOT production migration budget)"
+          )
+          PY
       - name: Verify historical baseline shape
         run: |
           cd backend
