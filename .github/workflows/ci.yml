@@ -99,10 +99,25 @@ jobs:
           tests/test_postgresql_postapproval_feed_pause_pending_claim_race.py::test_locked_feed_pause_allows_same_provider_sibling_claim
       - name: Run full backend suite on PostgreSQL
         working-directory: backend
-        # Keep the full suite and 15-minute gate. Name the running test, and
-        # fail with a thread dump rather than silently hanging on a deadlock.
-        # This is diagnostics, not a relaxation of expected-failure assertions.
-        run: python -m pytest -vv -rx --xfail-tb -o faulthandler_timeout=45 -o faulthandler_exit_on_timeout=true
+        # Keep the entire mandatory suite and existing 15-minute job cap.
+        # Bound pytest itself at ten minutes so even if GitHub's redirected
+        # job-log blob is missing, an always-uploaded short-lived artifact
+        # retains the last named test and any native 45-second traceback.
+        # pipefail ensures a timeout or pytest failure still fails this gate.
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=10s 10m \
+            python -m pytest -vv -rx --xfail-tb \
+              -o faulthandler_timeout=45 -o faulthandler_exit_on_timeout=true \
+            2>&1 | tee pg-pytest-full.log
+      - name: Preserve PostgreSQL diagnostic output on failure or success
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-backend-pytest-full
+          path: backend/pg-pytest-full.log
+          if-no-files-found: warn
+          retention-days: 2
 
   static-security:
     runs-on: ubuntu-latest
