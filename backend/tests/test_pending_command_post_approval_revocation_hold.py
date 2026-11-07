@@ -140,3 +140,111 @@ def test_approved_provider_command_not_delivered_after_revocation(
     # Becomes a normal passing safety requirement only after the owner fix.
     assert command.status == "PENDING"
     assert sent_audits == 0
+
+
+@pytest.mark.parametrize(
+    "revoked_scope",
+    (
+        "provider_paused",
+        "feed_paused",
+        "provider_inactive",
+        "feed_inactive",
+        "subscription_inactive",
+        "account_inactive",
+    ),
+)
+def test_postapproval_revocation_keeps_other_provider_pending_poll_available(
+    client, db, revoked_scope
+):
+    """Passing isolation control: revoking A must never disable unrelated B.
+
+    Two independent synthetic providers, feeds, users, subscriptions and
+    trading accounts have already received explicit YES approvals. The
+    revocation belongs only to provider A. Poll B, not A: the separate
+    strict-XFAIL witness above still tracks the unsafe delivery of A.
+
+    This must stay a normal PASS when the execution owner adds the required
+    fail-closed eligibility checks. A global pause-on-any-revocation repair
+    would incorrectly fail this test.
+    """
+    provider_a, feed_a, key_a = _provider(db, f"revocation-isolation-a-{revoked_scope}")
+    provider_b, feed_b, key_b = _provider(db, f"revocation-isolation-b-{revoked_scope}")
+    assert provider_a.organization_id != provider_b.organization_id
+    user_a = register_user(
+        client, "990091", "synthetic_isolation_a", "Synthetic A"
+    )
+    user_b = register_user(
+        client, "990092", "synthetic_isolation_b", "Synthetic B"
+    )
+    subscription_a, account_a = crud.subscribe_user_to_feed(
+        db, provider_a, feed_a, db.get(models.User, user_a["id"])
+    )
+    crud.subscribe_user_to_feed(
+        db, provider_b, feed_b, db.get(models.User, user_b["id"])
+    )
+    db.commit()
+
+    command_ids = []
+    for provider, feed, key, user in (
+        (provider_a, feed_a, key_a, user_a),
+        (provider_b, feed_b, key_b, user_b),
+    ):
+        created = client.post(
+            "/signals/create",
+            headers=_headers(provider, key),
+            json={"feed_id": feed.id, "raw_text": VALID},
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["parser_status"] == "VALID"
+        approved = client.post(
+            f"/signals/{created.json()['id']}/approve",
+            json={"telegram_user_id": user["telegram_user_id"]},
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["result"] == "APPROVED", approved.text
+        command_ids.append(approved.json()["command_id"])
+    command_a_id, command_b_id = command_ids
+    assert command_a_id != command_b_id
+
+    if revoked_scope == "provider_paused":
+        provider_a.paused = True
+    elif revoked_scope == "feed_paused":
+        feed_a.paused = True
+    elif revoked_scope == "provider_inactive":
+        provider_a.status = "INACTIVE"
+    elif revoked_scope == "feed_inactive":
+        feed_a.status = "INACTIVE"
+    elif revoked_scope == "subscription_inactive":
+        subscription_a.status = "INACTIVE"
+    else:
+        account_a.status = "INACTIVE"
+    db.commit()
+    db.expire_all()
+    assert db.get(models.Command, command_a_id).status == "PENDING"
+    assert db.get(models.Command, command_b_id).status == "PENDING"
+    db.rollback()  # Release fixture read transaction before isolated API poll.
+
+    polled = client.get(
+        "/commands/pending",
+        headers=EA_HEADERS,
+        params={"user_id": user_b["id"]},
+    )
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["command"]["command_id"] == command_b_id
+
+    db.expire_all()
+    assert db.get(models.Command, command_a_id).status == "PENDING"
+    assert db.get(models.Command, command_b_id).status == "SENT_TO_EA"
+    sent_counts = {
+        command_id: (
+            db.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count()
+        )
+        for command_id in (command_a_id, command_b_id)
+    }
+    assert sent_counts == {command_a_id: 0, command_b_id: 1}
+    assert db.query(models.Execution).count() == 0
