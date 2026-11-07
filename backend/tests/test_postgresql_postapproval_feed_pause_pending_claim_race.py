@@ -147,3 +147,160 @@ def test_feed_pause_cannot_overtake_pending_command_claim(client, db, monkeypatc
             "Feed pause committed while the approved command's SENT audit "
             "was held, yet that older command claim committed afterward"
         )
+
+
+class _PauseWriterFirstUnsafeDelivery(AssertionError):
+    """EA claim crossed an uncommitted feed pause and delivered the command."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_PauseWriterFirstUnsafeDelivery,
+    reason=(
+        "RELEASE HOLD: EA claim can deliver while another PostgreSQL "
+        "transaction has already updated the feed row to paused"
+    ),
+)
+def test_feed_pause_writer_first_blocks_or_refuses_pending_claim(client, db):
+    """Hold the feed pause UPDATE first; an EA claim may not overtake it.
+
+    The first connection has flushed paused=True but has not committed, and
+    therefore owns the PostgreSQL feed row lock. The second connection polls
+    an already-YES-approved PENDING command. A safe claim either refuses
+    immediately or waits on that feed lock, observes the committed pause and
+    returns None. A delivered command is a strict expected-failure witness,
+    never a passing safety control. No actual broker or EA is used.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL writer and claimer sessions")
+
+    provider, feed, raw_key = _provider(db, "pg-feed-pause-writer-first")
+    user = register_user(client, "990094", "synthetic_writer_first", "Synthetic")
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, user["id"])
+    )
+    db.commit()
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, raw_key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["parser_status"] == "VALID"
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": user["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED", approved.text
+    command_id = approved.json()["command_id"]
+    feed_id = feed.id
+    user_id = user["id"]
+    db.rollback()
+
+    with SessionLocal() as verify_before:
+        assert verify_before.get(models.Command, command_id).status == "PENDING"
+        assert verify_before.get(models.Feed, feed_id).paused is False
+
+    pause_flushed = Event()
+    release_pause = Event()
+    claim_started = Event()
+    claim_finished = Event()
+    pause_pid = []
+    claim_pid = []
+
+    def hold_paused_feed_row():
+        with SessionLocal() as session:
+            conn = session.connection()
+            conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            pause_pid.append(conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one())
+            persisted_feed = session.get(models.Feed, feed_id)
+            assert persisted_feed is not None and persisted_feed.paused is False
+            persisted_feed.paused = True
+            session.flush()  # Row UPDATE and lock occur before the EA poll.
+            pause_flushed.set()
+            assert release_pause.wait(timeout=15), "Pause writer was not released"
+            session.commit()
+            return True
+
+    def claim_while_pause_uncommitted():
+        with SessionLocal() as session:
+            conn = session.connection()
+            conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            claim_pid.append(conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one())
+            claim_started.set()
+            try:
+                claimed = crud.get_pending_command_for_user(session, user_id)
+                claimed_id = claimed.id if claimed is not None else None
+                session.commit()
+                return claimed_id
+            finally:
+                claim_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        pause_future = workers.submit(hold_paused_feed_row)
+        try:
+            assert pause_flushed.wait(timeout=8), "Pause UPDATE was never flushed"
+            claim_future = workers.submit(claim_while_pause_uncommitted)
+            assert claim_started.wait(timeout=8), "EA claim did not start"
+
+            # If the claimer does not finish immediately, prove it is waiting
+            # on this exact feed writer, not an unrelated deadlock/test stall.
+            finished_before_pause_commit = claim_finished.wait(timeout=2.0)
+            if not finished_before_pause_commit:
+                from time import sleep
+
+                blocker_seen = False
+                for _ in range(25):
+                    with SessionLocal() as observer:
+                        blockers = observer.connection().exec_driver_sql(
+                            "SELECT pg_blocking_pids(%s)", (claim_pid[0],)
+                        ).scalar_one()
+                    if pause_pid[0] in blockers:
+                        blocker_seen = True
+                        break
+                    if claim_finished.is_set():
+                        break
+                    sleep(0.05)
+                assert blocker_seen, (
+                    "Claim did not finish but PostgreSQL does not show the "
+                    "paused feed writer as a blocker"
+                )
+        finally:
+            release_pause.set()
+        assert pause_future.result(timeout=20) is True
+        claimed_id = claim_future.result(timeout=20)
+
+    with SessionLocal() as verify:
+        persisted_feed = verify.get(models.Feed, feed_id)
+        persisted_command = verify.get(models.Command, command_id)
+        assert persisted_feed is not None and persisted_feed.paused is True
+        assert persisted_command is not None
+        sent_audits = (
+            verify.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count()
+        )
+        assert verify.query(models.Execution).count() == 0
+
+        if claimed_id is not None:
+            # Raise the narrow XFAIL only after positive proof of the unsafe
+            # claimed state and persisted audit, never for fixture errors.
+            assert claimed_id == command_id
+            assert persisted_command.status == "SENT_TO_EA"
+            assert persisted_command.sent_to_ea_at is not None
+            assert sent_audits == 1
+            raise _PauseWriterFirstUnsafeDelivery(
+                "EA delivered an approved command while the same feed's "
+                "pause UPDATE was already flushed and held uncommitted; "
+                f"claim completed before pause commit: {finished_before_pause_commit}"
+            )
+
+        assert persisted_command.status == "PENDING"
+        assert persisted_command.sent_to_ea_at is None
+        assert sent_audits == 0
