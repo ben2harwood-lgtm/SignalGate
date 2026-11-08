@@ -128,9 +128,11 @@ jobs:
       # mandatory suite still stalls. Probe the 19 later modules on this same
       # synthetic PostgreSQL service to discriminate suffix-only fixture/lock
       # failures from cross-prefix interactions. Never skip the full suite.
-      # Isolate stalled 19-file PostgreSQL suffix via two bounded contiguous groups.
+      # The 19-file probe and 10-file first half stalled; isolate the PostgreSQL
+      # source/reconnect-heavy modules 6-10 first, then 1-5 and 11-19.
+      # Keep every inventory guard and the mandatory complete suite unchanged.
       # Retain mandatory full unfiltered suite, strict-XFAILs and all artifact gates.
-      - name: Probe later PostgreSQL modules 1-10 of 19
+      - name: Probe later PostgreSQL modules 6-10 of 19
         working-directory: backend
         run: |
           mapfile -t all_tests < <(
@@ -149,7 +151,27 @@ jobs:
           timeout --signal=TERM --kill-after=10s 180s \
             python -m pytest -vv -rx --xfail-tb \
               -o faulthandler_timeout=20 \
-              "${later[@]:0:10}"
+              "${later[@]:5:5}"
+      - name: Probe later PostgreSQL modules 1-5 of 19
+        working-directory: backend
+        run: |
+          mapfile -t all_tests < <(
+            find tests -maxdepth 1 -type f -name 'test_*.py' -print | LC_ALL=C sort
+          )
+          mapfile -t later < <(
+            printf '%s\n' "${all_tests[@]}" |
+              awk '$0 > "tests/test_postgresql_source_epoch_interruption_hold.py"'
+          )
+          if [ "${#all_tests[@]}" -ne 68 ] || [ "${#later[@]}" -ne 19 ] || \
+             [ "${later[0]}" != "tests/test_provider_demo_rehearsal.py" ] || \
+             [ "${later[18]}" != "tests/test_vision_extractor_failclosed.py" ]; then
+            echo "Unexpected suffix test-module inventory; refuse narrowed probe" >&2
+            exit 1
+          fi
+          timeout --signal=TERM --kill-after=10s 180s \
+            python -m pytest -vv -rx --xfail-tb \
+              -o faulthandler_timeout=20 \
+              "${later[@]:0:5}"
       - name: Probe later PostgreSQL modules 11-19 of 19
         working-directory: backend
         run: |
