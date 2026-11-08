@@ -601,3 +601,77 @@ def test_hosted_reconciliation_is_bound_to_owning_license(client):
         assert allowed.json()["status"] == "recovered"
     finally:
         crud.settings.require_license = False
+
+
+def test_hosted_ack_and_management_reject_missing_or_foreign_customer_license(client):
+    """Synthetic EA callback isolation: a shared EA key is not user authority.
+
+    The existing hosted tests cover execution reports and open-position
+    reconciliation. This adds negative coverage for the other two callback
+    endpoints, without talking to a broker or creating a real execution.
+    """
+    from app import crud, models
+    from app.database import SessionLocal
+
+    owner = register_user(client, "807")
+    other = register_user(client, "808")
+    sig = create_signal(client, VALID)
+    approval = client.post(
+        f"/signals/{sig['id']}/approve",
+        json={"telegram_user_id": "807"},
+    )
+    assert approval.status_code == 200
+    assert approval.json()["result"] == "APPROVED"
+
+    original_hosted = crud.settings.require_license
+    crud.settings.require_license = True
+    try:
+        owner_headers = {**EA_HEADERS, "X-SG-License-Key": owner["license_key"]}
+        foreign_headers = {**EA_HEADERS, "X-SG-License-Key": other["license_key"]}
+        claimed = client.get("/commands/pending", headers=owner_headers)
+        assert claimed.status_code == 200
+        command = claimed.json()["command"]
+        assert command is not None
+        cid = command["command_id"]
+
+        for headers in (EA_HEADERS, foreign_headers):
+            for endpoint, payload in (
+                ("received", {}),
+                ("management_event", {"event_type": "TP1_REACHED", "result": "PENDING"}),
+            ):
+                denied = client.post(
+                    f"/commands/{cid}/{endpoint}",
+                    json=payload,
+                    headers=headers,
+                )
+                assert denied.status_code == 403, (endpoint, denied.text)
+
+        with SessionLocal() as db:
+            assert crud.get_command(db, cid).status == "SENT_TO_EA"
+            assert (
+                db.query(models.TradeManagementEvent)
+                .filter(models.TradeManagementEvent.command_id == cid)
+                .count() == 0
+            )
+            assert (
+                db.query(models.AuditLog)
+                .filter(
+                    models.AuditLog.event_type == "COMMAND_RECEIVED_BY_EA",
+                    models.AuditLog.entity_id == cid,
+                )
+                .count() == 0
+            )
+            assert (
+                db.query(models.Execution)
+                .filter(models.Execution.command_id == cid)
+                .count() == 0
+            )
+
+        # A genuine owner credential still works; denial is tenant-specific.
+        allowed = client.post(
+            f"/commands/{cid}/received", json={}, headers=owner_headers
+        )
+        assert allowed.status_code == 200
+        assert allowed.json()["status"] == "received"
+    finally:
+        crud.settings.require_license = original_hosted
