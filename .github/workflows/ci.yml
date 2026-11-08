@@ -87,33 +87,6 @@ jobs:
             backend/requirements-hosted.txt
       - name: Install hosted backend dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
-      # Prior exact-head runs passed the contiguous 49-module prefix.
-      # The 6-10 suffix probe remained in progress when CI was cancelled;
-      # job logs redirect to BlobNotFound, and no artifact was uploaded.
-      # Do not repeatedly run the known-green prefix or add serial probes
-      # that consume the 15-minute PostgreSQL job budget before full pytest.
-      # Focus on the two provider-source modules in the stalled 6-10 group.
-      # The targeted probe is NOT release acceptance. Keep strict XFAILs.
-      - name: Diagnose provider-source PostgreSQL tests (not acceptance)
-        working-directory: backend
-        run: |
-          probe_exit=0
-          timeout --signal=TERM --kill-after=10s 180s \
-            python -m pytest -vv -rx --xfail-tb \
-              -o faulthandler_timeout=45 -o faulthandler_exit_on_timeout=true \
-              tests/test_provider_source_inactive_image_gate.py \
-              tests/test_provider_sources.py \
-            > pg-provider-source-probe.log 2>&1 || probe_exit=$?
-          cat pg-provider-source-probe.log
-          exit "$probe_exit"
-      - name: Preserve targeted provider-source PostgreSQL diagnostic
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: postgres-provider-source-probe
-          path: backend/pg-provider-source-probe.log
-          if-no-files-found: warn
-          retention-days: 2
       - name: Run full backend suite on PostgreSQL
         if: ${{ !cancelled() }}
         working-directory: backend
@@ -139,6 +112,33 @@ jobs:
         with:
           name: postgres-backend-pytest-full
           path: backend/pg-pytest-full.log
+          if-no-files-found: warn
+          retention-days: 2
+
+      # Only run the source-focused diagnostic after a mandatory full-suite
+      # failure; it must never delay or prevent the full PostgreSQL check.
+      # The preceding CI run was cancelled during this optional diagnostic,
+      # leaving mandatory PostgreSQL full-suite tests entirely unexecuted.
+      # This probe is diagnostic only, not release acceptance. Preserve XFAILs.
+      - name: Diagnose provider-source PostgreSQL tests after full-suite failure (not acceptance)
+        if: ${{ failure() && !cancelled() }}
+        working-directory: backend
+        run: |
+          probe_exit=0
+          timeout --signal=TERM --kill-after=10s 180s \
+            python -m pytest -vv -rx --xfail-tb \
+              -o faulthandler_timeout=45 -o faulthandler_exit_on_timeout=true \
+              tests/test_provider_source_inactive_image_gate.py \
+              tests/test_provider_sources.py \
+            > pg-provider-source-probe.log 2>&1 || probe_exit=$?
+          cat pg-provider-source-probe.log
+          exit "$probe_exit"
+      - name: Preserve targeted provider-source PostgreSQL diagnostic
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-provider-source-probe
+          path: backend/pg-provider-source-probe.log
           if-no-files-found: warn
           retention-days: 2
 
