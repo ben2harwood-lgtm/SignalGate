@@ -87,18 +87,22 @@ jobs:
             backend/requirements-hosted.txt
       - name: Install hosted backend dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
-      # The eight-test/four-module PostgreSQL pause/claim prefix passed
-      # at b54ef4e6, but the full suite was cancelled without diagnostics.
-      # Run the remaining three PostgreSQL-only modules in the SAME process
-      # and normal file order to distinguish a later module/fixture interaction
-      # from an unrelated earlier test or runner problem. All tests, including
-      # strict expected-failure witnesses, and the full suite remain mandatory.
-      - name: Probe full PostgreSQL-only module cluster
+      # All seven PostgreSQL-only modules passed together at 2a5a2efd,
+      # but the unfiltered full suite still stalled. The four immediately
+      # preceding non-PostgreSQL modules include pending-command pause,
+      # revocation and recovery controls; run them before the same PG cluster
+      # in normal filename order to test cross-module fixture/lock interference.
+      # Keep all strict XFAIL witnesses and the mandatory full suite untouched.
+      - name: Probe pending-command predecessors plus PostgreSQL cluster
         working-directory: backend
         run: |
           timeout --signal=TERM --kill-after=10s 180s \
             python -m pytest -vv -rx --xfail-tb \
               -o faulthandler_timeout=20 \
+              tests/test_pending_command_admin_resume_liveness.py \
+              tests/test_pending_command_pause_after_approval_hold.py \
+              tests/test_pending_command_post_approval_revocation_hold.py \
+              tests/test_pending_command_untrusted_pause_setting_hold.py \
               tests/test_postgresql_admin_pause_pending_claim_commit_race.py \
               tests/test_postgresql_admin_pause_setting_lock_contract.py \
               tests/test_postgresql_pause_lock_mode_contract.py \
