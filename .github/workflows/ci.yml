@@ -87,18 +87,29 @@ jobs:
             backend/requirements-hosted.txt
       - name: Install hosted backend dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
-      # All seven PostgreSQL-only modules passed together at 2a5a2efd,
-      # but the unfiltered full suite still stalled. The four immediately
-      # preceding non-PostgreSQL modules include pending-command pause,
-      # revocation and recovery controls; run them before the same PG cluster
-      # in normal filename order to test cross-module fixture/lock interference.
-      # Keep all strict XFAIL witnesses and the mandatory full suite untouched.
-      - name: Probe pending-command predecessors plus PostgreSQL cluster
+      # Source-pinned discriminator after the 11-file pending/PG probe passed
+      # at 2b4f083b while the mandatory full PG suite still stalled.
+      # Include the 35 earlier non-PG modules before that same 11-file
+      # cluster in one pytest process. This detects fixture/lock leakage
+      # from the earlier prefix, not another repeat of the PG-only probes.
+      # Fail if the sorted prefix count changes; never silently narrow it.
+      # Preserve strict XFAIL witnesses and the mandatory unfiltered suite.
+      - name: Probe earlier modules plus pending-command/PostgreSQL cluster
         working-directory: backend
         run: |
+          mapfile -t earlier < <(
+            find tests -maxdepth 1 -type f -name 'test_*.py' -print \
+              | LC_ALL=C sort \
+              | awk '$0 < "tests/test_pending_command_admin_resume_liveness.py"'
+          )
+          if [ "${#earlier[@]}" -ne 35 ]; then
+            echo "Unexpected earlier-module inventory; refuse narrowed probe" >&2
+            exit 1
+          fi
           timeout --signal=TERM --kill-after=10s 180s \
             python -m pytest -vv -rx --xfail-tb \
               -o faulthandler_timeout=20 \
+              "${earlier[@]}" \
               tests/test_pending_command_admin_resume_liveness.py \
               tests/test_pending_command_pause_after_approval_hold.py \
               tests/test_pending_command_post_approval_revocation_hold.py \
