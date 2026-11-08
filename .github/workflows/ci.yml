@@ -115,13 +115,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 2
 
-  # Diagnostic job runs in parallel with the mandatory unfiltered PostgreSQL
-  # matrix. A stalled/cancelled full suite must not prevent capturing a
-  # separately bounded PostgreSQL probe and artifact. The exact sorted
-  # suffix positions 6-10 (of 19 modules after the passing 49-module prefix)
-  # distinguish a five-module stand-alone failure from cross-module leakage.
-  # The first two modules already passed alone at cb436a48, 48 PASS/4 XFAIL.
-  # This is diagnostic only, never a substitute for the full suite.
+  # Parallel diagnostic only: sorted PostgreSQL test modules 50-54 immediately
+  # before the independently passing 55-59 group (81 PASS / 4 XFAIL at 25c09358).
+  # A cancelled full suite left no artifact; this bounded probe tests the missing
+  # group in isolation, NOT cross-module interactions or release acceptance.
+  # The mandatory unfiltered PostgreSQL suite remains separate and unchanged.
   postgres-provider-source-diagnostic:
     runs-on: ubuntu-latest
     timeout-minutes: 9
@@ -152,27 +150,27 @@ jobs:
             backend/requirements-hosted.txt
       - name: Install hosted backend dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
-      - name: Diagnose later PostgreSQL modules 6-10 independently (not acceptance)
+      - name: Diagnose PostgreSQL modules 50-54 independently (not acceptance)
         working-directory: backend
         run: |
           probe_exit=0
           timeout --signal=TERM --kill-after=10s 180s \
             python -m pytest -vv -rx --xfail-tb \
               -o faulthandler_timeout=45 -o faulthandler_exit_on_timeout=true \
-              tests/test_provider_source_inactive_image_gate.py \
-              tests/test_provider_sources.py \
-              tests/test_provider_tenancy.py \
-              tests/test_provision_provider_script.py \
-              tests/test_reset_local_db_safety.py \
-            > pg-provider-source-probe.log 2>&1 || probe_exit=$?
-          tail -n 200 pg-provider-source-probe.log
+              tests/test_provider_demo_rehearsal.py \
+              tests/test_provider_edition_ui.py \
+              tests/test_provider_export.py \
+              tests/test_provider_operations.py \
+              tests/test_provider_paused_recipient_lookup_hold.py \
+            > pg-provider-predecessor-probe.log 2>&1 || probe_exit=$?
+          tail -n 200 pg-provider-predecessor-probe.log
           exit "$probe_exit"
-      - name: Preserve provider-source PostgreSQL diagnostic
+      - name: Preserve preceding-provider PostgreSQL diagnostic
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: postgres-provider-source-probe
-          path: backend/pg-provider-source-probe.log
+          name: postgres-provider-predecessor-probe
+          path: backend/pg-provider-predecessor-probe.log
           if-no-files-found: warn
           retention-days: 2
 
