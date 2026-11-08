@@ -104,7 +104,11 @@ jobs:
             python -m pytest -vv -rx --xfail-tb \
               -o faulthandler_timeout=45 -o faulthandler_exit_on_timeout=true \
             > pg-pytest-full.log 2>&1 || pytest_exit=$?
-          cat pg-pytest-full.log
+          # Bound console output: a huge traceback/log must not delay the
+          # always-uploaded full diagnostic artifact after pytest exits.
+          printf 'PostgreSQL pytest exit status: %s; log bytes: ' "$pytest_exit"
+          wc -c < pg-pytest-full.log
+          tail -c 65536 pg-pytest-full.log | tail -n 200
           exit "$pytest_exit"
       - name: Preserve PostgreSQL diagnostic output on failure or success
         if: ${{ always() }}
