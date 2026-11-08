@@ -87,14 +87,14 @@ jobs:
             backend/requirements-hosted.txt
       - name: Install hosted backend dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
-      # Source-pinned discriminator after the 11-file pending/PG probe passed
-      # at 2b4f083b while the mandatory full PG suite still stalled.
-      # Include the 35 earlier non-PG modules before that same 11-file
-      # cluster in one pytest process. This detects fixture/lock leakage
-      # from the earlier prefix, not another repeat of the PG-only probes.
-      # Fail if the sorted prefix count changes; never silently narrow it.
-      # Preserve strict XFAIL witnesses and the mandatory unfiltered suite.
-      - name: Probe earlier modules plus pending-command/PostgreSQL cluster
+      # 46-file prior probe passed at 257eb257; mandatory full PG suite
+      # still stalled. Add the three previously omitted pilot modules
+      # IN normal alphabetical order between pending-command and PG tests.
+      # The result is a contiguous 49-module prefix through PG tests,
+      # discriminating pilot fixture/lock leakage from later-module stalls.
+      # Fail if the sorted earlier inventory changes. Strict XFAIL and
+      # mandatory unfiltered PG suite remain completely unchanged.
+      - name: Probe contiguous prefix including pilot and PostgreSQL modules
         working-directory: backend
         run: |
           mapfile -t earlier < <(
@@ -114,6 +114,9 @@ jobs:
               tests/test_pending_command_pause_after_approval_hold.py \
               tests/test_pending_command_post_approval_revocation_hold.py \
               tests/test_pending_command_untrusted_pause_setting_hold.py \
+              tests/test_pilot_first_cohort_entry_gate.py \
+              tests/test_pilot_ops_snapshot.py \
+              tests/test_pilot_preflight.py \
               tests/test_postgresql_admin_pause_pending_claim_commit_race.py \
               tests/test_postgresql_admin_pause_setting_lock_contract.py \
               tests/test_postgresql_pause_lock_mode_contract.py \
