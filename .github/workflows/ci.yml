@@ -117,8 +117,11 @@ jobs:
 
   # Diagnostic job runs in parallel with the mandatory unfiltered PostgreSQL
   # matrix. A stalled/cancelled full suite must not prevent capturing a
-  # separately bounded provider-source test result and artifact. This is
-  # diagnostic evidence only, never a substitute for the full suite.
+  # separately bounded PostgreSQL probe and artifact. The exact sorted
+  # suffix positions 6-10 (of 19 modules after the passing 49-module prefix)
+  # distinguish a five-module stand-alone failure from cross-module leakage.
+  # The first two modules already passed alone at cb436a48, 48 PASS/4 XFAIL.
+  # This is diagnostic only, never a substitute for the full suite.
   postgres-provider-source-diagnostic:
     runs-on: ubuntu-latest
     timeout-minutes: 9
@@ -149,7 +152,7 @@ jobs:
             backend/requirements-hosted.txt
       - name: Install hosted backend dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
-      - name: Diagnose provider-source PostgreSQL tests independently (not acceptance)
+      - name: Diagnose later PostgreSQL modules 6-10 independently (not acceptance)
         working-directory: backend
         run: |
           probe_exit=0
@@ -158,6 +161,9 @@ jobs:
               -o faulthandler_timeout=45 -o faulthandler_exit_on_timeout=true \
               tests/test_provider_source_inactive_image_gate.py \
               tests/test_provider_sources.py \
+              tests/test_provider_tenancy.py \
+              tests/test_provision_provider_script.py \
+              tests/test_reset_local_db_safety.py \
             > pg-provider-source-probe.log 2>&1 || probe_exit=$?
           tail -n 200 pg-provider-source-probe.log
           exit "$probe_exit"
