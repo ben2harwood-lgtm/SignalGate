@@ -115,10 +115,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 2
 
-  # Parallel diagnostic only: sorted PostgreSQL test modules 49-55 run in
-  # ONE process to examine a boundary between separately passing groups:
-  # 1-49 prefix, 50-54 predecessor, and 55-59 suffix.
-  # This does NOT establish full-suite pass or external acceptance.
+  # Parallel diagnostic only: sorted PostgreSQL test modules 50-59 run
+  # in ONE process to test interactions across independently passing
+  # 50-54 and 55-59 groups, not to claim full-suite or external acceptance.
   # The mandatory unfiltered PostgreSQL suite remains unchanged.
   postgres-provider-source-diagnostic:
     runs-on: ubuntu-latest
@@ -150,29 +149,32 @@ jobs:
             backend/requirements-hosted.txt
       - name: Install hosted backend dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
-      - name: Diagnose PostgreSQL modules 49-55 together (not acceptance)
+      - name: Diagnose PostgreSQL modules 50-59 together (not acceptance)
         working-directory: backend
         run: |
           probe_exit=0
           timeout --signal=TERM --kill-after=10s 180s \
             python -m pytest -vv -rx --xfail-tb \
               -o faulthandler_timeout=45 -o faulthandler_exit_on_timeout=true \
-              tests/test_postgresql_source_epoch_interruption_hold.py \
               tests/test_provider_demo_rehearsal.py \
               tests/test_provider_edition_ui.py \
               tests/test_provider_export.py \
               tests/test_provider_operations.py \
               tests/test_provider_paused_recipient_lookup_hold.py \
               tests/test_provider_source_inactive_image_gate.py \
-            > pg-provider-boundary-probe.log 2>&1 || probe_exit=$?
-          tail -n 200 pg-provider-boundary-probe.log
+              tests/test_provider_sources.py \
+              tests/test_provider_tenancy.py \
+              tests/test_provision_provider_script.py \
+              tests/test_reset_local_db_safety.py \
+            > pg-provider-cross-group-probe.log 2>&1 || probe_exit=$?
+          tail -n 200 pg-provider-cross-group-probe.log
           exit "$probe_exit"
-      - name: Preserve bounded PostgreSQL cross-boundary diagnostic
+      - name: Preserve bounded PostgreSQL cross-group diagnostic
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: postgres-provider-boundary-probe
-          path: backend/pg-provider-boundary-probe.log
+          name: postgres-provider-cross-group-probe
+          path: backend/pg-provider-cross-group-probe.log
           if-no-files-found: warn
           retention-days: 2
 
