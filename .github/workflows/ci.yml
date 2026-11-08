@@ -87,112 +87,35 @@ jobs:
             backend/requirements-hosted.txt
       - name: Install hosted backend dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
-      # 46-file prior probe passed at 257eb257; mandatory full PG suite
-      # still stalled. Add the three previously omitted pilot modules
-      # IN normal alphabetical order between pending-command and PG tests.
-      # The result is a contiguous 49-module prefix through PG tests,
-      # discriminating pilot fixture/lock leakage from later-module stalls.
-      # Fail if the sorted earlier inventory changes. Strict XFAIL and
-      # mandatory unfiltered PG suite remain completely unchanged.
-      - name: Probe contiguous prefix including pilot and PostgreSQL modules
+      # Prior exact-head runs passed the contiguous 49-module prefix.
+      # The 6-10 suffix probe remained in progress when CI was cancelled;
+      # job logs redirect to BlobNotFound, and no artifact was uploaded.
+      # Do not repeatedly run the known-green prefix or add serial probes
+      # that consume the 15-minute PostgreSQL job budget before full pytest.
+      # Focus on the two provider-source modules in the stalled 6-10 group.
+      # The targeted probe is NOT release acceptance. Keep strict XFAILs.
+      - name: Diagnose provider-source PostgreSQL tests (not acceptance)
         working-directory: backend
         run: |
-          mapfile -t earlier < <(
-            find tests -maxdepth 1 -type f -name 'test_*.py' -print \
-              | LC_ALL=C sort \
-              | awk '$0 < "tests/test_pending_command_admin_resume_liveness.py"'
-          )
-          if [ "${#earlier[@]}" -ne 35 ]; then
-            echo "Unexpected earlier-module inventory; refuse narrowed probe" >&2
-            exit 1
-          fi
+          probe_exit=0
           timeout --signal=TERM --kill-after=10s 180s \
             python -m pytest -vv -rx --xfail-tb \
-              -o faulthandler_timeout=20 \
-              "${earlier[@]}" \
-              tests/test_pending_command_admin_resume_liveness.py \
-              tests/test_pending_command_pause_after_approval_hold.py \
-              tests/test_pending_command_post_approval_revocation_hold.py \
-              tests/test_pending_command_untrusted_pause_setting_hold.py \
-              tests/test_pilot_first_cohort_entry_gate.py \
-              tests/test_pilot_ops_snapshot.py \
-              tests/test_pilot_preflight.py \
-              tests/test_postgresql_admin_pause_pending_claim_commit_race.py \
-              tests/test_postgresql_admin_pause_setting_lock_contract.py \
-              tests/test_postgresql_pause_lock_mode_contract.py \
-              tests/test_postgresql_postapproval_feed_pause_pending_claim_race.py \
-              tests/test_postgresql_provider_pause_image_audit_commit_race.py \
-              tests/test_postgresql_provider_pause_signal_commit_race.py \
-              tests/test_postgresql_source_epoch_interruption_hold.py
-      # The prior contiguous 49-module prefix passes, but the unfiltered
-      # mandatory suite still stalls. Probe the 19 later modules on this same
-      # synthetic PostgreSQL service to discriminate suffix-only fixture/lock
-      # failures from cross-prefix interactions. Never skip the full suite.
-      # The 19-file probe and 10-file first half stalled; isolate the PostgreSQL
-      # source/reconnect-heavy modules 6-10 first, then 1-5 and 11-19.
-      # Keep every inventory guard and the mandatory complete suite unchanged.
-      # Retain mandatory full unfiltered suite, strict-XFAILs and all artifact gates.
-      - name: Probe later PostgreSQL modules 6-10 of 19
-        working-directory: backend
-        run: |
-          mapfile -t all_tests < <(
-            find tests -maxdepth 1 -type f -name 'test_*.py' -print | LC_ALL=C sort
-          )
-          mapfile -t later < <(
-            printf '%s\n' "${all_tests[@]}" |
-              awk '$0 > "tests/test_postgresql_source_epoch_interruption_hold.py"'
-          )
-          if [ "${#all_tests[@]}" -ne 68 ] || [ "${#later[@]}" -ne 19 ] || \
-             [ "${later[0]}" != "tests/test_provider_demo_rehearsal.py" ] || \
-             [ "${later[18]}" != "tests/test_vision_extractor_failclosed.py" ]; then
-            echo "Unexpected suffix test-module inventory; refuse narrowed probe" >&2
-            exit 1
-          fi
-          timeout --signal=TERM --kill-after=10s 180s \
-            python -m pytest -vv -rx --xfail-tb \
-              -o faulthandler_timeout=20 \
-              "${later[@]:5:5}"
-      - name: Probe later PostgreSQL modules 1-5 of 19
-        working-directory: backend
-        run: |
-          mapfile -t all_tests < <(
-            find tests -maxdepth 1 -type f -name 'test_*.py' -print | LC_ALL=C sort
-          )
-          mapfile -t later < <(
-            printf '%s\n' "${all_tests[@]}" |
-              awk '$0 > "tests/test_postgresql_source_epoch_interruption_hold.py"'
-          )
-          if [ "${#all_tests[@]}" -ne 68 ] || [ "${#later[@]}" -ne 19 ] || \
-             [ "${later[0]}" != "tests/test_provider_demo_rehearsal.py" ] || \
-             [ "${later[18]}" != "tests/test_vision_extractor_failclosed.py" ]; then
-            echo "Unexpected suffix test-module inventory; refuse narrowed probe" >&2
-            exit 1
-          fi
-          timeout --signal=TERM --kill-after=10s 180s \
-            python -m pytest -vv -rx --xfail-tb \
-              -o faulthandler_timeout=20 \
-              "${later[@]:0:5}"
-      - name: Probe later PostgreSQL modules 11-19 of 19
-        working-directory: backend
-        run: |
-          mapfile -t all_tests < <(
-            find tests -maxdepth 1 -type f -name 'test_*.py' -print | LC_ALL=C sort
-          )
-          mapfile -t later < <(
-            printf '%s\n' "${all_tests[@]}" |
-              awk '$0 > "tests/test_postgresql_source_epoch_interruption_hold.py"'
-          )
-          if [ "${#all_tests[@]}" -ne 68 ] || [ "${#later[@]}" -ne 19 ] || \
-             [ "${later[0]}" != "tests/test_provider_demo_rehearsal.py" ] || \
-             [ "${later[18]}" != "tests/test_vision_extractor_failclosed.py" ]; then
-            echo "Unexpected suffix test-module inventory; refuse narrowed probe" >&2
-            exit 1
-          fi
-          timeout --signal=TERM --kill-after=10s 180s \
-            python -m pytest -vv -rx --xfail-tb \
-              -o faulthandler_timeout=20 \
-              "${later[@]:10:9}"
+              -o faulthandler_timeout=45 -o faulthandler_exit_on_timeout=true \
+              tests/test_provider_source_inactive_image_gate.py \
+              tests/test_provider_sources.py \
+            > pg-provider-source-probe.log 2>&1 || probe_exit=$?
+          cat pg-provider-source-probe.log
+          exit "$probe_exit"
+      - name: Preserve targeted provider-source PostgreSQL diagnostic
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-provider-source-probe
+          path: backend/pg-provider-source-probe.log
+          if-no-files-found: warn
+          retention-days: 2
       - name: Run full backend suite on PostgreSQL
+        if: ${{ !cancelled() }}
         working-directory: backend
         # Keep the entire mandatory suite and existing 15-minute job cap.
         # Bound pytest itself at five minutes so even if GitHub's redirected
