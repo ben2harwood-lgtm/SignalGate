@@ -87,28 +87,19 @@ jobs:
             backend/requirements-hosted.txt
       - name: Install hosted backend dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
-      # The isolated synthetic sibling-feed witness already passed at
-      # 83aa5968 (CI 42405545988); it remains part of this mandatory full
-      # suite. Omit the redundant standalone preflight to leave sufficient
-      # wall-clock headroom for full-suite diagnostics and artifact upload.
-      # Isolate both strict-XFAIL command/pause witnesses before full CI.
-      # Previous standalone sibling liveness test passed, but these witnesses
-      # have not been independently verified at this commit. Neither can
-      # constitute a release acceptance receipt, even on expected XFAIL.
-      - name: Isolate pending-claim-first PostgreSQL HOLD witness
+      # Reproduce the three PostgreSQL pause/claim tests in ONE pytest process.
+      # Both strict-XFAIL order witnesses and sibling liveness succeeded when
+      # invoked separately, but the mandatory full suite still hangs near this
+      # test file. A combined probe discriminates intra-file fixture/audit-lock
+      # leakage from interaction with tests executed earlier in the full suite.
+      # Keep strict XFAIL/XPASS behaviour and full PostgreSQL suite mandatory.
+      - name: Probe PostgreSQL pause/claim trio in a single pytest process
         working-directory: backend
         run: |
-          timeout --signal=TERM --kill-after=10s 65s \
+          timeout --signal=TERM --kill-after=10s 75s \
             python -m pytest -vv -rx --xfail-tb \
               -o faulthandler_timeout=20 \
-              tests/test_postgresql_postapproval_feed_pause_pending_claim_race.py::test_feed_pause_cannot_overtake_pending_command_claim
-      - name: Isolate pause-writer-first PostgreSQL HOLD witness
-        working-directory: backend
-        run: |
-          timeout --signal=TERM --kill-after=10s 65s \
-            python -m pytest -vv -rx --xfail-tb \
-              -o faulthandler_timeout=20 \
-              tests/test_postgresql_postapproval_feed_pause_pending_claim_race.py::test_feed_pause_writer_first_blocks_or_refuses_pending_claim
+              tests/test_postgresql_postapproval_feed_pause_pending_claim_race.py
       - name: Run full backend suite on PostgreSQL
         working-directory: backend
         # Keep the entire mandatory suite and existing 15-minute job cap.
