@@ -87,22 +87,25 @@ jobs:
             backend/requirements-hosted.txt
       - name: Install hosted backend dependencies
         run: python -m pip install --upgrade pip && pip install -r backend/requirements-hosted.txt
-      # The full three-test pause/claim module passed in a single pytest
-      # process at 03db21e9, while the mandatory full PostgreSQL suite
-      # still stalled. Probe it with its THREE immediately preceding
-      # PostgreSQL lock/race modules in normal file order to test whether
-      # preceding PG test fixtures cause cross-module lock/session leakage.
-      # Strict XFAIL/XPASS and the unfiltered full suite remain mandatory.
-      - name: Probe preceding PostgreSQL locks plus pause/claim trio
+      # The eight-test/four-module PostgreSQL pause/claim prefix passed
+      # at b54ef4e6, but the full suite was cancelled without diagnostics.
+      # Run the remaining three PostgreSQL-only modules in the SAME process
+      # and normal file order to distinguish a later module/fixture interaction
+      # from an unrelated earlier test or runner problem. All tests, including
+      # strict expected-failure witnesses, and the full suite remain mandatory.
+      - name: Probe full PostgreSQL-only module cluster
         working-directory: backend
         run: |
-          timeout --signal=TERM --kill-after=10s 120s \
+          timeout --signal=TERM --kill-after=10s 180s \
             python -m pytest -vv -rx --xfail-tb \
               -o faulthandler_timeout=20 \
               tests/test_postgresql_admin_pause_pending_claim_commit_race.py \
               tests/test_postgresql_admin_pause_setting_lock_contract.py \
               tests/test_postgresql_pause_lock_mode_contract.py \
-              tests/test_postgresql_postapproval_feed_pause_pending_claim_race.py
+              tests/test_postgresql_postapproval_feed_pause_pending_claim_race.py \
+              tests/test_postgresql_provider_pause_image_audit_commit_race.py \
+              tests/test_postgresql_provider_pause_signal_commit_race.py \
+              tests/test_postgresql_source_epoch_interruption_hold.py
       - name: Run full backend suite on PostgreSQL
         working-directory: backend
         # Keep the entire mandatory suite and existing 15-minute job cap.
