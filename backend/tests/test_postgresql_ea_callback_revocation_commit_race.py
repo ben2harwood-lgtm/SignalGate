@@ -481,6 +481,9 @@ def test_postgresql_waiting_callback_rechecks_revocation_after_lock_release(
             assert session.query(models.Execution).count() == 0
             assert session.query(models.TradeManagementEvent).count() == 0
 
+        # Restore the real resolver: the barrier stub assumes the old key is
+        # valid before commit, which is deliberately false after deactivation.
+        monkeypatch.setattr(crud, "resolve_ea_user", original_resolve)
         # Rotation accepts only its replacement. Deactivation keeps the same
         # key hash but must refuse even a later, non-racing callback.
         accepted = client.post(
