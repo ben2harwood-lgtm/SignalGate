@@ -603,6 +603,86 @@ def test_hosted_reconciliation_is_bound_to_owning_license(client):
         crud.settings.require_license = False
 
 
+
+def test_rotated_license_refuses_execution_and_reconciliation_after_claim(client):
+    """A revoked customer licence cannot report a broker outcome after EA claim.
+
+    Both endpoints receive synthetic payloads; no real broker is contacted.
+    """
+    from app import crud, models
+    from app.database import SessionLocal
+
+    owner = register_user(client, "809")
+    sig = create_signal(client, VALID)
+    approved = client.post(
+        f"/signals/{sig['id']}/approve",
+        json={"telegram_user_id": "809"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["result"] == "APPROVED"
+
+    original_hosted = crud.settings.require_license
+    crud.settings.require_license = True
+    try:
+        old_headers = {**EA_HEADERS, "X-SG-License-Key": owner["license_key"]}
+        claimed = client.get("/commands/pending", headers=old_headers)
+        assert claimed.status_code == 200
+        command = claimed.json()["command"]
+        assert command is not None
+        cid = command["command_id"]
+
+        with SessionLocal() as db:
+            account = crud.get_user_by_telegram(db, "809")
+            assert account is not None
+            fresh_key = crud.issue_license(db, account)
+            db.commit()
+        assert fresh_key != owner["license_key"]
+        fresh_headers = {**EA_HEADERS, "X-SG-License-Key": fresh_key}
+
+        snapshot = {
+            "broker_tickets": ["8091"],
+            "executed_symbol": "XAUUSD",
+            "executed_direction": "BUY",
+            "executed_price": 2345.0,
+            "lot_size": 0.04,
+        }
+        for endpoint, payload in (
+            ("execution", {"status": "FAILED", "error_code": "STALE_KEY"}),
+            ("reconcile_open_position", snapshot),
+        ):
+            denied = client.post(
+                f"/commands/{cid}/{endpoint}", json=payload, headers=old_headers
+            )
+            assert denied.status_code == 403, (endpoint, denied.text)
+
+        with SessionLocal() as db:
+            assert crud.get_command(db, cid).status == "SENT_TO_EA"
+            assert (
+                db.query(models.Execution)
+                .filter(models.Execution.command_id == cid)
+                .count() == 0
+            )
+            assert (
+                db.query(models.AuditLog)
+                .filter(
+                    models.AuditLog.entity_id == cid,
+                    models.AuditLog.event_type == "BROKER_RECONCILIATION_CONFLICT",
+                )
+                .count() == 0
+            )
+
+        # A current key can still report an existing synthetic broker snapshot.
+        allowed = client.post(
+            f"/commands/{cid}/reconcile_open_position",
+            json=snapshot,
+            headers=fresh_headers,
+        )
+        assert allowed.status_code == 200, allowed.text
+        assert allowed.json()["status"] == "recovered"
+    finally:
+        crud.settings.require_license = original_hosted
+
+
 def test_hosted_ack_and_management_reject_missing_or_foreign_customer_license(client):
     """Synthetic EA callback isolation: a shared EA key is not user authority.
 
