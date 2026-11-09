@@ -1,6 +1,8 @@
 """Command polling, execution, and management event tests."""
 from __future__ import annotations
 
+import pytest
+
 from .conftest import EA_HEADERS, create_signal, register_user
 
 VALID = "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363"
@@ -771,5 +773,123 @@ def test_hosted_ack_and_management_reject_missing_or_foreign_customer_license(cl
         )
         assert allowed.status_code == 200
         assert allowed.json()["status"] == "received"
+    finally:
+        crud.settings.require_license = original_hosted
+
+
+class _ForeignCommandExistenceOracle(AssertionError):
+    """Known cross-tenant callback 403/404 discrepancy for a shared EA-key holder."""
+
+
+@pytest.mark.parametrize(
+    "endpoint,payload",
+    (
+        ("received", {}),
+        ("execution", {"status": "FAILED", "error_code": "SYNTHETIC"}),
+        (
+            "reconcile_open_position",
+            {
+                "broker_tickets": ["811001"],
+                "executed_symbol": "XAUUSD",
+                "executed_direction": "BUY",
+                "executed_price": 2345.0,
+                "lot_size": 0.04,
+            },
+        ),
+        ("management_event", {"event_type": "TP1_REACHED", "result": "PENDING"}),
+    ),
+)
+@pytest.mark.xfail(
+    strict=True,
+    raises=_ForeignCommandExistenceOracle,
+    reason=(
+        "RELEASE HOLD: hosted EA callbacks return 403 for a foreign existing "
+        "command but 404 for an absent command; owner-scoped lookup needs review"
+    ),
+)
+def test_hosted_callback_does_not_reveal_foreign_command_existence(
+    client, endpoint, payload
+):
+    """Offline tenant privacy witness, not an externally accepted security fix.
+
+    Check all four callbacks using a valid *other* customer's licence. An
+    unexpected response or any state mutation must fail CI, not be XFAIL.
+    Once a reviewed uniform-denial policy is implemented, remove the strict
+    marker and retain the same negative/positive controls.
+    """
+    from app import crud, models
+    from app.database import SessionLocal
+
+    owner = register_user(client, "812")
+    nonowner = register_user(client, "813")
+    signal = create_signal(client, VALID)
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "812"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+
+    original_hosted = crud.settings.require_license
+    crud.settings.require_license = True
+    try:
+        owner_headers = {**EA_HEADERS, "X-SG-License-Key": owner["license_key"]}
+        other_headers = {**EA_HEADERS, "X-SG-License-Key": nonowner["license_key"]}
+        claimed = client.get("/commands/pending", headers=owner_headers)
+        assert claimed.status_code == 200, claimed.text
+        command = claimed.json()["command"]
+        assert command is not None
+        command_id = command["command_id"]
+        absent_id = command_id + "-not-created"
+        with SessionLocal() as db:
+            assert crud.get_command(db, absent_id) is None
+            assert crud.get_command(db, command_id).status == "SENT_TO_EA"
+
+        foreign = client.post(
+            f"/commands/{command_id}/{endpoint}",
+            json=payload, headers=other_headers,
+        )
+        absent = client.post(
+            f"/commands/{absent_id}/{endpoint}",
+            json=payload, headers=other_headers,
+        )
+        assert foreign.status_code in (403, 404), (endpoint, foreign.text)
+        assert absent.status_code in (403, 404), (endpoint, absent.text)
+        with SessionLocal() as db:
+            assert crud.get_command(db, command_id).status == "SENT_TO_EA"
+            assert (
+                db.query(models.Execution)
+                .filter(models.Execution.command_id == command_id)
+                .count() == 0
+            )
+            assert (
+                db.query(models.TradeManagementEvent)
+                .filter(models.TradeManagementEvent.command_id == command_id)
+                .count() == 0
+            )
+            assert (
+                db.query(models.AuditLog)
+                .filter(
+                    models.AuditLog.event_type == "COMMAND_RECEIVED_BY_EA",
+                    models.AuditLog.entity_id == command_id,
+                )
+                .count() == 0
+            )
+
+        if foreign.status_code != absent.status_code or foreign.json() != absent.json():
+            # Only the *known* status oracle is an expected failure.
+            assert foreign.status_code == 403, foreign.text
+            assert foreign.json().get("detail") == (
+                "Command does not belong to this EA licence"
+            )
+            assert absent.status_code == 404, absent.text
+            assert absent.json().get("detail") == "Command not found"
+            raise _ForeignCommandExistenceOracle(
+                f"Hosted {endpoint} revealed an existing foreign command"
+            )
+
+        # A policy fix must deny both IDs identically, not make both successful.
+        assert foreign.status_code in (403, 404)
+        assert foreign.json() == absent.json()
     finally:
         crud.settings.require_license = original_hosted
