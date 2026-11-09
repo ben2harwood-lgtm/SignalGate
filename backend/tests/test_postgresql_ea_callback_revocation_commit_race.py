@@ -142,3 +142,173 @@ def test_postgresql_callback_receipt_cannot_overtake_committed_licence_rotation(
         release_callback.set()
         crud.settings.require_license = former_crud_mode
         command_routes.settings.require_license = former_route_mode
+
+
+class _RevokedExecutionRetryAudit(AssertionError):
+    """Old-key callback appended a retry audit after its licence was revoked."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_RevokedExecutionRetryAudit,
+    reason=(
+        "RELEASE HOLD: PostgreSQL execution IntegrityError recovery rolls back "
+        "the customer authorization lock before auditing the raced retry"
+    ),
+)
+def test_postgresql_execution_retry_rechecks_license_after_integrity_rollback(
+    client, db, monkeypatch
+):
+    """Exercise the actual duplicate-Execution INSERT race, not a fake rollback.
+
+    An old-key execution request pauses after its initial execution lookup.
+    Another request commits the same fabricated FAILED result. The first
+    request then collides with the real unique(command_id) database constraint,
+    rolls back, and reaches the raced-retry audit path. Rotate the licence
+    between that rollback and audit. A revoked key must never commit that
+    subsequent audit receipt. No real broker, EA or network calls are made.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires PostgreSQL uniqueness and independent sessions")
+
+    from threading import local
+    from fastapi import HTTPException
+    from sqlalchemy import select
+    from app.schemas import ExecutionRequest
+
+    owner = register_user(client, "990022")
+    signal = create_signal(client, VALID)
+    decision = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990022"},
+    )
+    assert decision.status_code == 200, decision.text
+    assert decision.json()["result"] == "APPROVED"
+
+    previous_crud_mode = crud.settings.require_license
+    previous_route_mode = command_routes.settings.require_license
+    crud.settings.require_license = True
+    command_routes.settings.require_license = True
+
+    pre_insert = Event()
+    allow_insert = Event()
+    after_rollback = Event()
+    allow_recovery = Event()
+    role = local()
+    original_next_id = crud._next_id
+    original_recovery = crud._existing_execution_or_conflict
+
+    def gate_first_insert(session, model):
+        if model is models.Execution and getattr(role, "name", None) == "old-key":
+            pre_insert.set()
+            assert allow_insert.wait(timeout=15), "Old-key insert was not released"
+        return original_next_id(session, model)
+
+    def gate_actual_integrity_recovery(session, command, existing, payload, *, raced=False):
+        if raced and getattr(role, "name", None) == "old-key":
+            after_rollback.set()
+            assert allow_recovery.wait(timeout=15), (
+                "Old-key rolled-back retry was not released"
+            )
+        return original_recovery(session, command, existing, payload, raced=raced)
+
+    monkeypatch.setattr(crud, "_next_id", gate_first_insert)
+    monkeypatch.setattr(crud, "_existing_execution_or_conflict", gate_actual_integrity_recovery)
+
+    try:
+        headers = {**EA_HEADERS, "X-SG-License-Key": owner["license_key"]}
+        polled = client.get("/commands/pending", headers=headers)
+        assert polled.status_code == 200, polled.text
+        command = polled.json()["command"]
+        assert command is not None
+        command_id = command["command_id"]
+        payload = ExecutionRequest(status="FAILED", error_code="OFFLINE_REJECT")
+
+        def report(role_name):
+            role.name = role_name
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                try:
+                    result = command_routes.report_execution(
+                        command_id,
+                        payload,
+                        x_sg_license_key=owner["license_key"],
+                        db=session,
+                        _ea="offline-test",
+                    )
+                    return result.status
+                except HTTPException as exc:
+                    return exc.status_code
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            old_key = workers.submit(report, "old-key")
+            try:
+                assert pre_insert.wait(timeout=8), (
+                    "Old-key report did not reach its first execution INSERT"
+                )
+                winner = workers.submit(report, "winner")
+                assert winner.result(timeout=22) == "ok", (
+                    "Competing execution did not commit before old-key retry"
+                )
+                allow_insert.set()
+                assert after_rollback.wait(timeout=8), (
+                    "Actual PostgreSQL unique constraint did not trigger "
+                    "the IntegrityError rollback/recovery branch"
+                )
+
+                with SessionLocal() as rotation:
+                    rotation.connection().exec_driver_sql(
+                        "SET LOCAL statement_timeout = '12s'"
+                    )
+                    account = crud.get_user_by_telegram(rotation, "990022")
+                    assert account is not None
+                    assert crud.issue_license(rotation, account) != owner["license_key"]
+                    rotation.commit()
+            finally:
+                allow_insert.set()
+                allow_recovery.set()
+            old_key_outcome = old_key.result(timeout=22)
+
+        with SessionLocal() as session:
+            assert crud.get_user_by_license(session, owner["license_key"]) is None
+            assert session.scalar(
+                select(models.Execution).where(
+                    models.Execution.command_id == command_id
+                )
+            ) is not None
+            assert session.query(models.Execution).count() == 1
+            assert session.query(models.TradeManagementEvent).count() == 0
+            audits = list(
+                session.scalars(
+                    select(models.AuditLog)
+                    .where(models.AuditLog.entity_id.in_([command_id, owner["id"]]))
+                    .order_by(models.AuditLog.created_at, models.AuditLog.id)
+                )
+            )
+            rotations = [
+                a for a in audits
+                if a.event_type == "LICENSE_ISSUED" and a.entity_id == owner["id"]
+            ]
+            retry_audits = [
+                a for a in audits
+                if a.event_type == "DUPLICATE_EXECUTION_REPORT_IGNORED"
+                and a.entity_id == command_id
+            ]
+            assert rotations, "Licence rotation receipt must be committed"
+            if retry_audits and retry_audits[-1].created_at >= rotations[-1].created_at:
+                assert old_key_outcome == "duplicate_ignored"
+                raise _RevokedExecutionRetryAudit(
+                    "Old-key IntegrityError retry appended its audit after "
+                    "the replacement licence had committed"
+                )
+            assert old_key_outcome == 403, (
+                "A revoked old-key retry must refuse authorization rather than "
+                "silently return a duplicate receipt"
+            )
+    finally:
+        allow_insert.set()
+        allow_recovery.set()
+        crud.settings.require_license = previous_crud_mode
+        command_routes.settings.require_license = previous_route_mode
