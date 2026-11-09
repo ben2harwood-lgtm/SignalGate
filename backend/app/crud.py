@@ -9,6 +9,7 @@ import datetime as dt
 import hashlib
 import json
 import secrets
+from contextlib import nullcontext
 from typing import List, Optional
 
 from sqlalchemy import func, select, text
@@ -2044,43 +2045,48 @@ def record_execution(
             "command must have been claimed by the EA first"
         )
 
-    execution = models.Execution(
-        id=_next_id(db, models.Execution),
-        command_id=command.id,
-        user_id=command.user_id,
-        status=payload.status,
-        broker_ticket=payload.broker_ticket,
-        child_tickets_json=payload.child_tickets_json,
-        executed_symbol=payload.executed_symbol,
-        executed_direction=payload.executed_direction,
-        requested_price=payload.requested_price,
-        executed_price=payload.executed_price,
-        lot_size=payload.lot_size,
-        initial_stop_loss=payload.initial_stop_loss,
-        tp1=payload.tp1,
-        tp2=payload.tp2,
-        tp3=payload.tp3,
-        spread_at_execution=payload.spread_at_execution,
-        slippage=payload.slippage,
-        error_code=payload.error_code,
-        error_message=payload.error_message,
-    )
-    db.add(execution)
-
-    if payload.status == "SUCCESS":
-        command.status = "EXECUTED_OPEN"
-        command.processed_at = utcnow()
-    else:
-        command.status = "FAILED"
-        command.last_error = payload.error_message or payload.error_code
-        command.processed_at = utcnow()
-
+    # Preserve the caller's customer authorization lock when PostgreSQL rejects
+    # a raced unique(command_id) insert. A SAVEPOINT isolates the speculative
+    # execution/state update; a full rollback would allow post-revocation audits.
+    savepoint_for_race = db.get_bind().dialect.name == "postgresql"
     try:
-        db.flush()
+        with (db.begin_nested() if savepoint_for_race else nullcontext()):
+            execution = models.Execution(
+                id=_next_id(db, models.Execution),
+                command_id=command.id,
+                user_id=command.user_id,
+                status=payload.status,
+                broker_ticket=payload.broker_ticket,
+                child_tickets_json=payload.child_tickets_json,
+                executed_symbol=payload.executed_symbol,
+                executed_direction=payload.executed_direction,
+                requested_price=payload.requested_price,
+                executed_price=payload.executed_price,
+                lot_size=payload.lot_size,
+                initial_stop_loss=payload.initial_stop_loss,
+                tp1=payload.tp1,
+                tp2=payload.tp2,
+                tp3=payload.tp3,
+                spread_at_execution=payload.spread_at_execution,
+                slippage=payload.slippage,
+                error_code=payload.error_code,
+                error_message=payload.error_message,
+            )
+            db.add(execution)
+
+            if payload.status == "SUCCESS":
+                command.status = "EXECUTED_OPEN"
+                command.processed_at = utcnow()
+            else:
+                command.status = "FAILED"
+                command.last_error = payload.error_message or payload.error_code
+                command.processed_at = utcnow()
+
+            db.flush()
     except IntegrityError:
-        # A simultaneous retry may have won the unique(command_id) race after
-        # our initial lookup. Roll back this transaction and return the winner.
-        db.rollback()
+        # SQLite retains its existing local-demo recovery behaviour.
+        if not savepoint_for_race:
+            db.rollback()
         existing = db.scalar(
             select(models.Execution).where(models.Execution.command_id == command.id)
         )

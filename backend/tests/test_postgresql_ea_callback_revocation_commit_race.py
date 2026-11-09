@@ -144,18 +144,6 @@ def test_postgresql_callback_receipt_cannot_overtake_committed_licence_rotation(
         command_routes.settings.require_license = former_route_mode
 
 
-class _RevokedExecutionRetryAudit(AssertionError):
-    """Old-key callback appended a retry audit after its licence was revoked."""
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=_RevokedExecutionRetryAudit,
-    reason=(
-        "RELEASE HOLD: PostgreSQL execution IntegrityError recovery rolls back "
-        "the customer authorization lock before auditing the raced retry"
-    ),
-)
 def test_postgresql_execution_retry_rechecks_license_after_integrity_rollback(
     client, db, monkeypatch
 ):
@@ -194,6 +182,8 @@ def test_postgresql_execution_retry_rechecks_license_after_integrity_rollback(
     allow_insert = Event()
     after_rollback = Event()
     allow_recovery = Event()
+    rotation_started = Event()
+    rotated = Event()
     role = local()
     original_next_id = crud._next_id
     original_recovery = crud._existing_execution_or_conflict
@@ -258,18 +248,28 @@ def test_postgresql_execution_retry_rechecks_license_after_integrity_rollback(
                     "the IntegrityError rollback/recovery branch"
                 )
 
-                with SessionLocal() as rotation:
-                    rotation.connection().exec_driver_sql(
-                        "SET LOCAL statement_timeout = '12s'"
-                    )
-                    account = crud.get_user_by_telegram(rotation, "990022")
-                    assert account is not None
-                    assert crud.issue_license(rotation, account) != owner["license_key"]
-                    rotation.commit()
+                def rotate_in_independent_transaction():
+                    with SessionLocal() as rotation:
+                        rotation.connection().exec_driver_sql(
+                            "SET LOCAL statement_timeout = '12s'"
+                        )
+                        account = crud.get_user_by_telegram(rotation, "990022")
+                        assert account is not None
+                        rotation_started.set()
+                        assert crud.issue_license(rotation, account) != owner["license_key"]
+                        rotation.commit()
+                        rotated.set()
+
+                rotator = workers.submit(rotate_in_independent_transaction)
+                assert rotation_started.wait(timeout=8), (
+                    "Licence rotation did not reach its transaction barrier"
+                )
+                rotation_overtook_retry = rotated.wait(timeout=2.5)
             finally:
                 allow_insert.set()
                 allow_recovery.set()
             old_key_outcome = old_key.result(timeout=22)
+            rotator.result(timeout=22)
 
         with SessionLocal() as session:
             assert crud.get_user_by_license(session, owner["license_key"]) is None
@@ -297,15 +297,14 @@ def test_postgresql_execution_retry_rechecks_license_after_integrity_rollback(
                 and a.entity_id == command_id
             ]
             assert rotations, "Licence rotation receipt must be committed"
-            if retry_audits and retry_audits[-1].created_at >= rotations[-1].created_at:
-                assert old_key_outcome == "duplicate_ignored"
-                raise _RevokedExecutionRetryAudit(
-                    "Old-key IntegrityError retry appended its audit after "
-                    "the replacement licence had committed"
-                )
-            assert old_key_outcome == 403, (
-                "A revoked old-key retry must refuse authorization rather than "
-                "silently return a duplicate receipt"
+            assert not rotation_overtook_retry, (
+                "Licence rotation committed while the old-key retry was still "
+                "waiting to write its duplicate audit"
+            )
+            assert old_key_outcome == "duplicate_ignored"
+            assert len(retry_audits) == 1
+            assert retry_audits[0].created_at <= rotations[-1].created_at, (
+                "A retry audit must precede the committed licence rotation"
             )
     finally:
         allow_insert.set()
