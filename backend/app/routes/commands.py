@@ -62,13 +62,31 @@ def _get_command_or_404(db: Session, command_id: str) -> Command:
     return command
 
 
-def _require_command_owner(db: Session, command: Command, license_key: str) -> None:
-    """Bind hosted EA callbacks to the customer that owns this command."""
+def _get_authorized_callback_command(
+    db: Session, command_id: str, license_key: str
+) -> Command:
+    """Deny unowned and absent hosted command IDs with the same response.
+
+    A shared EA API key is not customer authority. Resolve the current licence
+    before command lookup; neither revoked credentials nor another tenant may
+    learn whether an opaque command ID exists. The local demo retains 404 for
+    unknown commands without adding hosted authentication shortcuts.
+    """
     if not settings.require_license:
-        return
+        return _get_command_or_404(db, command_id)
+
     user = crud.resolve_ea_user(db, license_key=license_key)
-    if user is None or user.id != command.user_id:
-        raise HTTPException(status_code=403, detail="Command does not belong to this EA licence")
+    if user is None:
+        raise HTTPException(
+            status_code=403, detail="Command does not belong to this EA licence"
+        )
+
+    command = crud.get_command(db, command_id)
+    if command is None or command.user_id != user.id:
+        raise HTTPException(
+            status_code=403, detail="Command does not belong to this EA licence"
+        )
+    return command
 
 
 @router.get("/commands/pending", response_model=PendingCommandResponse)
@@ -105,8 +123,7 @@ def command_received(
     db: Session = Depends(get_db),
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
-    command = _get_command_or_404(db, command_id)
-    _require_command_owner(db, command, x_sg_license_key)
+    command = _get_authorized_callback_command(db, command_id, x_sg_license_key)
     crud.mark_command_received(db, command)
     db.commit()
     return SimpleStatus(status="received")
@@ -120,8 +137,7 @@ def report_execution(
     db: Session = Depends(get_db),
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
-    command = _get_command_or_404(db, command_id)
-    _require_command_owner(db, command, x_sg_license_key)
+    command = _get_authorized_callback_command(db, command_id, x_sg_license_key)
     try:
         execution, created = crud.record_execution(db, command, payload)
     except crud.ExecutionReportConflict as exc:
@@ -166,8 +182,7 @@ def reconcile_open_position(
     db: Session = Depends(get_db),
     _ea: str = Depends(require_ea_api_key),
 ) -> BrokerPositionReconcileResponse:
-    command = _get_command_or_404(db, command_id)
-    _require_command_owner(db, command, x_sg_license_key)
+    command = _get_authorized_callback_command(db, command_id, x_sg_license_key)
     try:
         execution, reconciliation_status = crud.reconcile_open_position(
             db, command, payload
@@ -203,8 +218,7 @@ def report_management_event(
     db: Session = Depends(get_db),
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
-    command = _get_command_or_404(db, command_id)
-    _require_command_owner(db, command, x_sg_license_key)
+    command = _get_authorized_callback_command(db, command_id, x_sg_license_key)
     try:
         _event, created = crud.record_management_event(db, command, payload)
     except crud.ManagementEventConflict as exc:

@@ -777,10 +777,6 @@ def test_hosted_ack_and_management_reject_missing_or_foreign_customer_license(cl
         crud.settings.require_license = original_hosted
 
 
-class _ForeignCommandExistenceOracle(AssertionError):
-    """Known hosted command-existence oracle for unauthorised EA callbacks."""
-
-
 @pytest.mark.parametrize("credential_case", ("foreign", "missing", "revoked"))
 @pytest.mark.parametrize(
     "endpoint,payload",
@@ -800,24 +796,15 @@ class _ForeignCommandExistenceOracle(AssertionError):
         ("management_event", {"event_type": "TP1_REACHED", "result": "PENDING"}),
     ),
 )
-@pytest.mark.xfail(
-    strict=True,
-    raises=_ForeignCommandExistenceOracle,
-    reason=(
-        "RELEASE HOLD: unowned hosted EA callbacks return 403 for an existing "
-        "command but 404 for an absent command; owner-scoped lookup needs review"
-    ),
-)
 def test_hosted_callback_does_not_reveal_foreign_command_existence(
     client, endpoint, payload, credential_case
 ):
     """Offline tenant privacy witness, not an externally accepted security fix.
 
     Check all four callbacks using a foreign, absent, or revoked-after-claim
-    customer licence. A shared EA key is not tenant authority. Unexpected
-    responses or state mutations fail CI, not XFAIL.
-    Once a reviewed uniform-denial policy is implemented, remove the strict
-    marker and retain the same negative/positive controls.
+    customer licence. A shared EA key is not tenant authority. Both foreign
+    and absent command IDs must return identical 403 bodies with no mutation.
+    This is an offline regression, not independent security acceptance.
     """
     from app import crud, models
     from app.database import SessionLocal
@@ -892,20 +879,13 @@ def test_hosted_callback_does_not_reveal_foreign_command_existence(
                 .count() == 0
             )
 
-        if foreign.status_code != absent.status_code or foreign.json() != absent.json():
-            # Only the *known* status oracle is an expected failure.
-            assert foreign.status_code == 403, foreign.text
-            assert foreign.json().get("detail") == (
-                "Command does not belong to this EA licence"
-            )
-            assert absent.status_code == 404, absent.text
-            assert absent.json().get("detail") == "Command not found"
-            raise _ForeignCommandExistenceOracle(
-                f"Hosted {endpoint} revealed an existing foreign command"
-            )
-
-        # A policy fix must deny both IDs identically, not make both successful.
-        assert foreign.status_code in (403, 404)
-        assert foreign.json() == absent.json()
+        # A nonowner, absent or revoked licence gets the exact same denial
+        # whether the opaque command ID belongs to another tenant or is absent.
+        assert foreign.status_code == absent.status_code == 403, (
+            endpoint, credential_case, foreign.text, absent.text
+        )
+        assert foreign.json() == absent.json() == {
+            "detail": "Command does not belong to this EA licence"
+        }
     finally:
         crud.settings.require_license = original_hosted
