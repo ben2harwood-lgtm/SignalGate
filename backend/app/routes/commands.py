@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import crud
@@ -81,8 +82,10 @@ def _get_authorized_callback_command(
             status_code=403, detail="Command does not belong to this EA licence"
         )
 
-    command = crud.get_command(db, command_id)
-    if command is None or command.user_id != user.id:
+    command = db.scalar(
+        select(Command).where(Command.id == command_id, Command.user_id == user.id)
+    )
+    if command is None:
         raise HTTPException(
             status_code=403, detail="Command does not belong to this EA licence"
         )

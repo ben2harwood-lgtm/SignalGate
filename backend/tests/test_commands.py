@@ -797,7 +797,7 @@ def test_hosted_ack_and_management_reject_missing_or_foreign_customer_license(cl
     ),
 )
 def test_hosted_callback_does_not_reveal_foreign_command_existence(
-    client, endpoint, payload, credential_case
+    client, endpoint, payload, credential_case, monkeypatch
 ):
     """Offline tenant privacy witness, not an externally accepted security fix.
 
@@ -848,14 +848,21 @@ def test_hosted_callback_does_not_reveal_foreign_command_existence(
             assert replacement != owner["license_key"]
             probe_headers = owner_headers
 
-        foreign = client.post(
-            f"/commands/{command_id}/{endpoint}",
-            json=payload, headers=probe_headers,
-        )
-        absent = client.post(
-            f"/commands/{absent_id}/{endpoint}",
-            json=payload, headers=probe_headers,
-        )
+        # Hosted routing must not fetch another customer's command globally,
+        # even if it would later hide the result in an HTTP 403.
+        def forbid_global_command_lookup(*_args, **_kwargs):
+            raise AssertionError("Hosted callback used a global command lookup")
+
+        with monkeypatch.context() as scope:
+            scope.setattr(crud, "get_command", forbid_global_command_lookup)
+            foreign = client.post(
+                f"/commands/{command_id}/{endpoint}",
+                json=payload, headers=probe_headers,
+            )
+            absent = client.post(
+                f"/commands/{absent_id}/{endpoint}",
+                json=payload, headers=probe_headers,
+            )
         assert foreign.status_code in (403, 404), (endpoint, foreign.text)
         assert absent.status_code in (403, 404), (endpoint, absent.text)
         with SessionLocal() as db:
