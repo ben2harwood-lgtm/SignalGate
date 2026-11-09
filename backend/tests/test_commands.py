@@ -646,14 +646,22 @@ def test_rotated_license_refuses_execution_and_reconciliation_after_claim(client
             "executed_price": 2345.0,
             "lot_size": 0.04,
         }
+        # Missing customer authority and a formerly valid, rotated-out key
+        # must both be rejected after claim, without any callback side effects.
         for endpoint, payload in (
             ("execution", {"status": "FAILED", "error_code": "STALE_KEY"}),
             ("reconcile_open_position", snapshot),
         ):
-            denied = client.post(
-                f"/commands/{cid}/{endpoint}", json=payload, headers=old_headers
-            )
-            assert denied.status_code == 403, (endpoint, denied.text)
+            for credential_case, headers in (
+                ("missing", EA_HEADERS),
+                ("revoked", old_headers),
+            ):
+                denied = client.post(
+                    f"/commands/{cid}/{endpoint}", json=payload, headers=headers
+                )
+                assert denied.status_code == 403, (
+                    endpoint, credential_case, denied.text
+                )
 
         with SessionLocal() as db:
             assert crud.get_command(db, cid).status == "SENT_TO_EA"
