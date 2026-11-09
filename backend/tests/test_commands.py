@@ -634,7 +634,17 @@ def test_hosted_ack_and_management_reject_missing_or_foreign_customer_license(cl
         assert command is not None
         cid = command["command_id"]
 
-        for headers in (EA_HEADERS, foreign_headers):
+        # Rotate after EA claim: the previous owner's key is now revoked.
+        # A formerly valid key must not retain callback authority.
+        with SessionLocal() as db:
+            account = crud.get_user_by_telegram(db, "807")
+            assert account is not None
+            rotated_key = crud.issue_license(db, account)
+            db.commit()
+        assert rotated_key != owner["license_key"]
+        rotated_headers = {**EA_HEADERS, "X-SG-License-Key": rotated_key}
+
+        for headers in (EA_HEADERS, foreign_headers, owner_headers):
             for endpoint, payload in (
                 ("received", {}),
                 ("management_event", {"event_type": "TP1_REACHED", "result": "PENDING"}),
@@ -667,9 +677,9 @@ def test_hosted_ack_and_management_reject_missing_or_foreign_customer_license(cl
                 .count() == 0
             )
 
-        # A genuine owner credential still works; denial is tenant-specific.
+        # The freshly rotated owner credential works; stale credentials do not.
         allowed = client.post(
-            f"/commands/{cid}/received", json={}, headers=owner_headers
+            f"/commands/{cid}/received", json={}, headers=rotated_headers
         )
         assert allowed.status_code == 200
         assert allowed.json()["status"] == "received"
