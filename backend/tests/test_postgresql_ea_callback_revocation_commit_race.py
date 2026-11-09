@@ -313,16 +313,17 @@ def test_postgresql_execution_retry_rechecks_license_after_integrity_rollback(
         command_routes.settings.require_license = previous_route_mode
 
 
-def test_postgresql_waiting_callback_rechecks_rotation_after_lock_release(
-    client, db, monkeypatch
+@pytest.mark.parametrize("revocation_kind", ("rotation", "deactivation"))
+def test_postgresql_waiting_callback_rechecks_revocation_after_lock_release(
+    client, db, monkeypatch, revocation_kind
 ):
-    """An old-key callback waiting on a row lock must be denied after rotation.
+    """An old-key callback waiting on a row lock must be denied after revocation.
 
-    The rotating session first flushes an uncommitted licence replacement.
-    The callback resolves the previously committed key, then attempts its
-    customer FOR SHARE lock. PostgreSQL pg_stat_activity confirms the actual
-    lock wait before the rotation is committed. The resumed callback must
-    recheck the key against the newly committed row and write no receipt.
+    The revoking session first flushes an uncommitted licence rotation or
+    customer deactivation. The callback resolves the previously committed
+    key, then attempts its customer FOR SHARE lock. PostgreSQL pg_stat_activity
+    confirms the actual lock wait before revocation commits. The resumed
+    callback must recheck both key and ACTIVE status, writing no receipt.
 
     Fabricated account/command and isolated PostgreSQL only; no live EA,
     broker, real customer, signal transport or order is involved.
@@ -348,8 +349,8 @@ def test_postgresql_waiting_callback_rechecks_rotation_after_lock_release(
     crud.settings.require_license = True
     command_routes.settings.require_license = True
 
-    rotation_locked = Event()
-    commit_rotation = Event()
+    revocation_locked = Event()
+    commit_revocation = Event()
     old_key_resolved = Event()
     let_callback_lock = Event()
     callback_pid_ready = Event()
@@ -375,19 +376,24 @@ def test_postgresql_waiting_callback_rechecks_rotation_after_lock_release(
 
         monkeypatch.setattr(crud, "resolve_ea_user", hold_after_old_key_lookup)
 
-        def rotate_but_hold_customer_row():
+        def revoke_but_hold_customer_row():
             with SessionLocal() as session:
                 session.connection().exec_driver_sql(
                     "SET LOCAL statement_timeout = '12s'"
                 )
                 customer = crud.get_user_by_telegram(session, "990023")
                 assert customer is not None
-                new_key = crud.issue_license(session, customer)
+                if revocation_kind == "rotation":
+                    replacement = crud.issue_license(session, customer)
+                else:
+                    assert revocation_kind == "deactivation"
+                    crud.set_user_status(session, customer, "INACTIVE")
+                    replacement = None
                 session.flush()  # UPDATE locks User before the callback SELECT.
-                rotation_locked.set()
-                assert commit_rotation.wait(timeout=12), "Rotation commit not released"
+                revocation_locked.set()
+                assert commit_revocation.wait(timeout=12), "Revocation commit not released"
                 session.commit()
-                return new_key
+                return replacement
 
         def callback_waiting_for_customer_lock():
             with SessionLocal() as session:
@@ -411,9 +417,9 @@ def test_postgresql_waiting_callback_rechecks_rotation_after_lock_release(
                 return 200
 
         with ThreadPoolExecutor(max_workers=2) as workers:
-            rotating = workers.submit(rotate_but_hold_customer_row)
+            revoking = workers.submit(revoke_but_hold_customer_row)
             try:
-                assert rotation_locked.wait(timeout=8), "Rotation row UPDATE not flushed"
+                assert revocation_locked.wait(timeout=8), "Revocation row UPDATE not flushed"
                 old_callback = workers.submit(callback_waiting_for_customer_lock)
                 assert callback_pid_ready.wait(timeout=8), "No callback backend PID"
                 assert old_key_resolved.wait(timeout=8), "Old key did not resolve"
@@ -441,16 +447,27 @@ def test_postgresql_waiting_callback_rechecks_rotation_after_lock_release(
                 assert not old_callback.done(), "Callback escaped the lock wait"
             finally:
                 let_callback_lock.set()
-                commit_rotation.set()
+                commit_revocation.set()
 
-            replacement = rotating.result(timeout=22)
-            assert replacement != old_key
+            replacement = revoking.result(timeout=22)
+            if revocation_kind == "rotation":
+                assert replacement is not None and replacement != old_key
+            else:
+                assert replacement is None
             assert old_callback.result(timeout=22) == 403, (
-                "Callback authorized under old key after rotation committed"
+                "Callback authorized under old key after revocation committed"
             )
 
         with SessionLocal() as session:
-            assert crud.get_user_by_license(session, old_key) is None
+            customer = crud.get_user_by_telegram(session, "990023")
+            assert customer is not None
+            if revocation_kind == "rotation":
+                assert customer.status == "ACTIVE"
+                assert crud.get_user_by_license(session, old_key) is None
+            else:
+                # Unlike rotation, deactivation must deny a STILL-matching key.
+                assert customer.status == "INACTIVE"
+                assert crud.get_user_by_license(session, old_key) is not None
             assert crud.get_command(session, command_id).status == "SENT_TO_EA"
             assert (
                 session.scalar(
@@ -464,16 +481,23 @@ def test_postgresql_waiting_callback_rechecks_rotation_after_lock_release(
             assert session.query(models.Execution).count() == 0
             assert session.query(models.TradeManagementEvent).count() == 0
 
-        # Positive control: the newly committed credential can acknowledge.
+        # Rotation accepts only its replacement. Deactivation keeps the same
+        # key hash but must refuse even a later, non-racing callback.
         accepted = client.post(
             f"/commands/{command_id}/received",
             json={},
-            headers={**EA_HEADERS, "X-SG-License-Key": replacement},
+            headers={
+                **EA_HEADERS,
+                "X-SG-License-Key": replacement or old_key,
+            },
         )
-        assert accepted.status_code == 200, accepted.text
-        assert accepted.json()["status"] == "received"
+        if revocation_kind == "rotation":
+            assert accepted.status_code == 200, accepted.text
+            assert accepted.json()["status"] == "received"
+        else:
+            assert accepted.status_code == 403, accepted.text
     finally:
         let_callback_lock.set()
-        commit_rotation.set()
+        commit_revocation.set()
         crud.settings.require_license = previous_crud_mode
         command_routes.settings.require_license = previous_route_mode
