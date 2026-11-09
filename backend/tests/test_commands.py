@@ -777,7 +777,7 @@ def test_hosted_ack_and_management_reject_missing_or_foreign_customer_license(cl
         crud.settings.require_license = original_hosted
 
 
-@pytest.mark.parametrize("credential_case", ("foreign", "missing", "revoked"))
+@pytest.mark.parametrize("credential_case", ("foreign", "missing", "revoked", "inactive_customer"))
 @pytest.mark.parametrize(
     "endpoint,payload",
     (
@@ -801,8 +801,9 @@ def test_hosted_callback_does_not_reveal_foreign_command_existence(
 ):
     """Offline tenant privacy witness, not an externally accepted security fix.
 
-    Check all four callbacks using a foreign, absent, or revoked-after-claim
-    customer licence. A shared EA key is not tenant authority. Both foreign
+    Check all four callbacks using a foreign, absent, revoked-after-claim,
+    or deactivated-after-claim customer licence. A shared EA key is not tenant
+    authority. Both foreign
     and absent command IDs must return identical 403 bodies with no mutation.
     This is an offline regression, not independent security acceptance.
     """
@@ -838,7 +839,7 @@ def test_hosted_callback_does_not_reveal_foreign_command_existence(
             probe_headers = other_headers
         elif credential_case == "missing":
             probe_headers = EA_HEADERS
-        else:
+        elif credential_case == "revoked":
             # Revocation after an EA claim must not permit an existence probe.
             with SessionLocal() as db:
                 owner_account = crud.get_user_by_telegram(db, "812")
@@ -846,6 +847,16 @@ def test_hosted_callback_does_not_reveal_foreign_command_existence(
                 replacement = crud.issue_license(db, owner_account)
                 db.commit()
             assert replacement != owner["license_key"]
+            probe_headers = owner_headers
+        else:
+            # A deactivated customer must lose authority even when their
+            # hashed licence still matches the last-issued credential.
+            assert credential_case == "inactive_customer"
+            with SessionLocal() as db:
+                owner_account = crud.get_user_by_telegram(db, "812")
+                assert owner_account is not None
+                crud.set_user_status(db, owner_account, "INACTIVE")
+                db.commit()
             probe_headers = owner_headers
 
         # Hosted routing must not fetch another customer's command globally,
