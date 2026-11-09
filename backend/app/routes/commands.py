@@ -82,6 +82,22 @@ def _get_authorized_callback_command(
             status_code=403, detail="Command does not belong to this EA licence"
         )
 
+    # Serialize hosted callbacks with licence rotation/deactivation on PostgreSQL.
+    # Holding a shared User lock through the route's existing commit prevents
+    # a once-valid EA licence from recording state *after* revocation commits.
+    # The predicate is rechecked after any concurrent row lock wait.
+    customer_query = select(crud.models.User).where(
+        crud.models.User.id == user.id,
+        crud.models.User.status == "ACTIVE",
+        crud.models.User.license_key_hash == crud.hash_license_key(license_key),
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        customer_query = customer_query.with_for_update(read=True)
+    if db.scalar(customer_query.execution_options(populate_existing=True)) is None:
+        raise HTTPException(
+            status_code=403, detail="Command does not belong to this EA licence"
+        )
+
     command = db.scalar(
         select(Command).where(Command.id == command_id, Command.user_id == user.id)
     )

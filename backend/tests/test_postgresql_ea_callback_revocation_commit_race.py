@@ -1,6 +1,6 @@
 """Offline PostgreSQL witness for an EA callback versus customer licence rotation.
 
-This is a strict release HOLD witness, not authorization-policy acceptance.
+This is a synthetic concurrency regression, not external security acceptance.
 The test uses fabricated customers and DB sessions only: no HTTP transport,
 MT5, broker, orders, external credentials or real customer data.
 """
@@ -22,32 +22,19 @@ from .conftest import EA_HEADERS, create_signal, register_user
 VALID = "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363"
 
 
-class _CallbackCommittedAfterLicenceRevoked(AssertionError):
-    """Old EA authorization survived a completed licence rotation."""
 
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=_CallbackCommittedAfterLicenceRevoked,
-    reason=(
-        "RELEASE HOLD: establish whether a callback authorized before licence "
-        "rotation may commit a new receipt after revocation committed"
-    ),
-)
 def test_postgresql_callback_receipt_cannot_overtake_committed_licence_rotation(
     client, db, monkeypatch
 ):
-    """Stage the actual callback route between its authorization and receipt.
+    """Prove that a callback holds authorization until its commit.
 
-    Transaction A authorizes a fabricated claimed command with the old key
-    then stops BEFORE recording the acknowledgement. Transaction B rotates
-    that customer's licence and commits. Only then A resumes. An enforceable
-    strict-revocation policy should either block B until A finishes, or deny
-    A's new audit after B commits; it must not accept an old-key receipt after
-    a completed rotation. An XFAIL records the present gap, not a passed gate.
+    Transaction A authorizes a fabricated, already claimed command using the
+    current customer licence and pauses before adding the audit receipt.
+    Transaction B attempts to rotate the licence in another database session.
+    Rotation must not commit until A has finished its acknowledgement commit.
+    On PostgreSQL, the callback's shared customer-row lock enforces that order.
 
-    Distinct PostgreSQL sessions and a pre-commit barrier make the ordering
-    observable, without creating a real execution or invoking a broker.
+    The two-session barrier uses synthetic data only, never an actual EA/broker.
     """
     if db.get_bind().dialect.name != "postgresql":
         pytest.skip("Requires two independent PostgreSQL transactions")
@@ -143,14 +130,14 @@ def test_postgresql_callback_receipt_cannot_overtake_committed_licence_rotation(
             assert session.query(models.Execution).count() == 0
             assert session.query(models.TradeManagementEvent).count() == 0
 
-        # A transaction that took the earlier authorization may finish BEFORE
-        # revocation commits. That ordering is not this test's security claim.
-        assert acknowledgements in (0, 1)
-        if rotation_overtook_callback and reply.status == "received" and acknowledgements:
-            raise _CallbackCommittedAfterLicenceRevoked(
-                "Old-key acknowledgement committed after the independently "
-                "observed licence-rotation commit"
-            )
+        # This implementation serializes a customer callback and key rotation:
+        # the rotating transaction must wait until the callback has committed.
+        # An old-key callback cannot commit AFTER a completed key rotation.
+        assert not rotation_overtook_callback, (
+            "Licence rotation committed while the old-key callback was still pending"
+        )
+        assert reply.status == "received"
+        assert acknowledgements == 1
     finally:
         release_callback.set()
         crud.settings.require_license = former_crud_mode
