@@ -778,9 +778,10 @@ def test_hosted_ack_and_management_reject_missing_or_foreign_customer_license(cl
 
 
 class _ForeignCommandExistenceOracle(AssertionError):
-    """Known cross-tenant callback 403/404 discrepancy for a shared EA-key holder."""
+    """Known hosted command-existence oracle for unauthorised EA callbacks."""
 
 
+@pytest.mark.parametrize("credential_case", ("foreign", "missing", "revoked"))
 @pytest.mark.parametrize(
     "endpoint,payload",
     (
@@ -803,17 +804,18 @@ class _ForeignCommandExistenceOracle(AssertionError):
     strict=True,
     raises=_ForeignCommandExistenceOracle,
     reason=(
-        "RELEASE HOLD: hosted EA callbacks return 403 for a foreign existing "
+        "RELEASE HOLD: unowned hosted EA callbacks return 403 for an existing "
         "command but 404 for an absent command; owner-scoped lookup needs review"
     ),
 )
 def test_hosted_callback_does_not_reveal_foreign_command_existence(
-    client, endpoint, payload
+    client, endpoint, payload, credential_case
 ):
     """Offline tenant privacy witness, not an externally accepted security fix.
 
-    Check all four callbacks using a valid *other* customer's licence. An
-    unexpected response or any state mutation must fail CI, not be XFAIL.
+    Check all four callbacks using a foreign, absent, or revoked-after-claim
+    customer licence. A shared EA key is not tenant authority. Unexpected
+    responses or state mutations fail CI, not XFAIL.
     Once a reviewed uniform-denial policy is implemented, remove the strict
     marker and retain the same negative/positive controls.
     """
@@ -845,13 +847,27 @@ def test_hosted_callback_does_not_reveal_foreign_command_existence(
             assert crud.get_command(db, absent_id) is None
             assert crud.get_command(db, command_id).status == "SENT_TO_EA"
 
+        if credential_case == "foreign":
+            probe_headers = other_headers
+        elif credential_case == "missing":
+            probe_headers = EA_HEADERS
+        else:
+            # Revocation after an EA claim must not permit an existence probe.
+            with SessionLocal() as db:
+                owner_account = crud.get_user_by_telegram(db, "812")
+                assert owner_account is not None
+                replacement = crud.issue_license(db, owner_account)
+                db.commit()
+            assert replacement != owner["license_key"]
+            probe_headers = owner_headers
+
         foreign = client.post(
             f"/commands/{command_id}/{endpoint}",
-            json=payload, headers=other_headers,
+            json=payload, headers=probe_headers,
         )
         absent = client.post(
             f"/commands/{absent_id}/{endpoint}",
-            json=payload, headers=other_headers,
+            json=payload, headers=probe_headers,
         )
         assert foreign.status_code in (403, 404), (endpoint, foreign.text)
         assert absent.status_code in (403, 404), (endpoint, absent.text)
