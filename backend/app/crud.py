@@ -2385,38 +2385,44 @@ def record_management_event(
             db, command, existing, payload
         )
 
-    event = models.TradeManagementEvent(
-        id=_next_id(db, models.TradeManagementEvent),
-        command_id=command.id,
-        idempotency_key=event_key,
-        broker_ticket=payload.broker_ticket,
-        event_type=payload.event_type,
-        stage=payload.stage,
-        requested_action=payload.requested_action,
-        result=payload.result,
-        price=payload.price,
-        lot_size_before=payload.lot_size_before,
-        lot_size_after=payload.lot_size_after,
-        stop_loss_before=payload.stop_loss_before,
-        stop_loss_after=payload.stop_loss_after,
-        error_code=payload.error_code,
-        error_message=payload.error_message,
-    )
-    db.add(event)
-
-    terminal = command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}
-    new_status = _EVENT_TO_COMMAND_STATUS.get(payload.event_type)
-    if new_status and not terminal:
-        command.status = new_status
-        if new_status in {"FULLY_CLOSED", "FAILED"}:
-            command.processed_at = utcnow()
-
+    # Keep the caller's PostgreSQL customer authorization lock through a
+    # raced management-event insert. Rolling back the outer transaction would
+    # permit a revoked licence to commit a subsequent duplicate-event audit.
+    savepoint_for_race = db.get_bind().dialect.name == "postgresql"
     try:
-        db.flush()
+        with (db.begin_nested() if savepoint_for_race else nullcontext()):
+            event = models.TradeManagementEvent(
+                id=_next_id(db, models.TradeManagementEvent),
+                command_id=command.id,
+                idempotency_key=event_key,
+                broker_ticket=payload.broker_ticket,
+                event_type=payload.event_type,
+                stage=payload.stage,
+                requested_action=payload.requested_action,
+                result=payload.result,
+                price=payload.price,
+                lot_size_before=payload.lot_size_before,
+                lot_size_after=payload.lot_size_after,
+                stop_loss_before=payload.stop_loss_before,
+                stop_loss_after=payload.stop_loss_after,
+                error_code=payload.error_code,
+                error_message=payload.error_message,
+            )
+            db.add(event)
+
+            terminal = command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}
+            new_status = _EVENT_TO_COMMAND_STATUS.get(payload.event_type)
+            if new_status and not terminal:
+                command.status = new_status
+                if new_status in {"FULLY_CLOSED", "FAILED"}:
+                    command.processed_at = utcnow()
+
+            db.flush()
     except IntegrityError:
-        # Same event raced us. The unique idempotency key makes the DB the
-        # final arbiter even with multiple API workers.
-        db.rollback()
+        # Same event raced us. Preserve the hosted customer lock through the
+        # duplicate/conflict audit; SQLite keeps its local-demo fallback.
+        if not savepoint_for_race:
+            db.rollback()
         existing = db.scalar(
             select(models.TradeManagementEvent).where(
                 models.TradeManagementEvent.idempotency_key == event_key

@@ -506,15 +506,6 @@ def test_postgresql_waiting_callback_rechecks_revocation_after_lock_release(
         command_routes.settings.require_license = previous_route_mode
 
 
-class _RevokedManagementRetryAudit(AssertionError):
-    """Only an observed post-revocation retry audit is expected to fail."""
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=_RevokedManagementRetryAudit,
-    reason="Management-event uniqueness rollback loses PostgreSQL EA authorization lock",
-)
 def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
     client, db, monkeypatch
 ):
@@ -526,8 +517,8 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
     its subsequent duplicate-audit commit, even if a different transaction
     attempts to rotate the licence at that instant.
 
-    This is deliberately an unresolved strict XFAIL. Unexpected setup, SQL,
-    timeout and fixture failures are *not* accepted as expected failures.
+    This is a must-pass PostgreSQL serialization regression. Setup, SQL,
+    timeout and fixture failures are not permitted to masquerade as safety.
     There is no broker, EA, Telegram transport, external credential or order.
     """
     if db.get_bind().dialect.name != "postgresql":
@@ -665,11 +656,10 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
             assert session.query(models.Execution).count() == 0
 
         assert old_key_result == "duplicate_ignored"
-        if rotation_overtook_retry:
-            raise _RevokedManagementRetryAudit(
-                "Licence rotation committed before old-key management retry "
-                "recorded its duplicate audit after uniqueness rollback"
-            )
+        assert not rotation_overtook_retry, (
+            "Licence rotation committed while the old-key management retry "
+            "was waiting to write its duplicate audit"
+        )
     finally:
         allow_insert.set()
         allow_recovery.set()
