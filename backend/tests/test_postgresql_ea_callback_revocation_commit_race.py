@@ -504,3 +504,174 @@ def test_postgresql_waiting_callback_rechecks_revocation_after_lock_release(
         commit_revocation.set()
         crud.settings.require_license = previous_crud_mode
         command_routes.settings.require_license = previous_route_mode
+
+
+class _RevokedManagementRetryAudit(AssertionError):
+    """Only an observed post-revocation retry audit is expected to fail."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_RevokedManagementRetryAudit,
+    reason="Management-event uniqueness rollback loses PostgreSQL EA authorization lock",
+)
+def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
+    client, db, monkeypatch
+):
+    """Witness an actual unique idempotency-key collision and rollback race.
+
+    Two synthetic callbacks report the same management event. After the
+    winning event commits, the old-key retry hits the real PostgreSQL unique
+    constraint. The losing callback must retain customer authorization through
+    its subsequent duplicate-audit commit, even if a different transaction
+    attempts to rotate the licence at that instant.
+
+    This is deliberately an unresolved strict XFAIL. Unexpected setup, SQL,
+    timeout and fixture failures are *not* accepted as expected failures.
+    There is no broker, EA, Telegram transport, external credential or order.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires PostgreSQL uniqueness and independent sessions")
+
+    from threading import local
+    from sqlalchemy import select
+    from app.schemas import ManagementEventRequest
+
+    owner = register_user(client, "990024")
+    signal = create_signal(client, VALID)
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990024"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+
+    previous_crud_mode = crud.settings.require_license
+    previous_route_mode = command_routes.settings.require_license
+    crud.settings.require_license = True
+    command_routes.settings.require_license = True
+
+    role = local()
+    before_insert = Event()
+    allow_insert = Event()
+    after_rollback = Event()
+    allow_recovery = Event()
+    rotation_started = Event()
+    rotated = Event()
+    original_next_id = crud._next_id
+    original_recovery = crud._existing_management_event_or_conflict
+
+    def gate_first_event_insert(session, model):
+        if (
+            model is models.TradeManagementEvent
+            and getattr(role, "name", None) == "old-key"
+        ):
+            before_insert.set()
+            assert allow_insert.wait(timeout=15), "Old-key insert not released"
+        return original_next_id(session, model)
+
+    def gate_integrity_retry(session, command, existing, payload, *, raced=False):
+        if raced and getattr(role, "name", None) == "old-key":
+            after_rollback.set()
+            assert allow_recovery.wait(timeout=15), "Retry audit not released"
+        return original_recovery(session, command, existing, payload, raced=raced)
+
+    monkeypatch.setattr(crud, "_next_id", gate_first_event_insert)
+    monkeypatch.setattr(
+        crud, "_existing_management_event_or_conflict", gate_integrity_retry
+    )
+
+    try:
+        headers = {**EA_HEADERS, "X-SG-License-Key": owner["license_key"]}
+        polled = client.get("/commands/pending", headers=headers)
+        assert polled.status_code == 200, polled.text
+        command = polled.json()["command"]
+        assert command is not None
+        command_id = command["command_id"]
+        payload = ManagementEventRequest(
+            event_type="TP1_REACHED", result="PENDING", stage="SYNTHETIC"
+        )
+
+        def report(incoming_role):
+            role.name = incoming_role
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                response = command_routes.report_management_event(
+                    command_id,
+                    payload,
+                    x_sg_license_key=owner["license_key"],
+                    db=session,
+                    _ea="offline-test",
+                )
+                return response.status
+
+        def rotate_licence():
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                customer = crud.get_user_by_telegram(session, "990024")
+                assert customer is not None
+                rotation_started.set()
+                assert crud.issue_license(session, customer) != owner["license_key"]
+                session.commit()
+                rotated.set()
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            old_key_future = workers.submit(report, "old-key")
+            try:
+                assert before_insert.wait(timeout=8), (
+                    "Old-key callback never reached first event insert"
+                )
+                winner_future = workers.submit(report, "winner")
+                assert winner_future.result(timeout=22) == "ok", (
+                    "Winner failed to commit the competing management event"
+                )
+                allow_insert.set()
+                assert after_rollback.wait(timeout=8), (
+                    "No actual PostgreSQL uniqueness collision/retry was reached"
+                )
+                rotating_future = workers.submit(rotate_licence)
+                assert rotation_started.wait(timeout=8), (
+                    "Rotation did not reach its transaction barrier"
+                )
+                rotation_overtook_retry = rotated.wait(timeout=5)
+            finally:
+                allow_insert.set()
+                allow_recovery.set()
+            old_key_result = old_key_future.result(timeout=22)
+            rotating_future.result(timeout=22)
+
+        with SessionLocal() as session:
+            assert crud.get_user_by_license(session, owner["license_key"]) is None
+            assert session.scalar(
+                select(models.TradeManagementEvent.id).where(
+                    models.TradeManagementEvent.command_id == command_id
+                )
+            ) is not None
+            assert session.query(models.TradeManagementEvent).count() == 1
+            retry_audits = session.scalars(
+                select(models.AuditLog).where(
+                    models.AuditLog.event_type
+                    == "DUPLICATE_MANAGEMENT_EVENT_IGNORED",
+                    models.AuditLog.entity_id == command_id,
+                )
+            ).all()
+            assert len(retry_audits) == 1, (
+                "Exactly one duplicate management audit should be committed"
+            )
+            assert session.query(models.Execution).count() == 0
+
+        assert old_key_result == "duplicate_ignored"
+        if rotation_overtook_retry:
+            raise _RevokedManagementRetryAudit(
+                "Licence rotation committed before old-key management retry "
+                "recorded its duplicate audit after uniqueness rollback"
+            )
+    finally:
+        allow_insert.set()
+        allow_recovery.set()
+        crud.settings.require_license = previous_crud_mode
+        command_routes.settings.require_license = previous_route_mode
