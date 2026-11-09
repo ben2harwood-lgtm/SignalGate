@@ -311,3 +311,169 @@ def test_postgresql_execution_retry_rechecks_license_after_integrity_rollback(
         allow_recovery.set()
         crud.settings.require_license = previous_crud_mode
         command_routes.settings.require_license = previous_route_mode
+
+
+def test_postgresql_waiting_callback_rechecks_rotation_after_lock_release(
+    client, db, monkeypatch
+):
+    """An old-key callback waiting on a row lock must be denied after rotation.
+
+    The rotating session first flushes an uncommitted licence replacement.
+    The callback resolves the previously committed key, then attempts its
+    customer FOR SHARE lock. PostgreSQL pg_stat_activity confirms the actual
+    lock wait before the rotation is committed. The resumed callback must
+    recheck the key against the newly committed row and write no receipt.
+
+    Fabricated account/command and isolated PostgreSQL only; no live EA,
+    broker, real customer, signal transport or order is involved.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires PostgreSQL row-lock recheck")
+
+    from fastapi import HTTPException
+    from sqlalchemy import select, text
+    from time import monotonic, sleep
+
+    owner = register_user(client, "990023")
+    signal = create_signal(client, VALID)
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990023"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+
+    previous_crud_mode = crud.settings.require_license
+    previous_route_mode = command_routes.settings.require_license
+    crud.settings.require_license = True
+    command_routes.settings.require_license = True
+
+    rotation_locked = Event()
+    commit_rotation = Event()
+    old_key_resolved = Event()
+    let_callback_lock = Event()
+    callback_pid_ready = Event()
+    callback_pid: dict[str, int] = {}
+    old_key = owner["license_key"]
+    original_resolve = crud.resolve_ea_user
+
+    def hold_after_old_key_lookup(session, *args, **kwargs):
+        user = original_resolve(session, *args, **kwargs)
+        if kwargs.get("license_key") == old_key:
+            assert user is not None, "Old key should resolve before rotation commit"
+            old_key_resolved.set()
+            assert let_callback_lock.wait(timeout=12), "Callback lock attempt not released"
+        return user
+
+    try:
+        original_headers = {**EA_HEADERS, "X-SG-License-Key": old_key}
+        polled = client.get("/commands/pending", headers=original_headers)
+        assert polled.status_code == 200, polled.text
+        command = polled.json()["command"]
+        assert command is not None
+        command_id = command["command_id"]
+
+        monkeypatch.setattr(crud, "resolve_ea_user", hold_after_old_key_lookup)
+
+        def rotate_but_hold_customer_row():
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                customer = crud.get_user_by_telegram(session, "990023")
+                assert customer is not None
+                new_key = crud.issue_license(session, customer)
+                session.flush()  # UPDATE locks User before the callback SELECT.
+                rotation_locked.set()
+                assert commit_rotation.wait(timeout=12), "Rotation commit not released"
+                session.commit()
+                return new_key
+
+        def callback_waiting_for_customer_lock():
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                callback_pid["pid"] = session.connection().exec_driver_sql(
+                    "SELECT pg_backend_pid()"
+                ).scalar_one()
+                callback_pid_ready.set()
+                try:
+                    command_routes.command_received(
+                        command_id,
+                        CommandReceivedRequest(),
+                        x_sg_license_key=old_key,
+                        db=session,
+                        _ea="offline-test",
+                    )
+                except HTTPException as exc:
+                    return exc.status_code
+                return 200
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            rotating = workers.submit(rotate_but_hold_customer_row)
+            try:
+                assert rotation_locked.wait(timeout=8), "Rotation row UPDATE not flushed"
+                old_callback = workers.submit(callback_waiting_for_customer_lock)
+                assert callback_pid_ready.wait(timeout=8), "No callback backend PID"
+                assert old_key_resolved.wait(timeout=8), "Old key did not resolve"
+                let_callback_lock.set()
+
+                # Observe the *real* PostgreSQL lock wait, not a sleep-only race.
+                waiting_on_lock = False
+                with SessionLocal() as observer:
+                    deadline = monotonic() + 6
+                    while monotonic() < deadline:
+                        wait_type = observer.execute(
+                            text(
+                                "SELECT wait_event_type FROM pg_stat_activity "
+                                "WHERE pid = :pid"
+                            ),
+                            {"pid": callback_pid["pid"]},
+                        ).scalar_one_or_none()
+                        if wait_type == "Lock":
+                            waiting_on_lock = True
+                            break
+                        sleep(0.05)
+                assert waiting_on_lock, (
+                    "Callback never waited on PostgreSQL customer row lock"
+                )
+                assert not old_callback.done(), "Callback escaped the lock wait"
+            finally:
+                let_callback_lock.set()
+                commit_rotation.set()
+
+            replacement = rotating.result(timeout=22)
+            assert replacement != old_key
+            assert old_callback.result(timeout=22) == 403, (
+                "Callback authorized under old key after rotation committed"
+            )
+
+        with SessionLocal() as session:
+            assert crud.get_user_by_license(session, old_key) is None
+            assert crud.get_command(session, command_id).status == "SENT_TO_EA"
+            assert (
+                session.scalar(
+                    select(models.AuditLog.id).where(
+                        models.AuditLog.event_type == "COMMAND_RECEIVED_BY_EA",
+                        models.AuditLog.entity_id == command_id,
+                    )
+                )
+                is None
+            )
+            assert session.query(models.Execution).count() == 0
+            assert session.query(models.TradeManagementEvent).count() == 0
+
+        # Positive control: the newly committed credential can acknowledge.
+        accepted = client.post(
+            f"/commands/{command_id}/received",
+            json={},
+            headers={**EA_HEADERS, "X-SG-License-Key": replacement},
+        )
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["status"] == "received"
+    finally:
+        let_callback_lock.set()
+        commit_rotation.set()
+        crud.settings.require_license = previous_crud_mode
+        command_routes.settings.require_license = previous_route_mode
