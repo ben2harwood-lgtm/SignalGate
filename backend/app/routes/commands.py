@@ -265,6 +265,18 @@ def report_management_event(
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
     command = _get_authorized_callback_command(db, command_id, x_sg_license_key)
+    # A different callback can close the command after its first authorised
+    # SELECT, leaving this Session's Command object stale under PostgreSQL
+    # READ COMMITTED. Serialize state-changing management receipts on the
+    # command row and refresh the ORM snapshot BEFORE the terminal/stage guard.
+    # The shared customer-licence lock protects revocation, not command state.
+    # TP*_REACHED is only a price observation: keep its existing independent
+    # duplicate-key race/retry coverage without taking a command write lock.
+    if (
+        db.get_bind().dialect.name == "postgresql"
+        and payload.event_type not in {"TP1_REACHED", "TP2_REACHED", "TP3_REACHED"}
+    ):
+        db.refresh(command, with_for_update=True)
     # Capture pre-report terminal truth: CRUD records distinct late receipts
     # without re-opening a finished command, but post-commit status alone
     # cannot distinguish a fresh exit from a contradictory late exit.
