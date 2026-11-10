@@ -127,6 +127,23 @@ def pending_command(
     if user is None:
         db.commit()
         return PendingCommandResponse(command=None)
+    if settings.require_license:
+        # The initial licence lookup can become stale before claim. Serialize
+        # hosted delivery with licence rotation/deactivation, and recheck the
+        # credential after any PostgreSQL row-lock wait. Keep the shared customer
+        # lock until the command claim and its audit commit together.
+        current_customer = select(crud.models.User).where(
+            crud.models.User.id == user.id,
+            crud.models.User.status == "ACTIVE",
+            crud.models.User.license_key_hash == crud.hash_license_key(
+                presented_license or ""
+            ),
+        )
+        if db.get_bind().dialect.name == "postgresql":
+            current_customer = current_customer.with_for_update(read=True)
+        if db.scalar(current_customer.execution_options(populate_existing=True)) is None:
+            db.commit()
+            return PendingCommandResponse(command=None)
     command = crud.get_pending_command_for_user(db, user.id)
     db.commit()
     if command is None:
