@@ -773,7 +773,9 @@ def test_postgresql_pending_poll_rechecks_revocation_before_delivery(
                 else:
                     assert revocation_kind == "deactivation"
                     crud.set_user_status(session, customer, "INACTIVE")
+                    replacement = None
                 session.commit()
+                return replacement
 
         with ThreadPoolExecutor(max_workers=2) as workers:
             old_poll = workers.submit(old_licence_poll)
@@ -782,7 +784,7 @@ def test_postgresql_pending_poll_rechecks_revocation_before_delivery(
                     "Old licence did not resolve before the staged claim"
                 )
                 revoke = workers.submit(commit_revocation)
-                revoke.result(timeout=22)  # Must COMMIT before old poll proceeds.
+                replacement_key = revoke.result(timeout=22)  # Must COMMIT before old poll proceeds.
                 assert not old_poll.done(), (
                     "Old poll escaped the before-claim synchronization gate"
                 )
@@ -809,6 +811,43 @@ def test_postgresql_pending_poll_rechecks_revocation_before_delivery(
             assert command.status == "PENDING", (
                 "A revoked poll must not consume a pending command"
             )
+            sent_audits = inspect.scalars(
+                select(models.AuditLog).where(
+                    models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                    models.AuditLog.entity_id == command_id,
+                )
+            ).all()
+            assert not sent_audits, (
+                "Revoked polls must not leave a command-delivery audit receipt"
+            )
+
+        # Rotation revokes only the old credential. The newly issued, active
+        # credential must still be able to claim the preserved pending command.
+        # Deactivation has no replacement credential and must remain blocked.
+        if revocation_kind == "rotation":
+            assert replacement_key and replacement_key != owner["license_key"]
+            with SessionLocal() as replacement_session:
+                new_poll = command_routes.pending_command(
+                    x_sg_license_key=replacement_key,
+                    db=replacement_session,
+                    _ea="offline-test",
+                )
+            assert new_poll.command is not None
+            assert new_poll.command.command_id == command_id
+            with SessionLocal() as inspect:
+                delivered = crud.get_command(inspect, command_id)
+                assert delivered is not None and delivered.status == "SENT_TO_EA"
+                sent_audits = inspect.scalars(
+                    select(models.AuditLog).where(
+                        models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                        models.AuditLog.entity_id == command_id,
+                    )
+                ).all()
+                assert len(sent_audits) == 1, (
+                    "Replacement credential must claim exactly once"
+                )
+        else:
+            assert replacement_key is None
     finally:
         resume_poll.set()
         crud.settings.require_license = previous_crud_mode
