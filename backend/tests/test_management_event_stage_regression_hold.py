@@ -240,6 +240,9 @@ def test_stop_loss_move_messages_follow_matching_ea_receipts(
 
     assert receipt("TP3_CLOSE_SUCCESS", "TP3_DONE", "SUCCESS") == "ok"
     assert len(messages) == 5
+    assert "Demo EA reports TP3 child closed" in messages[-1]
+    assert "not independently confirmed" in messages[-1]
+    assert "check demo terminal" in messages[-1]
     opposite_tp1 = "FAILED" if tp1_result == "SUCCESS" else "SUCCESS"
     assert receipt(
         f"SL_MOVE_TP1_{opposite_tp1}", "TP2_LATE_SL_RECEIPT", opposite_tp1
@@ -348,6 +351,12 @@ def test_explicitly_contradictory_management_outcomes_are_rejected(
     )
     assert corrected.status_code == 200, corrected.text
     assert corrected.json()["status"] == "ok"
+    if event_type in {"TP3_CLOSE_SUCCESS", "STOP_LOSS_HIT", "FULLY_CLOSED"}:
+        assert len(notifications) == 1
+        message = notifications[0][0][1]
+        assert "Demo EA reports" in message
+        assert "not independently confirmed" in message
+        assert "check demo terminal" in message
     with SessionLocal() as session:
         assert session.query(models.TradeManagementEvent).filter_by(
             command_id=command_id
