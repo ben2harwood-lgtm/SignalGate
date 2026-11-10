@@ -685,19 +685,7 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
         command_routes.settings.require_license = previous_route_mode
 
 
-class _PendingPollAfterRevocationObserved(AssertionError):
-    """Only the observed post-revocation delivery earns a strict XFAIL."""
-
-
 @pytest.mark.parametrize("revocation_kind", ("rotation", "deactivation"))
-@pytest.mark.xfail(
-    strict=True,
-    raises=_PendingPollAfterRevocationObserved,
-    reason=(
-        "Hosted pending-command poll resolves the licence before claim without "
-        "a customer-row revocation lock or final credential recheck"
-    ),
-)
 def test_postgresql_pending_poll_rechecks_revocation_before_delivery(
     client, db, monkeypatch, revocation_kind
 ):
@@ -709,8 +697,8 @@ def test_postgresql_pending_poll_rechecks_revocation_before_delivery(
     Delivery using the old key must fail closed and must leave the command
     pending. This is NOT an EA, broker, order or external-pilot receipt.
 
-    The XFAIL is deliberately limited to the proven unsafe delivery. A failed
-    setup assertion, SQL error or timeout must fail the job instead.
+    Both cases are must-pass security regressions. Setup errors, SQL failures
+    or timeouts must fail the job, not count as a successful denial.
     """
     if db.get_bind().dialect.name != "postgresql":
         pytest.skip("Requires two independent PostgreSQL transactions")
@@ -743,16 +731,21 @@ def test_postgresql_pending_poll_rechecks_revocation_before_delivery(
 
     resolved_before_claim = Event()
     resume_poll = Event()
-    original_claim = crud.get_pending_command_for_user
+    original_resolver = crud.resolve_ea_user
 
-    def gate_after_initial_licence_lookup(session, user_id):
-        assert user_id == owner["id"], "Wrong customer reached polling claim"
+    def gate_after_initial_licence_lookup(session, user_id=None, license_key=None):
+        user = original_resolver(
+            session, user_id=user_id, license_key=license_key
+        )
+        assert user is not None and user.id == owner["id"], (
+            "Wrong customer passed the initial licence lookup"
+        )
         resolved_before_claim.set()
         assert resume_poll.wait(timeout=15), "Staged poll never resumed"
-        return original_claim(session, user_id)
+        return user
 
     monkeypatch.setattr(
-        crud, "get_pending_command_for_user", gate_after_initial_licence_lookup
+        crud, "resolve_ea_user", gate_after_initial_licence_lookup
     )
 
     try:
@@ -810,16 +803,11 @@ def test_postgresql_pending_poll_rechecks_revocation_before_delivery(
             command = crud.get_command(inspect, command_id)
             assert command is not None
 
-            if response.command is not None:
-                assert response.command.command_id == command_id
-                assert command.status == "SENT_TO_EA"
-                raise _PendingPollAfterRevocationObserved(
-                    f"Old licence received pending command after {revocation_kind} "
-                    "had committed in another PostgreSQL transaction"
-                )
-
+            assert response.command is None, (
+                f"Revoked {revocation_kind} licence must not receive pending command"
+            )
             assert command.status == "PENDING", (
-                "A revoked poll must not consume a command without returning it"
+                "A revoked poll must not consume a pending command"
             )
     finally:
         resume_poll.set()
