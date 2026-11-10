@@ -148,3 +148,103 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client, monkeypatch
     )
     assert repeated.status_code == 200, repeated.text
     assert repeated.json()["status"] == "duplicate_ignored"
+
+
+@pytest.mark.parametrize(
+    ("breakeven_result", "tp1_result"),
+    [("SUCCESS", "FAILED"), ("FAILED", "SUCCESS")],
+)
+def test_stop_loss_move_messages_follow_matching_ea_receipts(
+    client, monkeypatch, breakeven_result, tp1_result
+):
+    """A TP close is not SL proof; current-stage SL outcomes notify once.
+
+    Late results from an earlier/closed stage remain audited but do not imply
+    new protection. All inputs and notifications are synthetic/offline.
+    """
+    owner = register_user(client, "990092")
+    signal = create_signal(client, "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363")
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990092"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    pending = client.get(
+        "/commands/pending",
+        params={"user_id": owner["id"]},
+        headers=EA_HEADERS,
+    )
+    assert pending.status_code == 200, pending.text
+    command_id = pending.json()["command"]["command_id"]
+    executed = client.post(
+        f"/commands/{command_id}/execution",
+        json={"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04},
+        headers=EA_HEADERS,
+    )
+    assert executed.status_code == 200, executed.text
+
+    from app.routes import commands as command_routes
+
+    messages = []
+    monkeypatch.setattr(
+        command_routes,
+        "notify_user_and_admins",
+        lambda _chat_id, message: messages.append(message),
+    )
+
+    def receipt(event_type, stage, result):
+        response = client.post(
+            f"/commands/{command_id}/management_event",
+            json={"event_type": event_type, "stage": stage, "result": result},
+            headers=EA_HEADERS,
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["status"]
+
+    assert receipt("TP1_CLOSE_SUCCESS", "TP1_DONE", "SUCCESS") == "ok"
+    assert len(messages) == 1
+    assert "not yet confirmed" in messages[-1]
+    first_type = f"SL_MOVE_BREAKEVEN_{breakeven_result}"
+    assert receipt(first_type, "TP1_DONE", breakeven_result) == "ok"
+    assert len(messages) == 2
+    if breakeven_result == "FAILED":
+        assert "FAILED" in messages[-1] and "Protection not confirmed" in messages[-1]
+    else:
+        assert "Demo EA reports" in messages[-1] and "succeeded" in messages[-1]
+    assert receipt(first_type, "TP1_DONE", breakeven_result) == "duplicate_ignored"
+    assert len(messages) == 2, "Duplicate management receipt must not notify twice"
+
+    assert receipt("TP2_CLOSE_SUCCESS", "TP2_DONE", "SUCCESS") == "ok"
+    assert len(messages) == 3
+    assert "not yet confirmed" in messages[-1]
+    second_type = f"SL_MOVE_TP1_{tp1_result}"
+    assert receipt(second_type, "TP2_DONE", tp1_result) == "ok"
+    assert len(messages) == 4
+    if tp1_result == "FAILED":
+        assert "FAILED" in messages[-1] and "Protection not confirmed" in messages[-1]
+    else:
+        assert "Demo EA reports" in messages[-1] and "succeeded" in messages[-1]
+
+    opposite_breakeven = "FAILED" if breakeven_result == "SUCCESS" else "SUCCESS"
+    assert receipt(
+        f"SL_MOVE_BREAKEVEN_{opposite_breakeven}",
+        "TP1_LATE_SL_RECEIPT",
+        opposite_breakeven,
+    ) == "ok"
+    assert len(messages) == 4, "Stale TP1 stop-loss receipt must not notify after TP2"
+
+    assert receipt("TP3_CLOSE_SUCCESS", "TP3_DONE", "SUCCESS") == "ok"
+    assert len(messages) == 5
+    opposite_tp1 = "FAILED" if tp1_result == "SUCCESS" else "SUCCESS"
+    assert receipt(
+        f"SL_MOVE_TP1_{opposite_tp1}", "TP2_LATE_SL_RECEIPT", opposite_tp1
+    ) == "ok"
+    assert len(messages) == 5, "Closed command must not notify an old SL move"
+
+    with SessionLocal() as session:
+        assert crud.get_command(session, command_id).status == "FULLY_CLOSED"
+        events = session.query(models.TradeManagementEvent).filter_by(
+            command_id=command_id
+        ).all()
+        assert len(events) == 7, "Distinct late receipts are still persisted for audit"

@@ -241,6 +241,10 @@ _NOTIFY_EVENTS = {
     # Do not imply the remaining stop-loss is already protected.
     "TP1_CLOSE_SUCCESS": "🎯 TP1 close reported. Stop-loss change not yet confirmed.",
     "TP2_CLOSE_SUCCESS": "🎯 TP2 close reported. Stop-loss change not yet confirmed.",
+    "SL_MOVE_BREAKEVEN_SUCCESS": "✅ Demo EA reports remaining stop-loss move to breakeven succeeded.",
+    "SL_MOVE_BREAKEVEN_FAILED": "⚠️ Demo EA reports breakeven stop-loss move FAILED. Protection not confirmed; check demo terminal.",
+    "SL_MOVE_TP1_SUCCESS": "✅ Demo EA reports remaining stop-loss move to TP1 succeeded.",
+    "SL_MOVE_TP1_FAILED": "⚠️ Demo EA reports TP1 stop-loss move FAILED. Protection not confirmed; check demo terminal.",
     "TP3_CLOSE_SUCCESS": "🎯 TP3 hit. Final child closed.",
     "FULLY_CLOSED": "🏁 Trade fully closed.",
     "STOP_LOSS_HIT": "🛑 Stop loss hit.",
@@ -275,6 +279,15 @@ def report_management_event(
             "PARTIAL_TP2_DONE", "FULLY_CLOSED"
         })
         or (payload.event_type == "TP2_CLOSE_SUCCESS" and command.status == "FULLY_CLOSED")
+        # A delayed SL receipt from an earlier/closed stage must not imply
+        # that current protection has changed. Keep its audit receipt.
+        or (payload.event_type in {"SL_MOVE_BREAKEVEN_SUCCESS", "SL_MOVE_BREAKEVEN_FAILED"}
+            and command.status != "PARTIAL_TP1_DONE")
+        or (payload.event_type in {"SL_MOVE_TP1_SUCCESS", "SL_MOVE_TP1_FAILED"}
+            and command.status != "PARTIAL_TP2_DONE")
+        # Never announce success if the EA event type and result disagree.
+        or (payload.event_type.startswith("SL_MOVE_")
+            and payload.result != ("SUCCESS" if payload.event_type.endswith("_SUCCESS") else "FAILED"))
     ):
         note = None
     if note:
