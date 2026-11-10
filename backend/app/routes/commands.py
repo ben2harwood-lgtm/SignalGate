@@ -265,6 +265,10 @@ def report_management_event(
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
     command = _get_authorized_callback_command(db, command_id, x_sg_license_key)
+    # Capture pre-report terminal truth: CRUD records distinct late receipts
+    # without re-opening a finished command, but post-commit status alone
+    # cannot distinguish a fresh exit from a contradictory late exit.
+    terminal_before_receipt = command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}
     # An explicit EA result contradicting the event name is not execution
     # evidence. Refuse it before CRUD can advance command/ledger state or
     # create a misleading success notification. None remains compatible with
@@ -298,7 +302,11 @@ def report_management_event(
     # customer an earlier milestone just happened after a later stage or close.
     # This is notification-only: command/ledger execution rules are unchanged.
     if (
-        (payload.event_type == "TP1_CLOSE_SUCCESS" and command.status in {
+        # The EA legitimately follows TP3/STOP_LOSS_HIT with FULLY_CLOSED.
+        # Retain that final notice, but never announce a new competing exit
+        # from a distinct late TP/SL/failure receipt after terminal state.
+        (terminal_before_receipt and payload.event_type != "FULLY_CLOSED")
+        or (payload.event_type == "TP1_CLOSE_SUCCESS" and command.status in {
             "PARTIAL_TP2_DONE", "FULLY_CLOSED"
         })
         or (payload.event_type == "TP2_CLOSE_SUCCESS" and command.status == "FULLY_CLOSED")
