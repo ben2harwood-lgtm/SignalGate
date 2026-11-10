@@ -683,3 +683,145 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
         allow_recovery.set()
         crud.settings.require_license = previous_crud_mode
         command_routes.settings.require_license = previous_route_mode
+
+
+class _PendingPollAfterRevocationObserved(AssertionError):
+    """Only the observed post-revocation delivery earns a strict XFAIL."""
+
+
+@pytest.mark.parametrize("revocation_kind", ("rotation", "deactivation"))
+@pytest.mark.xfail(
+    strict=True,
+    raises=_PendingPollAfterRevocationObserved,
+    reason=(
+        "Hosted pending-command poll resolves the licence before claim without "
+        "a customer-row revocation lock or final credential recheck"
+    ),
+)
+def test_postgresql_pending_poll_rechecks_revocation_before_delivery(
+    client, db, monkeypatch, revocation_kind
+):
+    """Expose a distinct old-credential pending-poll race with real PG commits.
+
+    A synthetic EA poll authenticates with an initially valid licence and
+    blocks immediately before claiming its pending command. A separate PG
+    transaction then commits licence rotation or customer deactivation.
+    Delivery using the old key must fail closed and must leave the command
+    pending. This is NOT an EA, broker, order or external-pilot receipt.
+
+    The XFAIL is deliberately limited to the proven unsafe delivery. A failed
+    setup assertion, SQL error or timeout must fail the job instead.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires two independent PostgreSQL transactions")
+
+    from sqlalchemy import select
+
+    owner = register_user(client, "990025")
+    signal = create_signal(client, VALID)
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990025"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+
+    with SessionLocal() as inspect:
+        staged = inspect.scalar(
+            select(models.Command).where(
+                models.Command.signal_id == signal["id"],
+                models.Command.user_id == owner["id"],
+            )
+        )
+        assert staged is not None and staged.status == "PENDING"
+        command_id = staged.id
+
+    previous_crud_mode = crud.settings.require_license
+    previous_route_mode = command_routes.settings.require_license
+    crud.settings.require_license = True
+    command_routes.settings.require_license = True
+
+    resolved_before_claim = Event()
+    resume_poll = Event()
+    original_claim = crud.get_pending_command_for_user
+
+    def gate_after_initial_licence_lookup(session, user_id):
+        assert user_id == owner["id"], "Wrong customer reached polling claim"
+        resolved_before_claim.set()
+        assert resume_poll.wait(timeout=15), "Staged poll never resumed"
+        return original_claim(session, user_id)
+
+    monkeypatch.setattr(
+        crud, "get_pending_command_for_user", gate_after_initial_licence_lookup
+    )
+
+    try:
+        def old_licence_poll():
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                return command_routes.pending_command(
+                    x_sg_license_key=owner["license_key"],
+                    db=session,
+                    _ea="offline-test",
+                )
+
+        def commit_revocation():
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                customer = crud.get_user_by_telegram(session, "990025")
+                assert customer is not None
+                if revocation_kind == "rotation":
+                    replacement = crud.issue_license(session, customer)
+                    assert replacement != owner["license_key"]
+                else:
+                    assert revocation_kind == "deactivation"
+                    crud.set_user_status(session, customer, "INACTIVE")
+                session.commit()
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            old_poll = workers.submit(old_licence_poll)
+            try:
+                assert resolved_before_claim.wait(timeout=8), (
+                    "Old licence did not resolve before the staged claim"
+                )
+                revoke = workers.submit(commit_revocation)
+                revoke.result(timeout=22)  # Must COMMIT before old poll proceeds.
+                assert not old_poll.done(), (
+                    "Old poll escaped the before-claim synchronization gate"
+                )
+            finally:
+                resume_poll.set()
+            response = old_poll.result(timeout=22)
+
+        with SessionLocal() as inspect:
+            customer = crud.get_user_by_telegram(inspect, "990025")
+            assert customer is not None
+            if revocation_kind == "rotation":
+                assert crud.get_user_by_license(inspect, owner["license_key"]) is None
+                assert customer.status == "ACTIVE"
+            else:
+                assert customer.status == "INACTIVE"
+                assert crud.get_user_by_license(inspect, owner["license_key"]) is not None
+
+            command = crud.get_command(inspect, command_id)
+            assert command is not None
+
+            if response.command is not None:
+                assert response.command.command_id == command_id
+                assert command.status == "SENT_TO_EA"
+                raise _PendingPollAfterRevocationObserved(
+                    f"Old licence received pending command after {revocation_kind} "
+                    "had committed in another PostgreSQL transaction"
+                )
+
+            assert command.status == "PENDING", (
+                "A revoked poll must not consume a command without returning it"
+            )
+    finally:
+        resume_poll.set()
+        crud.settings.require_license = previous_crud_mode
+        command_routes.settings.require_license = previous_route_mode
