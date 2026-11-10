@@ -14,7 +14,7 @@ from app.database import SessionLocal
 from .conftest import EA_HEADERS, create_signal, register_user
 
 
-def test_late_tp1_success_cannot_regress_committed_tp2_stage(client):
+def test_late_tp1_success_cannot_regress_committed_tp2_stage(client, monkeypatch):
     """A second, differently keyed TP1 receipt must not undo an advanced TP2.
 
     Stage is part of management-event idempotency identity, so a delayed TP1
@@ -69,6 +69,17 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client):
         assert ledger_row.result_status == "TP2_HIT"
         assert ledger_row.r_result == pytest.approx(6.5)
 
+    # An accepted stale TP1 receipt must not send a misleading second
+    # "TP1 hit / SL moved" notification after TP2 has completed.
+    from app.routes import commands as command_routes
+
+    late_notifications = []
+    monkeypatch.setattr(
+        command_routes,
+        "notify_user_and_admins",
+        lambda *args, **kwargs: late_notifications.append((args, kwargs)),
+    )
+
     late = client.post(
         f"/commands/{command_id}/management_event",
         json={
@@ -80,6 +91,7 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client):
     )
     assert late.status_code == 200, late.text
     assert late.json()["status"] == "ok"
+    assert not late_notifications, "Stale TP1 receipt must not notify after TP2"
 
     with SessionLocal() as session:
         stored = crud.get_command(session, command_id)
