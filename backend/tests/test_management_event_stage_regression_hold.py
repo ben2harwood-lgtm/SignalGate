@@ -49,6 +49,17 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client, monkeypatch
     )
     assert executed.status_code == 200, executed.text
 
+    # EA emits TP-close receipts before the *separate* stop-loss move result.
+    # Customer-facing text must not declare that SL move complete yet.
+    from app.routes import commands as command_routes
+
+    stage_notifications = []
+    monkeypatch.setattr(
+        command_routes,
+        "notify_user_and_admins",
+        lambda *args, **kwargs: stage_notifications.append((args, kwargs)),
+    )
+
     for event_type, stage in (
         ("TP1_CLOSE_SUCCESS", "TP1_DONE"),
         ("TP2_CLOSE_SUCCESS", "TP2_DONE"),
@@ -61,6 +72,13 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client, monkeypatch
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "ok"
 
+    assert len(stage_notifications) == 2
+    for level, (args, _kwargs) in zip(("TP1", "TP2"), stage_notifications):
+        message = args[1]
+        assert f"{level} close reported" in message
+        assert "Stop-loss change not yet confirmed" in message
+        assert "SL moved" not in message
+
     with SessionLocal() as session:
         assert crud.get_command(session, command_id).status == "PARTIAL_TP2_DONE"
         ledger_row = session.query(models.PerformanceLedger).filter_by(
@@ -71,8 +89,6 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client, monkeypatch
 
     # An accepted stale TP1 receipt must not send a misleading second
     # "TP1 hit / SL moved" notification after TP2 has completed.
-    from app.routes import commands as command_routes
-
     late_notifications = []
     monkeypatch.setattr(
         command_routes,
