@@ -378,3 +378,97 @@ def test_explicitly_contradictory_management_outcomes_are_rejected(
         assert session.query(models.AuditLog).filter_by(
             event_type="MANAGEMENT_EVENT"
         ).count() == 1, "Corrected report has exactly one management audit"
+
+
+@pytest.mark.parametrize(
+    ("first_event", "first_stage", "late_event", "late_stage", "ledger_status"),
+    [
+        ("TP3_CLOSE_SUCCESS", "TP3_DONE", "STOP_LOSS_HIT", "FULLY_CLOSED", "TP3_HIT"),
+        ("STOP_LOSS_HIT", "FULLY_CLOSED", "TP3_CLOSE_SUCCESS", "TP3_DONE", "STOPPED_OUT"),
+    ],
+)
+def test_late_terminal_milestone_cannot_notify_a_second_exit(
+    client, monkeypatch, first_event, first_stage, late_event, late_stage, ledger_status
+):
+    """Different terminal EA callbacks remain auditable, not a second exit claim.
+
+    The EA emits FULLY_CLOSED after TP3 or stop-out. Do not suppress that
+    normal final acknowledgement; only a late *different* milestone is stale.
+    Entirely synthetic backend receipts, not broker execution evidence.
+    """
+    owner = register_user(client, "990094")
+    signal = create_signal(client, "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363")
+    approval = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990094"},
+    )
+    assert approval.status_code == 200, approval.text
+    command_resp = client.get(
+        "/commands/pending",
+        params={"user_id": owner["id"]},
+        headers=EA_HEADERS,
+    )
+    assert command_resp.status_code == 200, command_resp.text
+    command_id = command_resp.json()["command"]["command_id"]
+    opened = client.post(
+        f"/commands/{command_id}/execution",
+        json={"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04},
+        headers=EA_HEADERS,
+    )
+    assert opened.status_code == 200, opened.text
+
+    from app.routes import commands as command_routes
+
+    messages = []
+    monkeypatch.setattr(
+        command_routes, "notify_user_and_admins",
+        lambda _chat_id, message: messages.append(message),
+    )
+
+    def receipt(event_type, stage):
+        return client.post(
+            f"/commands/{command_id}/management_event",
+            json={"event_type": event_type, "stage": stage, "result": "SUCCESS"},
+            headers=EA_HEADERS,
+        )
+
+    first = receipt(first_event, first_stage)
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "ok"
+    assert len(messages) == 1
+    assert "Demo EA reports" in messages[0]
+    assert "not independently confirmed" in messages[0]
+
+    late = receipt(late_event, late_stage)
+    assert late.status_code == 200, late.text
+    assert late.json()["status"] == "ok"
+    assert len(messages) == 1, "Late opposite terminal milestone must not claim a second exit"
+
+    with SessionLocal() as session:
+        assert crud.get_command(session, command_id).status == "FULLY_CLOSED"
+        ledger_row = session.query(models.PerformanceLedger).filter_by(
+            signal_id=signal["id"]
+        ).one()
+        assert ledger_row.result_status == ledger_status
+        events = session.query(models.TradeManagementEvent).filter_by(
+            command_id=command_id
+        ).all()
+        assert len(events) == 2, "Keep both distinct EA receipts for operator review"
+        late_record = next(e for e in events if e.event_type == late_event)
+        audit = session.query(models.AuditLog).filter_by(
+            event_type="MANAGEMENT_EVENT",
+            entity_type="management_event",
+            entity_id=late_record.id,
+        ).one()
+        assert json.loads(audit.payload_json)["state_advanced"] is False
+
+    # This follows the actual EA's normal TP3/SL event then FULLY_CLOSED flow.
+    completed = receipt("FULLY_CLOSED", "FULLY_CLOSED")
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["status"] == "ok"
+    assert len(messages) == 2
+    assert "trade fully closed" in messages[-1]
+    repeated = receipt("FULLY_CLOSED", "FULLY_CLOSED")
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["status"] == "duplicate_ignored"
+    assert len(messages) == 2
