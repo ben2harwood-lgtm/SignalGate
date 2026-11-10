@@ -261,6 +261,12 @@ def test_stop_loss_move_messages_follow_matching_ea_receipts(
         ("TP1_CLOSE_SUCCESS", "PENDING"),
         ("TP2_CLOSE_SUCCESS", "FAILED"),
         ("TP3_CLOSE_SUCCESS", "FAILED"),
+        # Terminal close/stop callbacks have no suffix but must not turn
+        # a failed/pending EA report into a broker-success milestone.
+        ("STOP_LOSS_HIT", "FAILED"),
+        ("STOP_LOSS_HIT", "PENDING"),
+        ("FULLY_CLOSED", "FAILED"),
+        ("FULLY_CLOSED", "PENDING"),
         ("SL_MOVE_BREAKEVEN_SUCCESS", "FAILED"),
         ("SL_MOVE_TP1_FAILED", "SUCCESS"),
     ],
