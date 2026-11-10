@@ -194,8 +194,9 @@ def report_execution(
     if execution.status == "SUCCESS":
         notify_user_and_admins(
             chat_id,
-            f"✅ Demo trade OPENED for {command.symbol} {command.direction} "
-            f"(command {command.id}). Demo only.",
+            f"ℹ️ Demo EA reports trade OPENED for {command.symbol} {command.direction} "
+            f"(command {command.id}). Broker fill not independently confirmed; "
+            "check demo terminal. Demo only.",
         )
     else:
         notify_user_and_admins(

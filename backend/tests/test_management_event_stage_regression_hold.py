@@ -742,3 +742,48 @@ def test_postgresql_concurrent_distinct_stage_full_closures_notify_once(
     finally:
         crud.settings.require_license = previous_crud_mode
         command_routes.settings.require_license = previous_route_mode
+
+def test_execution_success_notification_distinguishes_ea_report_from_broker_proof(client, monkeypatch):
+    """EA-reported success must not imply independently verified broker filling.
+
+    The success callback and duplicate exercise only synthetic offline backend
+    state; neither is MT5 demo-broker acceptance or external confirmation.
+    """
+    from app.routes import commands as command_routes
+
+    owner = register_user(client, "990097")
+    signal = create_signal(client, "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363")
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990097"},
+    )
+    assert approved.status_code == 200, approved.text
+    pending = client.get(
+        "/commands/pending", params={"user_id": owner["id"]}, headers=EA_HEADERS
+    )
+    assert pending.status_code == 200, pending.text
+    command_id = pending.json()["command"]["command_id"]
+    notifications = []
+    monkeypatch.setattr(
+        command_routes,
+        "notify_user_and_admins",
+        lambda _chat_id, message: notifications.append(message),
+    )
+    payload = {"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04}
+    first = client.post(
+        f"/commands/{command_id}/execution", json=payload, headers=EA_HEADERS
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "ok"
+    assert len(notifications) == 1
+    assert "Demo EA reports trade OPENED" in notifications[0]
+    assert "Broker fill not independently confirmed" in notifications[0]
+    assert "check demo terminal" in notifications[0]
+    assert "✅ Demo trade OPENED" not in notifications[0]
+
+    duplicate = client.post(
+        f"/commands/{command_id}/execution", json=payload, headers=EA_HEADERS
+    )
+    assert duplicate.status_code == 200, duplicate.text
+    assert duplicate.json()["status"] == "duplicate_ignored"
+    assert len(notifications) == 1
