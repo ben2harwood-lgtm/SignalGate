@@ -272,6 +272,15 @@ def test_stop_loss_move_messages_follow_matching_ea_receipts(
         ("FULLY_CLOSED", "PENDING"),
         ("SL_MOVE_BREAKEVEN_SUCCESS", "FAILED"),
         ("SL_MOVE_TP1_FAILED", "SUCCESS"),
+        # Suffixless arrival milestones and failure reports are also
+        # outcomes. Their event names must not contradict an explicit result.
+        ("OPENED", "FAILED"),
+        ("OPENED", "PENDING"),
+        ("TP1_REACHED", "FAILED"),
+        ("TP2_REACHED", "PENDING"),
+        ("TP3_REACHED", "FAILED"),
+        ("FAILED_MANAGEMENT", "SUCCESS"),
+        ("FAILED_MANAGEMENT", "PENDING"),
     ],
 )
 def test_explicitly_contradictory_management_outcomes_are_rejected(
@@ -342,7 +351,11 @@ def test_explicitly_contradictory_management_outcomes_are_rejected(
 
     # A malformed first attempt cannot poison the idempotency key of a later
     # corrected callback for the same event/stage.
-    corrected_result = "FAILED" if event_type.endswith("_FAILED") else "SUCCESS"
+    corrected_result = (
+        "FAILED"
+        if event_type.endswith("_FAILED") or event_type == "FAILED_MANAGEMENT"
+        else "SUCCESS"
+    )
     corrected = client.post(
         f"/commands/{command_id}/management_event",
         json={
