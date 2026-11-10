@@ -473,6 +473,28 @@ def test_late_terminal_milestone_cannot_notify_a_second_exit(
     assert repeated.json()["status"] == "duplicate_ignored"
     assert len(messages) == 2
 
+    # The stage is part of idempotency identity. A delayed closure sent with a
+    # new stage is a distinct audit receipt, not a second customer-facing exit.
+    late_closure = receipt("FULLY_CLOSED", "LATE_CLOSURE_RECEIPT")
+    assert late_closure.status_code == 200, late_closure.text
+    assert late_closure.json()["status"] == "ok"
+    assert len(messages) == 2, "Different-stage closure must not send duplicate exit"
+    with SessionLocal() as session:
+        closure_receipts = session.query(models.TradeManagementEvent).filter_by(
+            command_id=command_id, event_type="FULLY_CLOSED"
+        ).all()
+        assert len(closure_receipts) == 2, "Distinct receipts remain in audit history"
+        delayed_receipt = next(
+            e for e in closure_receipts if e.stage == "LATE_CLOSURE_RECEIPT"
+        )
+        audit = session.query(models.AuditLog).filter_by(
+            event_type="MANAGEMENT_EVENT",
+            entity_type="management_event",
+            entity_id=delayed_receipt.id,
+        ).one()
+        assert json.loads(audit.payload_json)["state_advanced"] is False
+        assert crud.get_command(session, command_id).status == "FULLY_CLOSED"
+
 
 def test_postgresql_stale_tp1_callback_cannot_reopen_concurrently_closed_trade(
     client, db, monkeypatch

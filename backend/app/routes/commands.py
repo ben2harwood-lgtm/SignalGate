@@ -281,6 +281,19 @@ def report_management_event(
     # without re-opening a finished command, but post-commit status alone
     # cannot distinguish a fresh exit from a contradictory late exit.
     terminal_before_receipt = command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}
+    # A distinct stage may create a new FULLY_CLOSED audit receipt even after
+    # the EA has already reported closure. Keep that audit, but send the final
+    # closure notice at most once per command. This must be read before insert;
+    # the PostgreSQL command-row lock above serializes concurrent callbacks.
+    prior_full_closure = (
+        payload.event_type == "FULLY_CLOSED"
+        and db.scalar(
+            select(crud.models.TradeManagementEvent.id).where(
+                crud.models.TradeManagementEvent.command_id == command.id,
+                crud.models.TradeManagementEvent.event_type == "FULLY_CLOSED",
+            ).limit(1)
+        ) is not None
+    )
     # An explicit EA result contradicting the event name is not execution
     # evidence. Refuse it before CRUD can advance command/ledger state or
     # create a misleading success notification. None remains compatible with
@@ -318,6 +331,7 @@ def report_management_event(
         # Retain that final notice, but never announce a new competing exit
         # from a distinct late TP/SL/failure receipt after terminal state.
         (terminal_before_receipt and payload.event_type != "FULLY_CLOSED")
+        or prior_full_closure
         or (payload.event_type == "TP1_CLOSE_SUCCESS" and command.status in {
             "PARTIAL_TP2_DONE", "FULLY_CLOSED"
         })
