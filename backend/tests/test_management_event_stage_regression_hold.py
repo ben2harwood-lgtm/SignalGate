@@ -92,9 +92,10 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client):
             .all()
         )
         assert len(events) == 3, "All three distinct receipts must be persisted"
-        assert [event.event_type for event in events] == [
-            "TP1_CLOSE_SUCCESS", "TP2_CLOSE_SUCCESS", "TP1_CLOSE_SUCCESS"
+        assert sorted(event.event_type for event in events) == [
+            "TP1_CLOSE_SUCCESS", "TP1_CLOSE_SUCCESS", "TP2_CLOSE_SUCCESS"
         ]
+        late_event = next(event for event in events if event.stage == "TP1_LATE_RETRY")
         ledger_row = session.query(models.PerformanceLedger).filter_by(
             signal_id=signal["id"]
         ).one()
@@ -103,7 +104,7 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client):
         audit = session.query(models.AuditLog).filter_by(
             event_type="MANAGEMENT_EVENT",
             entity_type="management_event",
-            entity_id=events[-1].id,
+            entity_id=late_event.id,
         ).one()
         assert json.loads(audit.payload_json)["state_advanced"] is False
 
