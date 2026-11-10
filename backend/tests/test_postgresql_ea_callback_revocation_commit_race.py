@@ -815,15 +815,16 @@ def test_postgresql_pending_poll_rechecks_revocation_before_delivery(
         command_routes.settings.require_license = previous_route_mode
 
 
+@pytest.mark.parametrize("revocation_kind", ("rotation", "deactivation"))
 def test_postgresql_pending_poll_claim_holds_customer_lock_until_commit(
-    client, db, monkeypatch
+    client, db, monkeypatch, revocation_kind
 ):
-    """A valid poll must commit its claim before a concurrent licence rotation.
+    """A valid poll must commit its claim before either kind of revocation.
 
     The poll pauses after acquiring its hosted customer FOR SHARE lock but
     before touching the command. A separate PostgreSQL session attempts to
-    rotate the same customer licence. Observe an actual pg_stat_activity Lock
-    wait and require the poll's command/audit commit to finish before rotation.
+    rotate the licence or deactivate the customer. Observe a real PostgreSQL
+    lock wait and require the command/audit commit to finish before revocation.
     All identities and commands are synthetic; no EA, broker or order is used.
     """
     if db.get_bind().dialect.name != "postgresql":
@@ -883,7 +884,7 @@ def test_postgresql_pending_poll_claim_holds_customer_lock_until_commit(
                     _ea="offline-test",
                 )
 
-        def rotate_after_poll_locks_customer():
+        def revoke_after_poll_locks_customer():
             with SessionLocal() as session:
                 session.connection().exec_driver_sql(
                     "SET LOCAL statement_timeout = '12s'"
@@ -894,7 +895,12 @@ def test_postgresql_pending_poll_claim_holds_customer_lock_until_commit(
                 customer = crud.get_user_by_telegram(session, "990026")
                 assert customer is not None
                 revoke_started.set()
-                replacement = crud.issue_license(session, customer)
+                if revocation_kind == "rotation":
+                    replacement = crud.issue_license(session, customer)
+                else:
+                    assert revocation_kind == "deactivation"
+                    crud.set_user_status(session, customer, "INACTIVE")
+                    replacement = None
                 session.commit()
                 revocation_committed.set()
                 return replacement
@@ -905,7 +911,7 @@ def test_postgresql_pending_poll_claim_holds_customer_lock_until_commit(
                 assert customer_locked.wait(timeout=8), (
                     "Poll never acquired its customer lock before command claim"
                 )
-                revoking = workers.submit(rotate_after_poll_locks_customer)
+                revoking = workers.submit(revoke_after_poll_locks_customer)
                 assert revoke_started.wait(timeout=8), "Revocation did not begin"
                 waiting_on_lock = False
                 with SessionLocal() as observer:
@@ -923,10 +929,10 @@ def test_postgresql_pending_poll_claim_holds_customer_lock_until_commit(
                             break
                         sleep(0.05)
                 assert waiting_on_lock, (
-                    "Licence rotation never waited on the poll customer row lock"
+                    f"{revocation_kind} never waited on the poll customer row lock"
                 )
                 assert not revocation_committed.is_set(), (
-                    "Licence rotation committed ahead of the pending poll claim"
+                    f"{revocation_kind} committed ahead of the pending poll claim"
                 )
             finally:
                 release_poll.set()
@@ -935,13 +941,24 @@ def test_postgresql_pending_poll_claim_holds_customer_lock_until_commit(
 
         assert response.command is not None
         assert response.command.command_id == command_id
-        assert replacement != owner["license_key"]
+        if revocation_kind == "rotation":
+            assert replacement is not None and replacement != owner["license_key"]
+        else:
+            assert replacement is None
 
         with SessionLocal() as inspect:
             command = crud.get_command(inspect, command_id)
             assert command is not None and command.status == "SENT_TO_EA"
-            assert crud.get_user_by_license(inspect, owner["license_key"]) is None
-            assert crud.get_user_by_license(inspect, replacement) is not None
+            customer = crud.get_user_by_telegram(inspect, "990026")
+            assert customer is not None
+            if revocation_kind == "rotation":
+                assert customer.status == "ACTIVE"
+                assert crud.get_user_by_license(inspect, owner["license_key"]) is None
+                assert crud.get_user_by_license(inspect, replacement) is not None
+            else:
+                assert customer.status == "INACTIVE"
+                # Deactivation preserves the hash but must still revoke authority.
+                assert crud.get_user_by_license(inspect, owner["license_key"]) is not None
             delivered = inspect.scalars(
                 select(models.AuditLog).where(
                     models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
