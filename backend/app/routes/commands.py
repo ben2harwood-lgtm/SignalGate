@@ -268,7 +268,11 @@ def report_management_event(
     # create a misleading success notification. None remains compatible with
     # older report clients; explicit contradictions are never accepted.
     expected_result = None
-    if payload.event_type.endswith("_SUCCESS"):
+    # Terminal stop/close reports also mean SUCCESS, although their names
+    # lack the suffix. FAILED/PENDING cannot prove an exit or stop-out.
+    if payload.event_type.endswith("_SUCCESS") or payload.event_type in {
+        "STOP_LOSS_HIT", "FULLY_CLOSED"
+    }:
         expected_result = "SUCCESS"
     elif payload.event_type.endswith("_FAILED"):
         expected_result = "FAILED"
