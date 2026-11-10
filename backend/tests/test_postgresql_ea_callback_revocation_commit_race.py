@@ -144,17 +144,18 @@ def test_postgresql_callback_receipt_cannot_overtake_committed_licence_rotation(
         command_routes.settings.require_license = former_route_mode
 
 
+@pytest.mark.parametrize("revocation_kind", ("rotation", "deactivation"))
 def test_postgresql_execution_retry_rechecks_license_after_integrity_rollback(
-    client, db, monkeypatch
+    client, db, monkeypatch, revocation_kind
 ):
     """Exercise the actual duplicate-Execution INSERT race, not a fake rollback.
 
     An old-key execution request pauses after its initial execution lookup.
     Another request commits the same fabricated FAILED result. The first
     request then collides with the real unique(command_id) database constraint,
-    rolls back, and reaches the raced-retry audit path. Rotate the licence
-    between that rollback and audit. A revoked key must never commit that
-    subsequent audit receipt. No real broker, EA or network calls are made.
+    rolls back, and reaches the raced-retry audit path. Rotate the licence or
+    deactivate the customer before that audit. Neither revocation may commit
+    ahead of a still-authorized retry audit; no broker or network calls occur.
     """
     if db.get_bind().dialect.name != "postgresql":
         pytest.skip("Requires PostgreSQL uniqueness and independent sessions")
@@ -182,8 +183,8 @@ def test_postgresql_execution_retry_rechecks_license_after_integrity_rollback(
     allow_insert = Event()
     after_rollback = Event()
     allow_recovery = Event()
-    rotation_started = Event()
-    rotated = Event()
+    revocation_started = Event()
+    revoked = Event()
     role = local()
     original_next_id = crud._next_id
     original_recovery = crud._existing_execution_or_conflict
@@ -248,31 +249,41 @@ def test_postgresql_execution_retry_rechecks_license_after_integrity_rollback(
                     "the IntegrityError rollback/recovery branch"
                 )
 
-                def rotate_in_independent_transaction():
-                    with SessionLocal() as rotation:
-                        rotation.connection().exec_driver_sql(
+                def revoke_in_independent_transaction():
+                    with SessionLocal() as session:
+                        session.connection().exec_driver_sql(
                             "SET LOCAL statement_timeout = '12s'"
                         )
-                        account = crud.get_user_by_telegram(rotation, "990022")
+                        account = crud.get_user_by_telegram(session, "990022")
                         assert account is not None
-                        rotation_started.set()
-                        assert crud.issue_license(rotation, account) != owner["license_key"]
-                        rotation.commit()
-                        rotated.set()
+                        revocation_started.set()
+                        if revocation_kind == "rotation":
+                            assert crud.issue_license(session, account) != owner["license_key"]
+                        else:
+                            crud.set_user_status(session, account, "INACTIVE")
+                        session.commit()
+                        revoked.set()
 
-                rotator = workers.submit(rotate_in_independent_transaction)
-                assert rotation_started.wait(timeout=8), (
-                    "Licence rotation did not reach its transaction barrier"
+                revoker = workers.submit(revoke_in_independent_transaction)
+                assert revocation_started.wait(timeout=8), (
+                    "Customer revocation did not reach its transaction barrier"
                 )
-                rotation_overtook_retry = rotated.wait(timeout=2.5)
+                revocation_overtook_retry = revoked.wait(timeout=2.5)
             finally:
                 allow_insert.set()
                 allow_recovery.set()
             old_key_outcome = old_key.result(timeout=22)
-            rotator.result(timeout=22)
+            revoker.result(timeout=22)
 
         with SessionLocal() as session:
-            assert crud.get_user_by_license(session, owner["license_key"]) is None
+            customer = crud.get_user_by_telegram(session, "990022")
+            assert customer is not None
+            if revocation_kind == "rotation":
+                assert crud.get_user_by_license(session, owner["license_key"]) is None
+                assert customer.status == "ACTIVE"
+            else:
+                assert customer.status == "INACTIVE"
+                assert crud.get_user_by_license(session, owner["license_key"]) is not None
             assert session.scalar(
                 select(models.Execution).where(
                     models.Execution.command_id == command_id
@@ -287,24 +298,27 @@ def test_postgresql_execution_retry_rechecks_license_after_integrity_rollback(
                     .order_by(models.AuditLog.created_at, models.AuditLog.id)
                 )
             )
-            rotations = [
+            revocation_event = (
+                "LICENSE_ISSUED" if revocation_kind == "rotation" else "USER_STATUS_CHANGED"
+            )
+            revocations = [
                 a for a in audits
-                if a.event_type == "LICENSE_ISSUED" and a.entity_id == owner["id"]
+                if a.event_type == revocation_event and a.entity_id == owner["id"]
             ]
             retry_audits = [
                 a for a in audits
                 if a.event_type == "DUPLICATE_EXECUTION_REPORT_IGNORED"
                 and a.entity_id == command_id
             ]
-            assert rotations, "Licence rotation receipt must be committed"
-            assert not rotation_overtook_retry, (
-                "Licence rotation committed while the old-key retry was still "
+            assert revocations, "Customer revocation audit must be committed"
+            assert not revocation_overtook_retry, (
+                "Customer revocation committed while the old-key retry was still "
                 "waiting to write its duplicate audit"
             )
             assert old_key_outcome == "duplicate_ignored"
             assert len(retry_audits) == 1
-            assert retry_audits[0].created_at <= rotations[-1].created_at, (
-                "A retry audit must precede the committed licence rotation"
+            assert retry_audits[0].created_at <= revocations[-1].created_at, (
+                "A retry audit must precede the committed customer revocation"
             )
     finally:
         allow_insert.set()
