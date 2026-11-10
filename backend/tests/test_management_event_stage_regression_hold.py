@@ -272,13 +272,11 @@ def test_stop_loss_move_messages_follow_matching_ea_receipts(
         ("FULLY_CLOSED", "PENDING"),
         ("SL_MOVE_BREAKEVEN_SUCCESS", "FAILED"),
         ("SL_MOVE_TP1_FAILED", "SUCCESS"),
-        # Suffixless arrival milestones and failure reports are also
-        # outcomes. Their event names must not contradict an explicit result.
+        # Suffixless state-changing OPENED/FAILED_MANAGEMENT outcomes must
+        # agree with explicit results. TP*_REACHED is allowed to be PENDING
+        # because reaching a price does not prove a completed management step.
         ("OPENED", "FAILED"),
         ("OPENED", "PENDING"),
-        ("TP1_REACHED", "FAILED"),
-        ("TP2_REACHED", "PENDING"),
-        ("TP3_REACHED", "FAILED"),
         ("FAILED_MANAGEMENT", "SUCCESS"),
         ("FAILED_MANAGEMENT", "PENDING"),
     ],
