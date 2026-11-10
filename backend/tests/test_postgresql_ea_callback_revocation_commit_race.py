@@ -506,15 +506,16 @@ def test_postgresql_waiting_callback_rechecks_revocation_after_lock_release(
         command_routes.settings.require_license = previous_route_mode
 
 
+@pytest.mark.parametrize("conflicting_retry", (False, True))
 def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
-    client, db, monkeypatch
+    client, db, monkeypatch, conflicting_retry
 ):
     """Witness an actual unique idempotency-key collision and rollback race.
 
     Two synthetic callbacks report the same management event. After the
     winning event commits, the old-key retry hits the real PostgreSQL unique
     constraint. The losing callback must retain customer authorization through
-    its subsequent duplicate-audit commit, even if a different transaction
+    its subsequent duplicate-or-conflict audit commit, even if another transaction
     attempts to rotate the licence at that instant.
 
     This is a must-pass PostgreSQL serialization regression. Setup, SQL,
@@ -525,6 +526,7 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
         pytest.skip("Requires PostgreSQL uniqueness and independent sessions")
 
     from threading import local
+    from fastapi import HTTPException
     from sqlalchemy import select
     from app.schemas import ManagementEventRequest
 
@@ -580,6 +582,10 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
         assert command is not None
         command_id = command["command_id"]
         payload = ManagementEventRequest(
+            event_type="TP1_REACHED", result="PENDING", stage="SYNTHETIC",
+            price=2345.0 if conflicting_retry else None,
+        )
+        winning_payload = ManagementEventRequest(
             event_type="TP1_REACHED", result="PENDING", stage="SYNTHETIC"
         )
 
@@ -589,14 +595,17 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
                 session.connection().exec_driver_sql(
                     "SET LOCAL statement_timeout = '12s'"
                 )
-                response = command_routes.report_management_event(
-                    command_id,
-                    payload,
-                    x_sg_license_key=owner["license_key"],
-                    db=session,
-                    _ea="offline-test",
-                )
-                return response.status
+                try:
+                    response = command_routes.report_management_event(
+                        command_id,
+                        payload if incoming_role == "old-key" else winning_payload,
+                        x_sg_license_key=owner["license_key"],
+                        db=session,
+                        _ea="offline-test",
+                    )
+                    return response.status
+                except HTTPException as exc:
+                    return exc.status_code
 
         def rotate_licence():
             with SessionLocal() as session:
@@ -643,19 +652,28 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
                 )
             ) is not None
             assert session.query(models.TradeManagementEvent).count() == 1
+            saved_event = session.scalar(
+                select(models.TradeManagementEvent).where(
+                    models.TradeManagementEvent.command_id == command_id
+                )
+            )
+            assert saved_event is not None and saved_event.price is None
+            expected_audit = (
+                "MANAGEMENT_EVENT_CONFLICT" if conflicting_retry
+                else "DUPLICATE_MANAGEMENT_EVENT_IGNORED"
+            )
             retry_audits = session.scalars(
                 select(models.AuditLog).where(
-                    models.AuditLog.event_type
-                    == "DUPLICATE_MANAGEMENT_EVENT_IGNORED",
+                    models.AuditLog.event_type == expected_audit,
                     models.AuditLog.entity_id == command_id,
                 )
             ).all()
             assert len(retry_audits) == 1, (
-                "Exactly one duplicate management audit should be committed"
+                "Exactly one duplicate/conflict retry audit should commit"
             )
             assert session.query(models.Execution).count() == 0
 
-        assert old_key_result == "duplicate_ignored"
+        assert old_key_result == (409 if conflicting_retry else "duplicate_ignored")
         assert not rotation_overtook_retry, (
             "Licence rotation committed while the old-key management retry "
             "was waiting to write its duplicate audit"
