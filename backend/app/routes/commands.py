@@ -270,11 +270,11 @@ def report_management_event(
     # create a misleading success notification. None remains compatible with
     # older report clients; explicit contradictions are never accepted.
     expected_result = None
-    # Terminal stop/close reports also mean SUCCESS, although their names
-    # lack the suffix. FAILED/PENDING cannot prove an exit or stop-out.
+    # Suffixless OPENED/terminal callbacks imply a completed outcome.
+    # TP*_REACHED is only a price observation: management may still be PENDING,
+    # including in PostgreSQL licence-revocation/idempotency regressions.
     if payload.event_type.endswith("_SUCCESS") or payload.event_type in {
         "STOP_LOSS_HIT", "FULLY_CLOSED", "OPENED",
-        "TP1_REACHED", "TP2_REACHED", "TP3_REACHED",
     }:
         expected_result = "SUCCESS"
     elif payload.event_type.endswith("_FAILED") or payload.event_type == "FAILED_MANAGEMENT":
