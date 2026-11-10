@@ -813,3 +813,145 @@ def test_postgresql_pending_poll_rechecks_revocation_before_delivery(
         resume_poll.set()
         crud.settings.require_license = previous_crud_mode
         command_routes.settings.require_license = previous_route_mode
+
+
+def test_postgresql_pending_poll_claim_holds_customer_lock_until_commit(
+    client, db, monkeypatch
+):
+    """A valid poll must commit its claim before a concurrent licence rotation.
+
+    The poll pauses after acquiring its hosted customer FOR SHARE lock but
+    before touching the command. A separate PostgreSQL session attempts to
+    rotate the same customer licence. Observe an actual pg_stat_activity Lock
+    wait and require the poll's command/audit commit to finish before rotation.
+    All identities and commands are synthetic; no EA, broker or order is used.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires PostgreSQL two-transaction lock observation")
+
+    from sqlalchemy import select, text
+    from time import monotonic, sleep
+
+    owner = register_user(client, "990026")
+    signal = create_signal(client, VALID)
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990026"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+
+    with SessionLocal() as inspect:
+        command = inspect.scalar(
+            select(models.Command).where(
+                models.Command.signal_id == signal["id"],
+                models.Command.user_id == owner["id"],
+            )
+        )
+        assert command is not None and command.status == "PENDING"
+        command_id = command.id
+
+    previous_crud_mode = crud.settings.require_license
+    previous_route_mode = command_routes.settings.require_license
+    crud.settings.require_license = True
+    command_routes.settings.require_license = True
+
+    customer_locked = Event()
+    release_poll = Event()
+    revoke_started = Event()
+    revocation_committed = Event()
+    revoker_pid = {}
+    original_claim = crud.get_pending_command_for_user
+
+    def hold_before_claim(session, user_id):
+        assert user_id == owner["id"]
+        customer_locked.set()
+        assert release_poll.wait(timeout=12), "Poll lock/claim barrier timed out"
+        return original_claim(session, user_id)
+
+    monkeypatch.setattr(crud, "get_pending_command_for_user", hold_before_claim)
+
+    try:
+        def poll_with_old_licence():
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                return command_routes.pending_command(
+                    x_sg_license_key=owner["license_key"],
+                    db=session,
+                    _ea="offline-test",
+                )
+
+        def rotate_after_poll_locks_customer():
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                revoker_pid["pid"] = session.connection().exec_driver_sql(
+                    "SELECT pg_backend_pid()"
+                ).scalar_one()
+                customer = crud.get_user_by_telegram(session, "990026")
+                assert customer is not None
+                revoke_started.set()
+                replacement = crud.issue_license(session, customer)
+                session.commit()
+                revocation_committed.set()
+                return replacement
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            old_poll = workers.submit(poll_with_old_licence)
+            try:
+                assert customer_locked.wait(timeout=8), (
+                    "Poll never acquired its customer lock before command claim"
+                )
+                revoking = workers.submit(rotate_after_poll_locks_customer)
+                assert revoke_started.wait(timeout=8), "Revocation did not begin"
+                waiting_on_lock = False
+                with SessionLocal() as observer:
+                    deadline = monotonic() + 6
+                    while monotonic() < deadline:
+                        wait_type = observer.execute(
+                            text(
+                                "SELECT wait_event_type FROM pg_stat_activity "
+                                "WHERE pid = :pid"
+                            ),
+                            {"pid": revoker_pid["pid"]},
+                        ).scalar_one_or_none()
+                        if wait_type == "Lock":
+                            waiting_on_lock = True
+                            break
+                        sleep(0.05)
+                assert waiting_on_lock, (
+                    "Licence rotation never waited on the poll customer row lock"
+                )
+                assert not revocation_committed.is_set(), (
+                    "Licence rotation committed ahead of the pending poll claim"
+                )
+            finally:
+                release_poll.set()
+            response = old_poll.result(timeout=22)
+            replacement = revoking.result(timeout=22)
+
+        assert response.command is not None
+        assert response.command.command_id == command_id
+        assert replacement != owner["license_key"]
+
+        with SessionLocal() as inspect:
+            command = crud.get_command(inspect, command_id)
+            assert command is not None and command.status == "SENT_TO_EA"
+            assert crud.get_user_by_license(inspect, owner["license_key"]) is None
+            assert crud.get_user_by_license(inspect, replacement) is not None
+            delivered = inspect.scalars(
+                select(models.AuditLog).where(
+                    models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                    models.AuditLog.entity_id == command_id,
+                )
+            ).all()
+            assert len(delivered) == 1, (
+                "The authorised poll must commit exactly one delivery audit"
+            )
+    finally:
+        release_poll.set()
+        crud.settings.require_license = previous_crud_mode
+        command_routes.settings.require_license = previous_route_mode
