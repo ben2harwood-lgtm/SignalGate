@@ -596,15 +596,6 @@ def test_postgresql_stale_tp1_callback_cannot_reopen_concurrently_closed_trade(
                 entity_id=late_tp1.id,
             ).one()
             audit_advanced = json.loads(audit.payload_json)["state_advanced"]
-            if (
-                command.status != "FULLY_CLOSED"
-                or ledger.result_status != "CLOSED_UNATTRIBUTED"
-                or audit_advanced
-            ):
-                pytest.xfail(
-                    "Observed PG stale-command race: terminal closure was reversed "
-                    "by a delayed TP1 callback; needs command-row serialization"
-                )
             assert command.status == "FULLY_CLOSED"
             assert ledger.result_status == "CLOSED_UNATTRIBUTED"
             assert ledger.r_result is None
