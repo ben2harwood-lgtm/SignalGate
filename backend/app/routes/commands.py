@@ -273,10 +273,11 @@ def report_management_event(
     # Terminal stop/close reports also mean SUCCESS, although their names
     # lack the suffix. FAILED/PENDING cannot prove an exit or stop-out.
     if payload.event_type.endswith("_SUCCESS") or payload.event_type in {
-        "STOP_LOSS_HIT", "FULLY_CLOSED"
+        "STOP_LOSS_HIT", "FULLY_CLOSED", "OPENED",
+        "TP1_REACHED", "TP2_REACHED", "TP3_REACHED",
     }:
         expected_result = "SUCCESS"
-    elif payload.event_type.endswith("_FAILED"):
+    elif payload.event_type.endswith("_FAILED") or payload.event_type == "FAILED_MANAGEMENT":
         expected_result = "FAILED"
     if expected_result and payload.result not in (None, expected_result):
         db.rollback()
