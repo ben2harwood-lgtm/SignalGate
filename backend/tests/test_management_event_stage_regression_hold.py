@@ -211,7 +211,9 @@ def test_stop_loss_move_messages_follow_matching_ea_receipts(
     if breakeven_result == "FAILED":
         assert "FAILED" in messages[-1] and "Protection not confirmed" in messages[-1]
     else:
-        assert "Demo EA reports" in messages[-1] and "succeeded" in messages[-1]
+        assert "Demo EA reported" in messages[-1]
+        assert "not independently confirmed" in messages[-1]
+        assert "succeeded" not in messages[-1]
     assert receipt(first_type, "TP1_DONE", breakeven_result) == "duplicate_ignored"
     assert len(messages) == 2, "Duplicate management receipt must not notify twice"
 
@@ -224,7 +226,9 @@ def test_stop_loss_move_messages_follow_matching_ea_receipts(
     if tp1_result == "FAILED":
         assert "FAILED" in messages[-1] and "Protection not confirmed" in messages[-1]
     else:
-        assert "Demo EA reports" in messages[-1] and "succeeded" in messages[-1]
+        assert "Demo EA reported" in messages[-1]
+        assert "not independently confirmed" in messages[-1]
+        assert "succeeded" not in messages[-1]
 
     opposite_breakeven = "FAILED" if breakeven_result == "SUCCESS" else "SUCCESS"
     assert receipt(

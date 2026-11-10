@@ -238,12 +238,14 @@ def reconcile_open_position(
 
 _NOTIFY_EVENTS = {
     # A TP-close callback precedes the independent SL_MOVE_* callback in EA.
+    # EA MoveRemainingSL may return true without a matching position; even a
+    # SUCCESS event is an EA self-report, not independent broker protection proof.
     # Do not imply the remaining stop-loss is already protected.
     "TP1_CLOSE_SUCCESS": "🎯 TP1 close reported. Stop-loss change not yet confirmed.",
     "TP2_CLOSE_SUCCESS": "🎯 TP2 close reported. Stop-loss change not yet confirmed.",
-    "SL_MOVE_BREAKEVEN_SUCCESS": "✅ Demo EA reports remaining stop-loss move to breakeven succeeded.",
+    "SL_MOVE_BREAKEVEN_SUCCESS": "ℹ️ Demo EA reported breakeven SL modification: SUCCESS. Actual protection not independently confirmed; check demo position.",
     "SL_MOVE_BREAKEVEN_FAILED": "⚠️ Demo EA reports breakeven stop-loss move FAILED. Protection not confirmed; check demo terminal.",
-    "SL_MOVE_TP1_SUCCESS": "✅ Demo EA reports remaining stop-loss move to TP1 succeeded.",
+    "SL_MOVE_TP1_SUCCESS": "ℹ️ Demo EA reported TP1 SL modification: SUCCESS. Actual protection not independently confirmed; check demo position.",
     "SL_MOVE_TP1_FAILED": "⚠️ Demo EA reports TP1 stop-loss move FAILED. Protection not confirmed; check demo terminal.",
     "TP3_CLOSE_SUCCESS": "🎯 TP3 hit. Final child closed.",
     "FULLY_CLOSED": "🏁 Trade fully closed.",
