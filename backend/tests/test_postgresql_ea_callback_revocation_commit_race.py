@@ -507,8 +507,9 @@ def test_postgresql_waiting_callback_rechecks_revocation_after_lock_release(
 
 
 @pytest.mark.parametrize("conflicting_retry", (False, True))
+@pytest.mark.parametrize("revocation_kind", ("rotation", "deactivation"))
 def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
-    client, db, monkeypatch, conflicting_retry
+    client, db, monkeypatch, conflicting_retry, revocation_kind
 ):
     """Witness an actual unique idempotency-key collision and rollback race.
 
@@ -516,7 +517,7 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
     winning event commits, the old-key retry hits the real PostgreSQL unique
     constraint. The losing callback must retain customer authorization through
     its subsequent duplicate-or-conflict audit commit, even if another transaction
-    attempts to rotate the licence at that instant.
+    attempts to rotate the licence or deactivate the customer at that instant.
 
     This is a must-pass PostgreSQL serialization regression. Setup, SQL,
     timeout and fixture failures are not permitted to masquerade as safety.
@@ -549,8 +550,8 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
     allow_insert = Event()
     after_rollback = Event()
     allow_recovery = Event()
-    rotation_started = Event()
-    rotated = Event()
+    revocation_started = Event()
+    revocation_committed = Event()
     original_next_id = crud._next_id
     original_recovery = crud._existing_management_event_or_conflict
 
@@ -607,17 +608,21 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
                 except HTTPException as exc:
                     return exc.status_code
 
-        def rotate_licence():
+        def revoke_customer():
             with SessionLocal() as session:
                 session.connection().exec_driver_sql(
                     "SET LOCAL statement_timeout = '12s'"
                 )
                 customer = crud.get_user_by_telegram(session, "990024")
                 assert customer is not None
-                rotation_started.set()
-                assert crud.issue_license(session, customer) != owner["license_key"]
+                revocation_started.set()
+                if revocation_kind == "rotation":
+                    assert crud.issue_license(session, customer) != owner["license_key"]
+                else:
+                    assert revocation_kind == "deactivation"
+                    crud.set_user_status(session, customer, "INACTIVE")
                 session.commit()
-                rotated.set()
+                revocation_committed.set()
 
         with ThreadPoolExecutor(max_workers=2) as workers:
             old_key_future = workers.submit(report, "old-key")
@@ -633,19 +638,27 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
                 assert after_rollback.wait(timeout=8), (
                     "No actual PostgreSQL uniqueness collision/retry was reached"
                 )
-                rotating_future = workers.submit(rotate_licence)
-                assert rotation_started.wait(timeout=8), (
-                    "Rotation did not reach its transaction barrier"
+                revoking_future = workers.submit(revoke_customer)
+                assert revocation_started.wait(timeout=8), (
+                    "Revocation did not reach its transaction barrier"
                 )
-                rotation_overtook_retry = rotated.wait(timeout=5)
+                revocation_overtook_retry = revocation_committed.wait(timeout=5)
             finally:
                 allow_insert.set()
                 allow_recovery.set()
             old_key_result = old_key_future.result(timeout=22)
-            rotating_future.result(timeout=22)
+            revoking_future.result(timeout=22)
 
         with SessionLocal() as session:
-            assert crud.get_user_by_license(session, owner["license_key"]) is None
+            customer = crud.get_user_by_telegram(session, "990024")
+            assert customer is not None
+            if revocation_kind == "rotation":
+                assert customer.status == "ACTIVE"
+                assert crud.get_user_by_license(session, owner["license_key"]) is None
+            else:
+                assert customer.status == "INACTIVE"
+                # Deactivation preserves the credential hash, not its authority.
+                assert crud.get_user_by_license(session, owner["license_key"]) is not None
             assert session.scalar(
                 select(models.TradeManagementEvent.id).where(
                     models.TradeManagementEvent.command_id == command_id
@@ -674,9 +687,9 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
             assert session.query(models.Execution).count() == 0
 
         assert old_key_result == (409 if conflicting_retry else "duplicate_ignored")
-        assert not rotation_overtook_retry, (
-            "Licence rotation committed while the old-key management retry "
-            "was waiting to write its duplicate audit"
+        assert not revocation_overtook_retry, (
+            f"{revocation_kind} committed while the old-key management retry "
+            "was waiting to write its duplicate/conflict audit"
         )
     finally:
         allow_insert.set()
