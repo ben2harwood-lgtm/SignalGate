@@ -237,8 +237,10 @@ def reconcile_open_position(
 
 
 _NOTIFY_EVENTS = {
-    "TP1_CLOSE_SUCCESS": "🎯 TP1 hit. Remaining SL moved to breakeven.",
-    "TP2_CLOSE_SUCCESS": "🎯 TP2 hit. Remaining SL moved to TP1.",
+    # A TP-close callback precedes the independent SL_MOVE_* callback in EA.
+    # Do not imply the remaining stop-loss is already protected.
+    "TP1_CLOSE_SUCCESS": "🎯 TP1 close reported. Stop-loss change not yet confirmed.",
+    "TP2_CLOSE_SUCCESS": "🎯 TP2 close reported. Stop-loss change not yet confirmed.",
     "TP3_CLOSE_SUCCESS": "🎯 TP3 hit. Final child closed.",
     "FULLY_CLOSED": "🏁 Trade fully closed.",
     "STOP_LOSS_HIT": "🛑 Stop loss hit.",
