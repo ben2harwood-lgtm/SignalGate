@@ -2355,6 +2355,14 @@ _EVENT_TO_COMMAND_STATUS = {
     "FAILED_MANAGEMENT": "FAILED",
 }
 
+# Nonterminal execution stages are monotonic even when a delayed callback
+# carries a new, otherwise valid management-event idempotency key.
+_MANAGEMENT_PROGRESS_RANK = {
+    "EXECUTED_OPEN": 0,
+    "PARTIAL_TP1_DONE": 1,
+    "PARTIAL_TP2_DONE": 2,
+}
+
 
 def _management_event_key(command: models.Command, payload) -> str:
     parts = [
@@ -2412,7 +2420,20 @@ def record_management_event(
 
             terminal = command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}
             new_status = _EVENT_TO_COMMAND_STATUS.get(payload.event_type)
-            if new_status and not terminal:
+            current_rank = _MANAGEMENT_PROGRESS_RANK.get(command.status)
+            incoming_rank = _MANAGEMENT_PROGRESS_RANK.get(new_status)
+            stale_stage = (
+                current_rank is not None
+                and incoming_rank is not None
+                and incoming_rank < current_rank
+            )
+            state_advanced = bool(
+                new_status
+                and not terminal
+                and not stale_stage
+                and new_status != command.status
+            )
+            if state_advanced:
                 command.status = new_status
                 if new_status in {"FULLY_CLOSED", "FAILED"}:
                     command.processed_at = utcnow()
@@ -2442,10 +2463,12 @@ def record_management_event(
         {
             "event_type": payload.event_type,
             "command_id": command.id,
-            "state_advanced": bool(new_status and not terminal),
+            "state_advanced": state_advanced,
         },
     )
-    if not terminal:
+    # Persist the distinct late receipt and its non-advancing audit, but never
+    # allow an older TP stage to overwrite a later ledger milestone/R value.
+    if not terminal and not stale_stage:
         ledger.on_management_event(db, command, event)
     return event, True
 

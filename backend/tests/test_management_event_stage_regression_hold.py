@@ -5,6 +5,8 @@ without authorizing EA changes, broker activity, or external acceptance.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app import crud, models
@@ -17,8 +19,8 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client):
 
     Stage is part of management-event idempotency identity, so a delayed TP1
     callback with its own stage is not filtered as an exact duplicate.
-    Assert all setup/HTTP preconditions normally; XFAIL only if the *specific*
-    PARTIAL_TP2_DONE -> PARTIAL_TP1_DONE regression is actually observed.
+    Assert that state, ledger result/R and the advancing-audit flag remain
+    consistent while the distinct late receipt is retained.
     Synthetic SQLite/PostgreSQL records only; never a broker scenario.
     """
     owner = register_user(client, "990091")
@@ -61,6 +63,11 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client):
 
     with SessionLocal() as session:
         assert crud.get_command(session, command_id).status == "PARTIAL_TP2_DONE"
+        ledger_row = session.query(models.PerformanceLedger).filter_by(
+            signal_id=signal["id"]
+        ).one()
+        assert ledger_row.result_status == "TP2_HIT"
+        assert ledger_row.r_result == pytest.approx(6.5)
 
     late = client.post(
         f"/commands/{command_id}/management_event",
@@ -77,19 +84,38 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client):
     with SessionLocal() as session:
         stored = crud.get_command(session, command_id)
         assert stored is not None
-        resulting_status = stored.status
-        event_types = list(
-            session.query(models.TradeManagementEvent.event_type)
+        assert stored.status == "PARTIAL_TP2_DONE"
+        events = (
+            session.query(models.TradeManagementEvent)
             .filter(models.TradeManagementEvent.command_id == command_id)
             .order_by(models.TradeManagementEvent.id)
             .all()
         )
-    assert len(event_types) == 3, "All three distinct receipts must be persisted"
-    if resulting_status == "PARTIAL_TP1_DONE":
-        pytest.xfail(
-            "Confirmed stage-order defect: delayed TP1 success regresses committed "
-            "PARTIAL_TP2_DONE to PARTIAL_TP1_DONE; execution-safety review required"
-        )
-    assert resulting_status == "PARTIAL_TP2_DONE", (
-        "Late management callback must not regress the command's recorded stage"
+        assert len(events) == 3, "All three distinct receipts must be persisted"
+        assert [event.event_type for event in events] == [
+            "TP1_CLOSE_SUCCESS", "TP2_CLOSE_SUCCESS", "TP1_CLOSE_SUCCESS"
+        ]
+        ledger_row = session.query(models.PerformanceLedger).filter_by(
+            signal_id=signal["id"]
+        ).one()
+        assert ledger_row.result_status == "TP2_HIT"
+        assert ledger_row.r_result == pytest.approx(6.5)
+        audit = session.query(models.AuditLog).filter_by(
+            event_type="MANAGEMENT_EVENT",
+            entity_type="management_event",
+            entity_id=events[-1].id,
+        ).one()
+        assert json.loads(audit.payload_json)["state_advanced"] is False
+
+    # The already stored late receipt still obeys normal idempotency.
+    repeated = client.post(
+        f"/commands/{command_id}/management_event",
+        json={
+            "event_type": "TP1_CLOSE_SUCCESS",
+            "stage": "TP1_LATE_RETRY",
+            "result": "SUCCESS",
+        },
+        headers=EA_HEADERS,
     )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["status"] == "duplicate_ignored"
