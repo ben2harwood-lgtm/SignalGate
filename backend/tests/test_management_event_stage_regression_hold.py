@@ -626,3 +626,119 @@ def test_postgresql_stale_tp1_callback_cannot_reopen_concurrently_closed_trade(
         release_delayed.set()
         crud.settings.require_license = previous_crud_mode
         command_routes.settings.require_license = previous_route_mode
+
+
+def test_postgresql_concurrent_distinct_stage_full_closures_notify_once(
+    client, db, monkeypatch
+):
+    """Two concurrently authorised, differently keyed closes get one notice.
+
+    The second callback must see the first committed FULLY_CLOSED receipt under
+    the command-row lock. Keep both distinct audit events but never send two
+    apparent trade-exit messages. Synthetic PostgreSQL sessions only; this is
+    NOT evidence of an EA fill, broker exit or external acceptance.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires two independent PostgreSQL callback transactions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from app.routes import commands as command_routes
+    from app.schemas import ManagementEventRequest
+
+    owner = register_user(client, "990096")
+    signal = create_signal(client, "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363")
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990096"},
+    )
+    assert approved.status_code == 200, approved.text
+    pending = client.get(
+        "/commands/pending", params={"user_id": owner["id"]}, headers=EA_HEADERS
+    )
+    assert pending.status_code == 200, pending.text
+    command_id = pending.json()["command"]["command_id"]
+    executed = client.post(
+        f"/commands/{command_id}/execution",
+        json={"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04},
+        headers=EA_HEADERS,
+    )
+    assert executed.status_code == 200, executed.text
+
+    previous_crud_mode = crud.settings.require_license
+    previous_route_mode = command_routes.settings.require_license
+    crud.settings.require_license = True
+    command_routes.settings.require_license = True
+    start_together = Barrier(2)
+    original_resolver = command_routes._get_authorized_callback_command
+    messages = []
+
+    def both_read_open_before_command_lock(session, command_id, licence_key):
+        command = original_resolver(session, command_id, licence_key)
+        assert command.status == "EXECUTED_OPEN"
+        start_together.wait(timeout=12)
+        return command
+
+    monkeypatch.setattr(
+        command_routes, "_get_authorized_callback_command",
+        both_read_open_before_command_lock,
+    )
+    monkeypatch.setattr(
+        command_routes,
+        "notify_user_and_admins",
+        lambda _chat_id, message: messages.append(message),
+    )
+
+    def report(stage):
+        with SessionLocal() as session:
+            session.connection().exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            return command_routes.report_management_event(
+                command_id,
+                ManagementEventRequest(
+                    event_type="FULLY_CLOSED", stage=stage, result="SUCCESS"
+                ),
+                x_sg_license_key=owner["license_key"],
+                db=session,
+                _ea="offline-test",
+            ).status
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            reports = [
+                workers.submit(report, "PARALLEL_CLOSE_A"),
+                workers.submit(report, "PARALLEL_CLOSE_B"),
+            ]
+            assert [future.result(timeout=25) for future in reports] == ["ok", "ok"]
+
+        assert len(messages) == 1, (
+            "Separate concurrent FULLY_CLOSED receipts must not double-notify"
+        )
+        assert "Demo EA reports trade fully closed" in messages[0]
+        assert "not independently confirmed" in messages[0]
+        with SessionLocal() as inspect:
+            command = crud.get_command(inspect, command_id)
+            assert command.status == "FULLY_CLOSED"
+            receipts = inspect.query(models.TradeManagementEvent).filter_by(
+                command_id=command_id, event_type="FULLY_CLOSED"
+            ).all()
+            assert {receipt.stage for receipt in receipts} == {
+                "PARALLEL_CLOSE_A", "PARALLEL_CLOSE_B"
+            }
+            advancement = []
+            for receipt in receipts:
+                audit = inspect.query(models.AuditLog).filter_by(
+                    event_type="MANAGEMENT_EVENT",
+                    entity_type="management_event",
+                    entity_id=receipt.id,
+                ).one()
+                advancement.append(json.loads(audit.payload_json)["state_advanced"])
+            assert sorted(advancement) == [False, True]
+            ledger = inspect.query(models.PerformanceLedger).filter_by(
+                signal_id=signal["id"]
+            ).one()
+            assert ledger.result_status == "CLOSED_UNATTRIBUTED"
+            assert ledger.r_result is None
+    finally:
+        crud.settings.require_license = previous_crud_mode
+        command_routes.settings.require_license = previous_route_mode
