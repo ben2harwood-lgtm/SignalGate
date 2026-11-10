@@ -336,6 +336,9 @@ def test_explicitly_contradictory_management_outcomes_are_rejected(
         assert session.query(models.TradeManagementEvent).filter_by(
             command_id=command_id
         ).count() == 0
+        assert session.query(models.AuditLog).filter_by(
+            event_type="MANAGEMENT_EVENT"
+        ).count() == 0, "Rejected report must not fabricate a management audit"
 
     # A malformed first attempt cannot poison the idempotency key of a later
     # corrected callback for the same event/stage.
@@ -361,3 +364,6 @@ def test_explicitly_contradictory_management_outcomes_are_rejected(
         assert session.query(models.TradeManagementEvent).filter_by(
             command_id=command_id
         ).count() == 1
+        assert session.query(models.AuditLog).filter_by(
+            event_type="MANAGEMENT_EVENT"
+        ).count() == 1, "Corrected report has exactly one management audit"
