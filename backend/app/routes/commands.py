@@ -265,6 +265,16 @@ def report_management_event(
         return SimpleStatus(status="duplicate_ignored")
 
     note = _NOTIFY_EVENTS.get(payload.event_type)
+    # A distinct late TP receipt is still audited, but must not tell the
+    # customer an earlier milestone just happened after a later stage or close.
+    # This is notification-only: command/ledger execution rules are unchanged.
+    if (
+        (payload.event_type == "TP1_CLOSE_SUCCESS" and command.status in {
+            "PARTIAL_TP2_DONE", "FULLY_CLOSED"
+        })
+        or (payload.event_type == "TP2_CLOSE_SUCCESS" and command.status == "FULLY_CLOSED")
+    ):
+        note = None
     if note:
         user = db.get(crud.models.User, command.user_id)
         chat_id = user.telegram_user_id if user else None
