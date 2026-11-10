@@ -252,3 +252,97 @@ def test_stop_loss_move_messages_follow_matching_ea_receipts(
             command_id=command_id
         ).all()
         assert len(events) == 7, "Distinct late receipts are still persisted for audit"
+
+
+@pytest.mark.parametrize(
+    ("event_type", "result"),
+    [
+        ("TP1_CLOSE_SUCCESS", "FAILED"),
+        ("TP1_CLOSE_SUCCESS", "PENDING"),
+        ("TP2_CLOSE_SUCCESS", "FAILED"),
+        ("TP3_CLOSE_SUCCESS", "FAILED"),
+        ("SL_MOVE_BREAKEVEN_SUCCESS", "FAILED"),
+        ("SL_MOVE_TP1_FAILED", "SUCCESS"),
+    ],
+)
+def test_explicitly_contradictory_management_outcomes_are_rejected(
+    client, monkeypatch, event_type, result
+):
+    """Bad EA self-reports must not create a TP milestone, audit or notification.
+
+    This is synthetic evidence only; no actual broker has confirmed a position.
+    Missing optional result is still accepted for legacy report compatibility.
+    """
+    owner = register_user(client, "990093")
+    signal = create_signal(client, "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363")
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990093"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+
+    pending = client.get(
+        "/commands/pending",
+        params={"user_id": owner["id"]},
+        headers=EA_HEADERS,
+    )
+    assert pending.status_code == 200, pending.text
+    command_id = pending.json()["command"]["command_id"]
+    executed = client.post(
+        f"/commands/{command_id}/execution",
+        json={"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04},
+        headers=EA_HEADERS,
+    )
+    assert executed.status_code == 200, executed.text
+
+    from app.routes import commands as command_routes
+
+    notifications = []
+    monkeypatch.setattr(
+        command_routes,
+        "notify_user_and_admins",
+        lambda *args, **kwargs: notifications.append((args, kwargs)),
+    )
+    rejected = client.post(
+        f"/commands/{command_id}/management_event",
+        json={
+            "event_type": event_type,
+            "stage": "CONTRADICTORY_RESULT",
+            "result": result,
+        },
+        headers=EA_HEADERS,
+    )
+    assert rejected.status_code == 422, rejected.text
+    assert rejected.json()["detail"] == "Management event type and result disagree"
+    assert notifications == []
+
+    with SessionLocal() as session:
+        assert crud.get_command(session, command_id).status == "EXECUTED_OPEN"
+        ledger_row = session.query(models.PerformanceLedger).filter_by(
+            signal_id=signal["id"]
+        ).one()
+        assert ledger_row.result_status == "EXECUTED_OPEN"
+        assert ledger_row.r_result is None
+        assert session.query(models.TradeManagementEvent).filter_by(
+            command_id=command_id
+        ).count() == 0
+
+    # A malformed first attempt cannot poison the idempotency key of a later
+    # corrected callback for the same event/stage.
+    corrected_result = "FAILED" if event_type.endswith("_FAILED") else "SUCCESS"
+    corrected = client.post(
+        f"/commands/{command_id}/management_event",
+        json={
+            "event_type": event_type,
+            "stage": "CONTRADICTORY_RESULT",
+            "result": corrected_result,
+        },
+        headers=EA_HEADERS,
+    )
+    assert corrected.status_code == 200, corrected.text
+    assert corrected.json()["status"] == "ok"
+    with SessionLocal() as session:
+        assert session.query(models.TradeManagementEvent).filter_by(
+            command_id=command_id
+        ).count() == 1

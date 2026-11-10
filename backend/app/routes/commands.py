@@ -263,6 +263,20 @@ def report_management_event(
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
     command = _get_authorized_callback_command(db, command_id, x_sg_license_key)
+    # An explicit EA result contradicting the event name is not execution
+    # evidence. Refuse it before CRUD can advance command/ledger state or
+    # create a misleading success notification. None remains compatible with
+    # older report clients; explicit contradictions are never accepted.
+    expected_result = None
+    if payload.event_type.endswith("_SUCCESS"):
+        expected_result = "SUCCESS"
+    elif payload.event_type.endswith("_FAILED"):
+        expected_result = "FAILED"
+    if expected_result and payload.result not in (None, expected_result):
+        db.rollback()
+        raise HTTPException(
+            status_code=422, detail="Management event type and result disagree"
+        )
     try:
         _event, created = crud.record_management_event(db, command, payload)
     except crud.ManagementEventConflict as exc:
