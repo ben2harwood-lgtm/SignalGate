@@ -246,14 +246,6 @@ class _RevokedOldestPendingStarvesActiveSibling(AssertionError):
     """An ineligible older command blocked a later, currently authorised YES."""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=_RevokedOldestPendingStarvesActiveSibling,
-    reason=(
-        "RELEASE HOLD: pending poll selects the oldest command and returns None "
-        "when its feed membership is revoked; later eligible YES may starve"
-    ),
-)
 def test_same_subscriber_revoked_older_feed_does_not_starve_active_sibling(
     client, db
 ):
@@ -262,8 +254,8 @@ def test_same_subscriber_revoked_older_feed_does_not_starve_active_sibling(
     The older feed A loses only its subscription after both approvals. The
     later feed B is still authorised on the same trading account and must be
     claimable without delivering A, mutating A or creating execution events.
-    Strict XFAIL records the current source-backed starvation risk; fixture
-    failure, unintended delivery or unexpected behaviour still fails CI.
+    This regression requires eligible sibling liveness while the revoked
+    command remains PENDING with no SENT audit or execution.
     """
     provider, feed_a, raw_key = _provider(db, "same-user-feed-starvation")
     feed_b = crud.create_feed(
@@ -360,3 +352,36 @@ def test_same_subscriber_revoked_older_feed_does_not_starve_active_sibling(
     assert eligible.status == "SENT_TO_EA"
     assert eligible.sent_to_ea_at is not None
     assert sent_audits[eligible_id] == 1
+
+    # A second poll must not resend the eligible command or touch the revoked
+    # older one (no execution, notification or duplicate SENT audit).
+    db.rollback()  # Release fixture read transaction before the second poll.
+    repeated = client.get(
+        "/commands/pending",
+        headers=EA_HEADERS,
+        params={"user_id": user["id"]},
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["command"] is None
+    db.expire_all()
+    assert db.get(models.Command, older_id).status == "PENDING"
+    assert db.get(models.Command, eligible_id).status == "SENT_TO_EA"
+    assert (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id == older_id,
+        )
+        .count()
+        == 0
+    )
+    assert (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id == eligible_id,
+        )
+        .count()
+        == 1
+    )
+    assert db.query(models.Execution).count() == 0

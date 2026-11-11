@@ -12,7 +12,7 @@ import secrets
 from contextlib import nullcontext
 from typing import List, Optional
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1966,6 +1966,10 @@ def get_pending_command_for_user(
     if pause is None or pause.value != "false":
         return None
 
+    # Skip an ineligible older command for this poll without changing its
+    # PENDING state or SENT audit. An ordered cursor also handles any number
+    # of revoked older feed memberships without growing an SQL IN list.
+    after_ineligible: tuple[dt.datetime, str] | None = None
     while True:
         query = (
             select(models.Command)
@@ -1973,9 +1977,14 @@ def get_pending_command_for_user(
                 models.Command.user_id == user_id,
                 models.Command.status == "PENDING",
             )
-            .order_by(models.Command.created_at.asc())
+            .order_by(models.Command.created_at.asc(), models.Command.id.asc())
             .limit(1)
         )
+        if after_ineligible is not None:
+            query = query.where(
+                tuple_(models.Command.created_at, models.Command.id)
+                > after_ineligible
+            )
         bind = db.get_bind()
         if bind is not None and bind.dialect.name == "postgresql":
             query = query.with_for_update(skip_locked=True)
@@ -1993,7 +2002,8 @@ def get_pending_command_for_user(
         # Never deliver an earlier YES command after a tenant revocation.
         # Leave ineligible commands PENDING and emit no SENT audit.
         if not _pending_command_tenant_eligible(db, command):
-            return None
+            after_ineligible = (command.created_at, command.id)
+            continue
 
         command.status = "SENT_TO_EA"
         command.sent_to_ea_at = utcnow()
