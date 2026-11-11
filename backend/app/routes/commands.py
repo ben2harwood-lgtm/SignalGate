@@ -202,9 +202,8 @@ def report_execution(
         notify_user_and_admins(
             chat_id,
             f"⚠️ Demo EA reports execution FAILED for {command.symbol} {command.direction} "
-            f"(command {command.id}): {execution.error_code or ''} "
-            f"{execution.error_message or ''}. Broker outcome not independently confirmed; "
-            "check demo terminal. Demo only.".strip(),
+            f"(command {command.id}). EA error details are not included in messages; "
+            "broker outcome not independently confirmed; check demo terminal. Demo only.",
         )
     return SimpleStatus(status="ok")
 

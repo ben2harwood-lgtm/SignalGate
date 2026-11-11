@@ -798,7 +798,19 @@ def test_execution_success_notification_distinguishes_ea_report_from_broker_proo
     assert duplicate.json()["status"] == "duplicate_ignored"
     assert len(notifications) == 1
 
-def test_execution_failure_notification_distinguishes_ea_report_from_broker_proof(client, monkeypatch):
+@pytest.mark.parametrize(
+    ("error_code", "error_message"),
+    [
+        ("NETWORK_TIMEOUT", "synthetic uncertain broker response"),
+        (
+            "INJECTED\\nBROKER_CONFIRMED_" + "X" * 5000,
+            "synthetic-secret-not-for-telegram\\nBROKER CONFIRMED\\n" + "Y" * 5000,
+        ),
+    ],
+)
+def test_execution_failure_notification_distinguishes_ea_report_from_broker_proof(
+    client, monkeypatch, error_code, error_message
+):
     """A FAILED EA callback does not prove that no broker position was opened.
 
     Synthetic offline notification evidence only; this does not reconcile
@@ -827,8 +839,8 @@ def test_execution_failure_notification_distinguishes_ea_report_from_broker_proo
     )
     payload = {
         "status": "FAILED",
-        "error_code": "NETWORK_TIMEOUT",
-        "error_message": "synthetic uncertain broker response",
+        "error_code": error_code,
+        "error_message": error_message,
     }
     first = client.post(
         f"/commands/{command_id}/execution", json=payload, headers=EA_HEADERS
@@ -839,8 +851,18 @@ def test_execution_failure_notification_distinguishes_ea_report_from_broker_proo
     assert "Demo EA reports execution FAILED" in notifications[0]
     assert "Broker outcome not independently confirmed" in notifications[0]
     assert "check demo terminal" in notifications[0]
-    assert "NETWORK_TIMEOUT" in notifications[0]
+    assert "EA error details are not included in messages" in notifications[0]
+    assert "NETWORK_TIMEOUT" not in notifications[0]
+    assert error_code not in notifications[0]
+    assert error_message not in notifications[0]
+    assert "BROKER CONFIRMED" not in notifications[0]
+    assert "\\n" not in notifications[0]
+    assert len(notifications[0]) < 4096
     assert "⚠️ Demo trade FAILED" not in notifications[0]
+    with SessionLocal() as session:
+        stored = session.query(models.Execution).filter_by(command_id=command_id).one()
+        assert stored.error_code == error_code
+        assert stored.error_message == error_message
 
     duplicate = client.post(
         f"/commands/{command_id}/execution", json=payload, headers=EA_HEADERS
