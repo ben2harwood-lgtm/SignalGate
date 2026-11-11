@@ -1,8 +1,8 @@
 """HOLD: EA command polling must fail closed on absent or corrupt global pause state.
 
 Fabricated loopback TestClient data only. No MT5, broker, Telegram, external
-service, credential, customer, or trading connection. Strict XFAIL marks a
-known delivery defect; it is not an accepted gate or a passing safety test.
+service, credential, customer, or trading connection. The missing/malformed poll guard now runs normally; startup seeding and
+operator-status defects remain strict XFAIL release holds.
 """
 from __future__ import annotations
 
@@ -23,14 +23,6 @@ class _UntrustedPauseStateDelivered(AssertionError):
 
 
 @pytest.mark.parametrize("broken_setting", ("missing", "invalid-value"))
-@pytest.mark.xfail(
-    strict=True,
-    raises=_UntrustedPauseStateDelivered,
-    reason=(
-        "RELEASE HOLD: a missing/malformed global pause setting must not "
-        "authorize delivery of a previously approved EA command"
-    ),
-)
 def test_pending_command_denied_on_untrusted_admin_pause_setting(
     client, broken_setting
 ):

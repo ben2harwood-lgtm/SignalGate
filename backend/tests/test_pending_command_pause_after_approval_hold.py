@@ -1,7 +1,7 @@
 """Known HOLD: an approved command must not cross a later admin pause.
 
 Synthetic TestClient regression only: no MT5, broker, paid provider, customer
-data, or network integration. The strict XFAIL documents an existing guard gap;
+data, or network integration. The normal assertion checks the committed-pause guard;
 do not remove it until the implementation is independently reviewed and
 tested against real two-session PostgreSQL pause/claim ordering.
 """
@@ -23,14 +23,6 @@ class _PausedCommandDelivered(AssertionError):
     """EA received an approved command after the admin pause was committed."""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=_PausedCommandDelivered,
-    reason=(
-        "HOLD: an approved PENDING command is still claimed by /commands/pending "
-        "after the global admin pause; independent PostgreSQL proof required"
-    ),
-)
 def test_pending_command_is_not_delivered_after_admin_pause(client):
     """A pause after YES, but before the EA poll, should deny new delivery."""
     user = register_user(client, "990001")
@@ -76,7 +68,7 @@ def test_pending_command_is_not_delivered_after_admin_pause(client):
         )
         executions = session.query(models.Execution).count()
 
-    # Only the specific unsafe delivery should count as the known XFAIL.
+    # Unsafe delivery must fail the test if it reappears.
     # Wrong responses, broken setup, or inconsistent audit state must fail CI.
     if payload["command"] is not None:
         assert payload["command"]["command_id"] == command_id
@@ -89,7 +81,7 @@ def test_pending_command_is_not_delivered_after_admin_pause(client):
         )
 
     # These assertions become release criteria only after the safety fix,
-    # strict-XFAIL removal, actual two-session PG tests and independent review.
+    # two-session PostgreSQL proof and independent review.
     assert command.status == "PENDING"
     assert sent_audits == 0
     assert executions == 0

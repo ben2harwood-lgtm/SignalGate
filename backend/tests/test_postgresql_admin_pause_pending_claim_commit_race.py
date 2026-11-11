@@ -1,7 +1,7 @@
 """Offline PostgreSQL witness: a global pause must serialize with EA command claim.
 
 No real EA, MT5, broker, customer, Telegram, network API, or trading. This
-strict-XFAIL test describes an unimplemented release safeguard. Neither an
+test checks the committed-pause delivery serialization. Neither an
 expected failure nor SQLite's skip is security or external acceptance.
 """
 from __future__ import annotations
@@ -25,14 +25,6 @@ class _PauseCommittedBeforeClaim(AssertionError):
     """A global admin pause committed ahead of the older held claim."""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=_PauseCommittedBeforeClaim,
-    reason=(
-        "RELEASE HOLD: a committed global pause can overtake an in-flight "
-        "EA command claim on PostgreSQL; shared-row locking is unproven"
-    ),
-)
 def test_committed_admin_pause_cannot_overtake_command_claim_postgresql(
     client, db, monkeypatch
 ):
@@ -162,14 +154,6 @@ class _ClaimOvertookUncommittedPause(AssertionError):
     """EA command claim committed after a pause writer already locked the row."""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=_ClaimOvertookUncommittedPause,
-    reason=(
-        "RELEASE HOLD: an EA claim starting after a pause writer locks the "
-        "settings row must wait for that pause commit, then refuse delivery"
-    ),
-)
 def test_paused_settings_writer_blocks_later_command_claim(client, db):
     """Inverse PostgreSQL race: pause writer owns row BEFORE EA claim starts.
 

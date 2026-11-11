@@ -1884,12 +1884,26 @@ def _create_command(
 def get_pending_command_for_user(
     db: Session, user_id: str
 ) -> Optional[models.Command]:
-    """Atomically claim the oldest pending non-expired command for a user.
+    """Claim a pending demo command only while global pause is explicitly clear.
 
-    PostgreSQL uses SELECT ... FOR UPDATE SKIP LOCKED so two EA polls/workers
-    cannot claim the same command concurrently. SQLite keeps the simple local
-    demo path, where the test/demo process is single-worker.
+    PostgreSQL FOR SHARE holds the persisted pause row until the caller's
+    commit, serializing an admin pause/resume UPDATE with this command's
+    SENT_TO_EA state and audit receipt. Missing or malformed pause state
+    fails closed. SQLite retains its single-worker local-demo behaviour.
     """
+    # Lock the pause row BEFORE the command row and retain it through the
+    # caller's transaction commit. FOR KEY SHARE is insufficient: an admin
+    # pause updates a non-key value and would bypass that weaker lock.
+    pause_query = select(models.Setting).where(
+        models.Setting.key == "admin_paused"
+    )
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        pause_query = pause_query.with_for_update(read=True)
+    pause = db.scalar(pause_query.execution_options(populate_existing=True))
+    if pause is None or pause.value != "false":
+        return None
+
     while True:
         query = (
             select(models.Command)
