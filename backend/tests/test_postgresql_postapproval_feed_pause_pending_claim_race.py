@@ -21,13 +21,13 @@ from .test_provider_export import VALID, _headers, _provider
 
 
 class _ScopePauseCommittedAheadOfHeldClaim(AssertionError):
-    """A paused feed committed before an older held command claim committed."""
+    """A paused provider or feed committed before an older held command claim."""
 
 
 @pytest.mark.parametrize("paused_scope", ("provider", "feed"))
 @pytest.mark.xfail(
     strict=True,
-    raises=_FeedPauseCommittedAheadOfHeldClaim,
+    raises=_ScopePauseCommittedAheadOfHeldClaim,
     reason=(
         "RELEASE HOLD: pending EA claim does not serialize against a "
         "concurrently committed provider/feed pause on PostgreSQL"
@@ -36,10 +36,10 @@ class _ScopePauseCommittedAheadOfHeldClaim(AssertionError):
 def test_provider_or_feed_pause_cannot_overtake_pending_command_claim(
     client, db, monkeypatch, paused_scope
 ):
-    """Stage a real pending claim, then try to commit the feed pause ahead of it.
+    """Stage a real pending claim, then try to commit a scope pause ahead of it.
 
     The claim's SENT audit is held before its transaction commits. The second
-    transaction updates the actual feed row. Under a safe shared-row locking
+    transaction updates the corresponding provider or feed row. Under a safe shared-row locking
     repair, that UPDATE must wait until the older claim commits. A pause
     committed first must never be followed by that older claim's delivery.
     """
@@ -120,7 +120,7 @@ def test_provider_or_feed_pause_cannot_overtake_pending_command_claim(
             assert claim_staged.wait(timeout=8), "Claim did not reach audit gate"
             pause_future = workers.submit(pause_scope)
             assert pause_update_attempted.wait(timeout=8), (
-                "Concurrent feed pause never attempted its row UPDATE"
+                "Concurrent scope pause never attempted its row UPDATE"
             )
             # Observe the pause commit *while* the original claim is held.
             # Looking after releasing the claim would not establish order.
@@ -164,16 +164,16 @@ class _PauseWriterFirstUnsafeDelivery(AssertionError):
     raises=_PauseWriterFirstUnsafeDelivery,
     reason=(
         "RELEASE HOLD: EA claim can deliver while another PostgreSQL "
-        "transaction has already updated the feed row to paused"
+        "transaction has already updated the provider/feed row to paused"
     ),
 )
 def test_provider_or_feed_pause_writer_first_blocks_or_refuses_pending_claim(
     client, db, paused_scope
 ):
-    """Hold the feed pause UPDATE first; an EA claim may not overtake it.
+    """Hold the provider/feed pause UPDATE first; an EA claim may not overtake it.
 
     The first connection has flushed paused=True but has not committed, and
-    therefore owns the PostgreSQL feed row lock. The second connection polls
+    therefore owns the PostgreSQL provider/feed row lock. The second connection polls
     an already-YES-approved PENDING command. A safe claim either refuses
     immediately or waits on that feed lock, observes the committed pause and
     returns None. A delivered command is a strict expected-failure witness,
