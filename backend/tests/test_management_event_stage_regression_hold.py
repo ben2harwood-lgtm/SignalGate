@@ -803,8 +803,8 @@ def test_execution_success_notification_distinguishes_ea_report_from_broker_proo
     [
         ("NETWORK_TIMEOUT", "synthetic uncertain broker response"),
         (
-            "INJECTED\\nBROKER_CONFIRMED_" + "X" * 5000,
-            "synthetic-secret-not-for-telegram\\nBROKER CONFIRMED\\n" + "Y" * 5000,
+            "INJECTED\nBROKER_CONFIRMED_" + "X" * 5000,
+            "synthetic-secret-not-for-telegram\nBROKER CONFIRMED\n" + "Y" * 5000,
         ),
     ],
 )
@@ -856,7 +856,7 @@ def test_execution_failure_notification_distinguishes_ea_report_from_broker_proo
     assert error_code not in notifications[0]
     assert error_message not in notifications[0]
     assert "BROKER CONFIRMED" not in notifications[0]
-    assert "\\n" not in notifications[0]
+    assert "\n" not in notifications[0]
     assert len(notifications[0]) < 4096
     assert "⚠️ Demo trade FAILED" not in notifications[0]
     with SessionLocal() as session:
