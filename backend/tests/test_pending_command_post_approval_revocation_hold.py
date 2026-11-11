@@ -585,7 +585,7 @@ def test_revoked_head_backlog_keeps_eligible_sibling_reachable(client, db):
     claim_selects = []
     def observe(_conn, _cursor, statement, _params, _context, _many):
         sql = statement.lower()
-        if sql.lstrip().startswith("select") and " from commands" in sql:
+        if sql.lstrip().startswith("select") and "from commands" in sql:
             claim_selects.append(statement)
 
     event.listen(engine, "before_cursor_execute", observe)
