@@ -511,8 +511,11 @@ def test_same_subscriber_tied_timestamp_revoked_heads_skip_to_active_feed(client
 
 
 
-def test_revoked_head_backlog_keeps_eligible_sibling_reachable(client, db):
-    """Synthetic 20-head backlog: delivery safety and claim-query observation.
+@pytest.mark.parametrize("revoked_count", (20, 100))
+def test_revoked_head_backlog_keeps_eligible_sibling_reachable(
+    client, db, revoked_count, record_property
+):
+    """Synthetic 20/100-head backlog: delivery safety and query counts.
 
     The query count is an *upper sanity bound*, not a release latency SLO.
     This exercises the real EA-poll route on both SQLite and PostgreSQL.
@@ -541,7 +544,7 @@ def test_revoked_head_backlog_keeps_eligible_sibling_reachable(client, db):
     assert revoked_membership.id != active_membership.id
 
     revoked_ids = []
-    for _ in range(20):
+    for _ in range(revoked_count):
         created = client.post(
             "/signals/create",
             headers=_headers(provider, raw_key),
@@ -570,7 +573,7 @@ def test_revoked_head_backlog_keeps_eligible_sibling_reachable(client, db):
     assert approved.status_code == 200, approved.text
     assert approved.json()["result"] == "APPROVED"
     eligible_id = approved.json()["command_id"]
-    assert len(set(revoked_ids + [eligible_id])) == 21
+    assert len(set(revoked_ids + [eligible_id])) == revoked_count + 1
 
     # Explicitly keep the eligible command last, independent of clock speed.
     ordered_at = models.utcnow()
@@ -603,6 +606,8 @@ def test_revoked_head_backlog_keeps_eligible_sibling_reachable(client, db):
     # This is deliberately not a latency threshold; a future batch-select
     # optimisation should be allowed to use *fewer* round trips.
     assert 1 <= len(claim_selects) <= len(revoked_ids) + 1
+    record_property("revoked_backlog_size", revoked_count)
+    record_property("first_poll_command_selects", len(claim_selects))
 
     db.expire_all()
     assert db.get(models.Command, eligible_id).status == "SENT_TO_EA"
@@ -622,13 +627,22 @@ def test_revoked_head_backlog_keeps_eligible_sibling_reachable(client, db):
     assert db.query(models.Execution).count() == 0
 
     db.rollback()
-    repeated = client.get(
-        "/commands/pending",
-        headers=EA_HEADERS,
-        params={"user_id": user["id"]},
-    )
+    # Measure the second poll too: these revoked rows are deliberately left
+    # PENDING and may be scanned again. Observation is not a latency SLO.
+    claim_selects.clear()
+    event.listen(engine, "before_cursor_execute", observe)
+    try:
+        repeated = client.get(
+            "/commands/pending",
+            headers=EA_HEADERS,
+            params={"user_id": user["id"]},
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", observe)
     assert repeated.status_code == 200, repeated.text
     assert repeated.json()["command"] is None
+    assert 1 <= len(claim_selects) <= revoked_count + 1
+    record_property("repeat_poll_command_selects", len(claim_selects))
     db.expire_all()
     assert db.get(models.Command, eligible_id).status == "SENT_TO_EA"
     assert all(
