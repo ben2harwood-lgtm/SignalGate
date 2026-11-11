@@ -245,8 +245,8 @@ _NOTIFY_EVENTS = {
     # Do not imply the remaining stop-loss is already protected.
     # Terminal TP3/stop/close messages are EA self-reports until separately
     # reconciled against broker-demo receipts; never assert a verified exit.
-    "TP1_CLOSE_SUCCESS": "🎯 TP1 close reported. Stop-loss change not yet confirmed.",
-    "TP2_CLOSE_SUCCESS": "🎯 TP2 close reported. Stop-loss change not yet confirmed.",
+    "TP1_CLOSE_SUCCESS": "🎯 Demo EA reports TP1 close. Broker TP1 exit not independently confirmed; check demo terminal. Stop-loss change not yet confirmed. Demo only.",
+    "TP2_CLOSE_SUCCESS": "🎯 Demo EA reports TP2 close. Broker TP2 exit not independently confirmed; check demo terminal. Stop-loss change not yet confirmed. Demo only.",
     "SL_MOVE_BREAKEVEN_SUCCESS": "ℹ️ Demo EA reported breakeven SL modification: SUCCESS. Actual protection not independently confirmed; check demo position.",
     "SL_MOVE_BREAKEVEN_FAILED": "⚠️ Demo EA reports breakeven stop-loss move FAILED. Protection not confirmed; check demo terminal.",
     "SL_MOVE_TP1_SUCCESS": "ℹ️ Demo EA reported TP1 SL modification: SUCCESS. Actual protection not independently confirmed; check demo position.",

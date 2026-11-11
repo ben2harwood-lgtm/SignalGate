@@ -204,7 +204,11 @@ def test_stop_loss_move_messages_follow_matching_ea_receipts(
 
     assert receipt("TP1_CLOSE_SUCCESS", "TP1_DONE", "SUCCESS") == "ok"
     assert len(messages) == 1
+    assert "Demo EA reports TP1 close" in messages[-1]
+    assert "Broker TP1 exit not independently confirmed" in messages[-1]
+    assert "check demo terminal" in messages[-1]
     assert "not yet confirmed" in messages[-1]
+    assert "Demo only" in messages[-1]
     first_type = f"SL_MOVE_BREAKEVEN_{breakeven_result}"
     assert receipt(first_type, "TP1_DONE", breakeven_result) == "ok"
     assert len(messages) == 2
@@ -219,7 +223,11 @@ def test_stop_loss_move_messages_follow_matching_ea_receipts(
 
     assert receipt("TP2_CLOSE_SUCCESS", "TP2_DONE", "SUCCESS") == "ok"
     assert len(messages) == 3
+    assert "Demo EA reports TP2 close" in messages[-1]
+    assert "Broker TP2 exit not independently confirmed" in messages[-1]
+    assert "check demo terminal" in messages[-1]
     assert "not yet confirmed" in messages[-1]
+    assert "Demo only" in messages[-1]
     second_type = f"SL_MOVE_TP1_{tp1_result}"
     assert receipt(second_type, "TP2_DONE", tp1_result) == "ok"
     assert len(messages) == 4
