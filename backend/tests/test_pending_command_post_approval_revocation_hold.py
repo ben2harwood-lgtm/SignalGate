@@ -240,3 +240,123 @@ def test_postapproval_revocation_keeps_other_provider_pending_poll_available(
     }
     assert sent_counts == {command_a_id: 0, command_b_id: 1}
     assert db.query(models.Execution).count() == 0
+
+
+class _RevokedOldestPendingStarvesActiveSibling(AssertionError):
+    """An ineligible older command blocked a later, currently authorised YES."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_RevokedOldestPendingStarvesActiveSibling,
+    reason=(
+        "RELEASE HOLD: pending poll selects the oldest command and returns None "
+        "when its feed membership is revoked; later eligible YES may starve"
+    ),
+)
+def test_same_subscriber_revoked_older_feed_does_not_starve_active_sibling(
+    client, db
+):
+    """Two explicit YES commands for one user, one provider, two active feeds.
+
+    The older feed A loses only its subscription after both approvals. The
+    later feed B is still authorised on the same trading account and must be
+    claimable without delivering A, mutating A or creating execution events.
+    Strict XFAIL records the current source-backed starvation risk; fixture
+    failure, unintended delivery or unexpected behaviour still fails CI.
+    """
+    provider, feed_a, raw_key = _provider(db, "same-user-feed-starvation")
+    feed_b = crud.create_feed(
+        db, provider, "Active sibling feed", "same-user-sibling-source"
+    )
+    db.commit()  # Release audit-chain lock before HTTP registration.
+    user = register_user(
+        client, "990096", "synthetic_same_user_feeds", "Synthetic Subscriber"
+    )
+    subscription_a, account_a = crud.subscribe_user_to_feed(
+        db, provider, feed_a, db.get(models.User, user["id"])
+    )
+    subscription_b, account_b = crud.subscribe_user_to_feed(
+        db, provider, feed_b, db.get(models.User, user["id"])
+    )
+    db.commit()
+    assert feed_a.id != feed_b.id
+    assert subscription_a.id != subscription_b.id
+    assert account_a.id == account_b.id
+    command_ids = []
+    for feed in (feed_a, feed_b):
+        created = client.post(
+            "/signals/create",
+            headers=_headers(provider, raw_key),
+            json={"feed_id": feed.id, "raw_text": VALID},
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["parser_status"] == "VALID"
+        approved = client.post(
+            f"/signals/{created.json()['id']}/approve",
+            json={"telegram_user_id": user["telegram_user_id"]},
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["result"] == "APPROVED", approved.text
+        command_ids.append(approved.json()["command_id"])
+    older_id, eligible_id = command_ids
+    assert older_id != eligible_id
+
+    db.expire_all()
+    older = db.get(models.Command, older_id)
+    eligible = db.get(models.Command, eligible_id)
+    assert older.status == eligible.status == "PENDING"
+    assert older.created_at < eligible.created_at
+    assert older.feed_id == feed_a.id
+    assert eligible.feed_id == feed_b.id
+    assert older.account_id == eligible.account_id == account_a.id
+
+    subscription_a.status = "INACTIVE"
+    db.commit()
+    db.expire_all()
+    assert db.get(models.Subscription, subscription_a.id).status == "INACTIVE"
+    assert db.get(models.Subscription, subscription_b.id).status == "ACTIVE"
+    db.rollback()  # End fixture read transaction before HTTP poll.
+
+    polled = client.get(
+        "/commands/pending",
+        headers=EA_HEADERS,
+        params={"user_id": user["id"]},
+    )
+    assert polled.status_code == 200, polled.text
+    assert "command" in polled.json()
+
+    db.expire_all()
+    older = db.get(models.Command, older_id)
+    eligible = db.get(models.Command, eligible_id)
+    sent_audits = {
+        command_id: (
+            db.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count()
+        )
+        for command_id in (older_id, eligible_id)
+    }
+    assert older.status == "PENDING"
+    assert older.sent_to_ea_at is None
+    assert sent_audits[older_id] == 0
+    assert db.query(models.Execution).count() == 0
+
+    delivered = polled.json()["command"]
+    if delivered is None:
+        # Prove the narrower known failure, not a fixture/HTTP/audit failure.
+        assert eligible.status == "PENDING"
+        assert eligible.sent_to_ea_at is None
+        assert sent_audits[eligible_id] == 0
+        raise _RevokedOldestPendingStarvesActiveSibling(
+            "Older feed A was revoked, but eligible sibling feed B remained "
+            "PENDING and was not delivered to the same subscriber"
+        )
+
+    assert delivered["command_id"] == eligible_id
+    assert eligible.status == "SENT_TO_EA"
+    assert eligible.sent_to_ea_at is not None
+    assert sent_audits[eligible_id] == 1
