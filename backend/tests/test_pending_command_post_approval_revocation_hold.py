@@ -385,3 +385,127 @@ def test_same_subscriber_revoked_older_feed_does_not_starve_active_sibling(
         == 1
     )
     assert db.query(models.Execution).count() == 0
+
+def test_same_subscriber_tied_timestamp_revoked_heads_skip_to_active_feed(client, db):
+    """Two revoked commands sharing a timestamp cannot hide a valid sibling.
+
+    The deterministic (created_at, id) cursor must advance over both
+    ineligible heads, including the timestamp tie, without producing SENT
+    receipts for them. Fabricated HTTP/ORM fixtures only: no broker/EA trade.
+    """
+    provider, first_feed, raw_key = _provider(db, "same-time-revoked-heads")
+    feeds = [
+        first_feed,
+        crud.create_feed(db, provider, "Second revoked", "tie-revoked-two"),
+        crud.create_feed(db, provider, "Eligible sibling", "tie-active-three"),
+    ]
+    db.commit()  # Release fixture audit locks before HTTP registration.
+    user = register_user(
+        client, "990097", "synthetic_tied_head", "Synthetic Subscriber"
+    )
+    subscriptions = []
+    account_ids = []
+    for feed in feeds:
+        subscription, account = crud.subscribe_user_to_feed(
+            db, provider, feed, db.get(models.User, user["id"])
+        )
+        subscriptions.append(subscription)
+        account_ids.append(account.id)
+    db.commit()
+    assert len(set(account_ids)) == 1
+
+    command_subscriptions = []
+    for feed, subscription in zip(feeds, subscriptions):
+        created = client.post(
+            "/signals/create",
+            headers=_headers(provider, raw_key),
+            json={"feed_id": feed.id, "raw_text": VALID},
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["parser_status"] == "VALID"
+        approved = client.post(
+            f"/signals/{created.json()['id']}/approve",
+            json={"telegram_user_id": user["telegram_user_id"]},
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["result"] == "APPROVED"
+        command_subscriptions.append((approved.json()["command_id"], subscription))
+    assert len({command_id for command_id, _ in command_subscriptions}) == 3
+
+    # Explicitly force a tie: order must be broken by command ID, rather than
+    # relying on sub-millisecond wall-clock differences between approvals.
+    tied_at = models.utcnow()
+    for command_id, _ in command_subscriptions:
+        command = db.get(models.Command, command_id)
+        assert command.status == "PENDING"
+        command.created_at = tied_at
+    db.commit()
+    db.expire_all()
+    assert len({
+        db.get(models.Command, command_id).created_at
+        for command_id, _ in command_subscriptions
+    }) == 1
+
+    ordered = sorted(command_subscriptions, key=lambda pair: pair[0])
+    revoked_ids = [command_id for command_id, _ in ordered[:2]]
+    eligible_id = ordered[2][0]
+    for _, subscription in ordered[:2]:
+        subscription.status = "INACTIVE"
+    db.commit()
+    db.expire_all()
+    for command_id, subscription in ordered:
+        expected = "ACTIVE" if command_id == eligible_id else "INACTIVE"
+        assert db.get(models.Subscription, subscription.id).status == expected
+    db.rollback()  # Do not hold fixture read locks across the HTTP poll.
+
+    polled = client.get(
+        "/commands/pending",
+        headers=EA_HEADERS,
+        params={"user_id": user["id"]},
+    )
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["command"] is not None
+    assert polled.json()["command"]["command_id"] == eligible_id
+
+    db.expire_all()
+    for command_id in revoked_ids + [eligible_id]:
+        command = db.get(models.Command, command_id)
+        expected_status = "SENT_TO_EA" if command_id == eligible_id else "PENDING"
+        expected_audits = 1 if command_id == eligible_id else 0
+        assert command.status == expected_status
+        assert (command.sent_to_ea_at is not None) == (command_id == eligible_id)
+        assert (
+            db.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count()
+            == expected_audits
+        )
+    assert db.query(models.Execution).count() == 0
+
+    db.rollback()
+    repeated = client.get(
+        "/commands/pending",
+        headers=EA_HEADERS,
+        params={"user_id": user["id"]},
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["command"] is None
+    db.expire_all()
+    for command_id in revoked_ids + [eligible_id]:
+        assert db.get(models.Command, command_id).status == (
+            "SENT_TO_EA" if command_id == eligible_id else "PENDING"
+        )
+        assert (
+            db.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count()
+            == (1 if command_id == eligible_id else 0)
+        )
+    assert db.query(models.Execution).count() == 0
+
