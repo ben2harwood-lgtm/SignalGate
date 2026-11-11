@@ -94,14 +94,6 @@ class _StartupReopenedUntrustedPause(AssertionError):
     """A missing persisted pause row was silently re-created as unpaused."""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=_StartupReopenedUntrustedPause,
-    reason=(
-        "RELEASE HOLD: startup settings seeding may not silently authorize "
-        "already-approved EA commands when a persisted admin pause row is missing"
-    ),
-)
 def test_missing_pause_row_not_reseeded_after_command_approval(client):
     """Synthetic restart-seeder regression; no process, broker, or EA is started.
 
@@ -168,7 +160,7 @@ def test_missing_pause_row_not_reseeded_after_command_approval(client):
         )
         executions = session.query(models.Execution).count()
 
-    # The named XFAIL is allowed ONLY after proving an existing database
+    # The failure is raised only after proving an existing database
     # was reopened permissively and delivery/audit actually occurred.
     if pause_value == "false" and payload["command"] is not None:
         assert payload["command"]["command_id"] == command_id
@@ -180,7 +172,7 @@ def test_missing_pause_row_not_reseeded_after_command_approval(client):
             "previously approved pending command without explicit resume"
         )
 
-    # A poll-only guard is insufficient if startup still silently seeds
+    # A poll-only guard is insufficient if startup silently seeds
     # untrusted persisted state to 'false'. Require both to be safe.
     assert pause_value != "false"
     assert payload["command"] is None
@@ -193,14 +185,6 @@ class _EstablishedDatabaseSilentlyUnpaused(AssertionError):
     """An existing database lost pause state and was silently reopened."""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=_EstablishedDatabaseSilentlyUnpaused,
-    reason=(
-        "RELEASE HOLD: a database with persisted users must not recreate a "
-        "missing admin_paused=false merely because it has no pending commands"
-    ),
-)
 def test_established_database_without_commands_does_not_reseed_missing_pause(client):
     """No command-based heuristic may classify an existing database as new.
 
@@ -255,14 +239,6 @@ class _OperatorReportedUntrustedPauseAsClear(AssertionError):
 
 
 @pytest.mark.parametrize("broken_setting", ("missing", "invalid-value"))
-@pytest.mark.xfail(
-    strict=True,
-    raises=_OperatorReportedUntrustedPauseAsClear,
-    reason=(
-        "RELEASE HOLD: admin status and metrics must not report an absent or "
-        "malformed persisted pause setting as authoritatively unpaused"
-    ),
-)
 def test_admin_status_and_metrics_fail_closed_on_untrusted_pause(client, broken_setting):
     """Offline operator-status regression, without commands or broker activity.
 

@@ -210,7 +210,9 @@ def set_setting(db: Session, key: str, value: str) -> models.Setting:
 
 
 def is_admin_paused(db: Session) -> bool:
-    return (get_setting(db, "admin_paused", "false") or "false").lower() == "true"
+    # Only an explicit persisted lowercase false proves that demo delivery
+    # is unpaused; absent or corrupted state must never look safe to operators.
+    return get_setting(db, "admin_paused") != "false"
 
 
 def get_setting_int(db: Session, key: str, default: int) -> int:
