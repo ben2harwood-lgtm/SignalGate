@@ -20,19 +20,22 @@ from .conftest import register_user
 from .test_provider_export import VALID, _headers, _provider
 
 
-class _FeedPauseCommittedAheadOfHeldClaim(AssertionError):
+class _ScopePauseCommittedAheadOfHeldClaim(AssertionError):
     """A paused feed committed before an older held command claim committed."""
 
 
+@pytest.mark.parametrize("paused_scope", ("provider", "feed"))
 @pytest.mark.xfail(
     strict=True,
     raises=_FeedPauseCommittedAheadOfHeldClaim,
     reason=(
         "RELEASE HOLD: pending EA claim does not serialize against a "
-        "concurrently committed provider-feed pause on PostgreSQL"
+        "concurrently committed provider/feed pause on PostgreSQL"
     ),
 )
-def test_feed_pause_cannot_overtake_pending_command_claim(client, db, monkeypatch):
+def test_provider_or_feed_pause_cannot_overtake_pending_command_claim(
+    client, db, monkeypatch, paused_scope
+):
     """Stage a real pending claim, then try to commit the feed pause ahead of it.
 
     The claim's SENT audit is held before its transaction commits. The second
@@ -43,7 +46,7 @@ def test_feed_pause_cannot_overtake_pending_command_claim(client, db, monkeypatc
     if db.get_bind().dialect.name != "postgresql":
         pytest.skip("Requires two distinct PostgreSQL database transactions")
 
-    provider, feed, raw_key = _provider(db, "pg-pending-feed-pause-race")
+    provider, feed, raw_key = _provider(db, f"pg-pending-{paused_scope}-pause-race")
     user = register_user(client, "990093", "synthetic_feed_race", "Synthetic")
     crud.subscribe_user_to_feed(
         db, provider, feed, db.get(models.User, user["id"])
@@ -63,7 +66,8 @@ def test_feed_pause_cannot_overtake_pending_command_claim(client, db, monkeypatc
     assert approved.status_code == 200, approved.text
     assert approved.json()["result"] == "APPROVED", approved.text
     command_id = approved.json()["command_id"]
-    feed_id = feed.id
+    target_type = models.Provider if paused_scope == "provider" else models.Feed
+    target_id = provider.id if paused_scope == "provider" else feed.id
     db.rollback()  # Do not let fixture-session reads hold the test race open.
 
     claim_staged = Event()
@@ -91,21 +95,22 @@ def test_feed_pause_cannot_overtake_pending_command_claim(client, db, monkeypatc
             session.commit()
             return claimed.id
 
-    def pause_feed():
+    def pause_scope():
         with SessionLocal() as session:
             conn = session.connection()
             conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
             conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
 
             def observe_update(_conn, _cursor, sql, _params, _ctx, _many):
-                if sql.lstrip().lower().startswith("update feeds set"):
+                table = "providers" if paused_scope == "provider" else "feeds"
+                if sql.lstrip().lower().startswith(f"update {table} set"):
                     pause_update_attempted.set()
 
             event.listen(conn, "before_cursor_execute", observe_update)
-            persisted_feed = session.get(models.Feed, feed_id)
-            assert persisted_feed is not None and persisted_feed.paused is False
-            persisted_feed.paused = True
-            session.flush()  # Actual UPDATE must try to obtain the feed-row lock.
+            target = session.get(target_type, target_id)
+            assert target is not None and target.paused is False
+            target.paused = True
+            session.flush()  # Actual UPDATE must try to obtain the scope-row lock.
             session.commit()
             pause_committed.set()
 
@@ -113,7 +118,7 @@ def test_feed_pause_cannot_overtake_pending_command_claim(client, db, monkeypatc
         claim_future = workers.submit(claim_command)
         try:
             assert claim_staged.wait(timeout=8), "Claim did not reach audit gate"
-            pause_future = workers.submit(pause_feed)
+            pause_future = workers.submit(pause_scope)
             assert pause_update_attempted.wait(timeout=8), (
                 "Concurrent feed pause never attempted its row UPDATE"
             )
@@ -126,9 +131,9 @@ def test_feed_pause_cannot_overtake_pending_command_claim(client, db, monkeypatc
         pause_future.result(timeout=22)
 
     with SessionLocal() as verify:
-        persisted_feed = verify.get(models.Feed, feed_id)
+        target = verify.get(target_type, target_id)
         command = verify.get(models.Command, command_id)
-        assert persisted_feed is not None and persisted_feed.paused is True
+        assert target is not None and target.paused is True
         assert command is not None and command.status == "SENT_TO_EA"
         assert command.sent_to_ea_at is not None
         assert verify.query(models.Execution).count() == 0
@@ -143,8 +148,8 @@ def test_feed_pause_cannot_overtake_pending_command_claim(client, db, monkeypatc
         assert sent_audits == 1
 
     if pause_overtook_claim:
-        raise _FeedPauseCommittedAheadOfHeldClaim(
-            "Feed pause committed while the approved command's SENT audit "
+        raise _ScopePauseCommittedAheadOfHeldClaim(
+            f"{paused_scope} pause committed while the approved command's SENT audit "
             "was held, yet that older command claim committed afterward"
         )
 
@@ -153,6 +158,7 @@ class _PauseWriterFirstUnsafeDelivery(AssertionError):
     """EA claim crossed an uncommitted feed pause and delivered the command."""
 
 
+@pytest.mark.parametrize("paused_scope", ("provider", "feed"))
 @pytest.mark.xfail(
     strict=True,
     raises=_PauseWriterFirstUnsafeDelivery,
@@ -161,7 +167,9 @@ class _PauseWriterFirstUnsafeDelivery(AssertionError):
         "transaction has already updated the feed row to paused"
     ),
 )
-def test_feed_pause_writer_first_blocks_or_refuses_pending_claim(client, db):
+def test_provider_or_feed_pause_writer_first_blocks_or_refuses_pending_claim(
+    client, db, paused_scope
+):
     """Hold the feed pause UPDATE first; an EA claim may not overtake it.
 
     The first connection has flushed paused=True but has not committed, and
@@ -174,7 +182,7 @@ def test_feed_pause_writer_first_blocks_or_refuses_pending_claim(client, db):
     if db.get_bind().dialect.name != "postgresql":
         pytest.skip("Requires independent PostgreSQL writer and claimer sessions")
 
-    provider, feed, raw_key = _provider(db, "pg-feed-pause-writer-first")
+    provider, feed, raw_key = _provider(db, f"pg-{paused_scope}-pause-writer-first")
     user = register_user(client, "990094", "synthetic_writer_first", "Synthetic")
     crud.subscribe_user_to_feed(
         db, provider, feed, db.get(models.User, user["id"])
@@ -194,13 +202,14 @@ def test_feed_pause_writer_first_blocks_or_refuses_pending_claim(client, db):
     assert approved.status_code == 200, approved.text
     assert approved.json()["result"] == "APPROVED", approved.text
     command_id = approved.json()["command_id"]
-    feed_id = feed.id
+    target_type = models.Provider if paused_scope == "provider" else models.Feed
+    target_id = provider.id if paused_scope == "provider" else feed.id
     user_id = user["id"]
     db.rollback()
 
     with SessionLocal() as verify_before:
         assert verify_before.get(models.Command, command_id).status == "PENDING"
-        assert verify_before.get(models.Feed, feed_id).paused is False
+        assert verify_before.get(target_type, target_id).paused is False
 
     pause_flushed = Event()
     release_pause = Event()
@@ -209,16 +218,16 @@ def test_feed_pause_writer_first_blocks_or_refuses_pending_claim(client, db):
     pause_pid = []
     claim_pid = []
 
-    def hold_paused_feed_row():
+    def hold_paused_scope_row():
         with SessionLocal() as session:
             conn = session.connection()
             conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
             conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
             pause_pid.append(conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one())
-            persisted_feed = session.get(models.Feed, feed_id)
-            assert persisted_feed is not None and persisted_feed.paused is False
-            persisted_feed.paused = True
-            session.flush()  # Row UPDATE and lock occur before the EA poll.
+            target = session.get(target_type, target_id)
+            assert target is not None and target.paused is False
+            target.paused = True
+            session.flush()  # Scope-row UPDATE and lock occur before the EA poll.
             pause_flushed.set()
             assert release_pause.wait(timeout=15), "Pause writer was not released"
             session.commit()
@@ -240,7 +249,7 @@ def test_feed_pause_writer_first_blocks_or_refuses_pending_claim(client, db):
                 claim_finished.set()
 
     with ThreadPoolExecutor(max_workers=2) as workers:
-        pause_future = workers.submit(hold_paused_feed_row)
+        pause_future = workers.submit(hold_paused_scope_row)
         try:
             assert pause_flushed.wait(timeout=8), "Pause UPDATE was never flushed"
             claim_future = workers.submit(claim_while_pause_uncommitted)
@@ -274,9 +283,9 @@ def test_feed_pause_writer_first_blocks_or_refuses_pending_claim(client, db):
         claimed_id = claim_future.result(timeout=20)
 
     with SessionLocal() as verify:
-        persisted_feed = verify.get(models.Feed, feed_id)
+        target = verify.get(target_type, target_id)
         persisted_command = verify.get(models.Command, command_id)
-        assert persisted_feed is not None and persisted_feed.paused is True
+        assert target is not None and target.paused is True
         assert persisted_command is not None
         sent_audits = (
             verify.query(models.AuditLog)
@@ -296,7 +305,7 @@ def test_feed_pause_writer_first_blocks_or_refuses_pending_claim(client, db):
             assert persisted_command.sent_to_ea_at is not None
             assert sent_audits == 1
             raise _PauseWriterFirstUnsafeDelivery(
-                "EA delivered an approved command while the same feed's "
+                f"EA delivered an approved command while the {paused_scope}'s "
                 "pause UPDATE was already flushed and held uncommitted; "
                 f"claim completed before pause commit: {finished_before_pause_commit}"
             )
