@@ -332,7 +332,13 @@ def report_management_event(
         # The EA legitimately follows TP3/STOP_LOSS_HIT with FULLY_CLOSED.
         # Retain that final notice, but never announce a new competing exit
         # from a distinct late TP/SL/failure receipt after terminal state.
-        (terminal_before_receipt and payload.event_type != "FULLY_CLOSED")
+        # Allow the EA's normal follow-on FULLY_CLOSED after a TP3/stop-out
+        # terminal milestone, but do not announce a broker exit after a
+        # FAILED/EXPIRED command: the late receipt is audit-only in CRUD.
+        (terminal_before_receipt and (
+            payload.event_type != "FULLY_CLOSED"
+            or command.status != "FULLY_CLOSED"
+        ))
         or prior_full_closure
         or (payload.event_type == "TP1_CLOSE_SUCCESS" and command.status in {
             "PARTIAL_TP2_DONE", "FULLY_CLOSED"

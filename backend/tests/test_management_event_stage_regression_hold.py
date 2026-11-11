@@ -848,3 +848,87 @@ def test_execution_failure_notification_distinguishes_ea_report_from_broker_proo
     assert duplicate.status_code == 200, duplicate.text
     assert duplicate.json()["status"] == "duplicate_ignored"
     assert len(notifications) == 1
+
+
+@pytest.mark.parametrize("terminal_status", ["FAILED", "EXPIRED"])
+def test_late_full_closure_after_nonclosure_terminal_is_audit_only(
+    client, monkeypatch, terminal_status
+):
+    """A delayed EA FULLY_CLOSED must not claim an exit after failure/expiry.
+
+    CRUD must retain the distinct self-report and its nonadvancing audit, but
+    neither a failed execution nor an expired command proves a broker closure.
+    This uses synthetic backend records only, not broker-demo acceptance.
+    """
+    from app.routes import commands as command_routes
+
+    owner = register_user(client, "990100")
+    signal = create_signal(client, "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363")
+    approval = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990100"},
+    )
+    assert approval.status_code == 200, approval.text
+    pending = client.get(
+        "/commands/pending", params={"user_id": owner["id"]}, headers=EA_HEADERS
+    )
+    assert pending.status_code == 200, pending.text
+    command_id = pending.json()["command"]["command_id"]
+
+    execution_payload = (
+        {"status": "FAILED", "error_code": "EA_REJECTED"}
+        if terminal_status == "FAILED"
+        else {"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04}
+    )
+    executed = client.post(
+        f"/commands/{command_id}/execution",
+        json=execution_payload,
+        headers=EA_HEADERS,
+    )
+    assert executed.status_code == 200, executed.text
+
+    with SessionLocal() as session:
+        command = crud.get_command(session, command_id)
+        if terminal_status == "EXPIRED":
+            # Deterministic stale-callback simulation, not a broker scenario.
+            command.status = "EXPIRED"
+            session.commit()
+        assert command.status == terminal_status
+        ledger = session.query(models.PerformanceLedger).filter_by(
+            signal_id=signal["id"]
+        ).one()
+        prior_ledger = (ledger.result_status, ledger.r_result)
+
+    notifications = []
+    monkeypatch.setattr(
+        command_routes, "notify_user_and_admins",
+        lambda _chat_id, message: notifications.append(message),
+    )
+    late = client.post(
+        f"/commands/{command_id}/management_event",
+        json={
+            "event_type": "FULLY_CLOSED",
+            "stage": "LATE_AFTER_NONCLOSURE_TERMINAL",
+            "result": "SUCCESS",
+        },
+        headers=EA_HEADERS,
+    )
+    assert late.status_code == 200, late.text
+    assert late.json()["status"] == "ok"
+    assert notifications == [], "Late receipt is not verified broker closure"
+
+    with SessionLocal() as session:
+        assert crud.get_command(session, command_id).status == terminal_status
+        ledger = session.query(models.PerformanceLedger).filter_by(
+            signal_id=signal["id"]
+        ).one()
+        assert (ledger.result_status, ledger.r_result) == prior_ledger
+        receipt = session.query(models.TradeManagementEvent).filter_by(
+            command_id=command_id, event_type="FULLY_CLOSED"
+        ).one()
+        audit = session.query(models.AuditLog).filter_by(
+            event_type="MANAGEMENT_EVENT",
+            entity_type="management_event",
+            entity_id=receipt.id,
+        ).one()
+        assert json.loads(audit.payload_json)["state_advanced"] is False
