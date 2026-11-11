@@ -204,7 +204,7 @@ def test_scope_revocation_writer_first_blocks_or_refuses_pending_claim(
 
     with SessionLocal() as verify_before:
         assert verify_before.get(models.Command, command_id).status == "PENDING"
-        assert verify_before.get(target_type, target_id).paused is False
+        assert getattr(verify_before.get(target_type, target_id), target_field) == active_value
 
     pause_flushed = Event()
     release_pause = Event()
