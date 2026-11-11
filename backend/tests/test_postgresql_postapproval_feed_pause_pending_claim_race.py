@@ -1,6 +1,6 @@
-"""RELEASE HOLD: a committed feed pause cannot overtake an in-flight EA claim.
+"""RELEASE HOLD: committed scope revocation cannot overtake an in-flight EA claim.
 
-PostgreSQL-only two-session witness with fabricated users and providers.
+PostgreSQL-only two-session witnesses with synthetic users and providers.
 This uses the database CRUD path, not a real EA, MT5, Telegram, broker or order.
 Passing these regressions remains machine evidence only, not independent
 security review or external demo acceptance.
@@ -20,27 +20,27 @@ from .conftest import register_user
 from .test_provider_export import VALID, _headers, _provider
 
 
-class _ScopePauseCommittedAheadOfHeldClaim(AssertionError):
-    """A paused provider or feed committed before an older held command claim."""
+class _ScopeRevocationCommittedAheadOfHeldClaim(AssertionError):
+    """A scope revocation committed before an older held command claim."""
 
 
-@pytest.mark.parametrize("paused_scope", ("provider", "feed"))
-def test_provider_or_feed_pause_cannot_overtake_pending_command_claim(
-    client, db, monkeypatch, paused_scope
+@pytest.mark.parametrize("revoked_scope", ("provider", "feed", "subscription", "account"))
+def test_scope_revocation_cannot_overtake_pending_command_claim(
+    client, db, monkeypatch, revoked_scope
 ):
-    """Stage a real pending claim, then try to commit a scope pause ahead of it.
+    """Stage a real pending claim, then try to commit a revocation ahead of it.
 
     The claim's SENT audit is held before its transaction commits. The second
-    transaction updates the corresponding provider or feed row. Under a safe shared-row locking
-    repair, that UPDATE must wait until the older claim commits. A pause
-    committed first must never be followed by that older claim's delivery.
+    transaction updates the corresponding provider, feed, subscription or account row.
+    Its UPDATE must wait for the older claim to commit. Revocation must
+    not commit first and then permit that older claim's delivery.
     """
     if db.get_bind().dialect.name != "postgresql":
         pytest.skip("Requires two distinct PostgreSQL database transactions")
 
-    provider, feed, raw_key = _provider(db, f"pg-pending-{paused_scope}-pause-race")
+    provider, feed, raw_key = _provider(db, f"pg-pending-{revoked_scope}-pause-race")
     user = register_user(client, "990093", "synthetic_feed_race", "Synthetic")
-    crud.subscribe_user_to_feed(
+    subscription, account = crud.subscribe_user_to_feed(
         db, provider, feed, db.get(models.User, user["id"])
     )
     db.commit()
@@ -58,8 +58,14 @@ def test_provider_or_feed_pause_cannot_overtake_pending_command_claim(
     assert approved.status_code == 200, approved.text
     assert approved.json()["result"] == "APPROVED", approved.text
     command_id = approved.json()["command_id"]
-    target_type = models.Provider if paused_scope == "provider" else models.Feed
-    target_id = provider.id if paused_scope == "provider" else feed.id
+    target_type, target_id, target_field = {
+        "provider": (models.Provider, provider.id, "paused"),
+        "feed": (models.Feed, feed.id, "paused"),
+        "subscription": (models.Subscription, subscription.id, "status"),
+        "account": (models.TradingAccount, account.id, "status"),
+    }[revoked_scope]
+    active_value = False if target_field == "paused" else "ACTIVE"
+    revoked_value = True if target_field == "paused" else "INACTIVE"
     db.rollback()  # Do not let fixture-session reads hold the test race open.
 
     claim_staged = Event()
@@ -94,14 +100,14 @@ def test_provider_or_feed_pause_cannot_overtake_pending_command_claim(
             conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
 
             def observe_update(_conn, _cursor, sql, _params, _ctx, _many):
-                table = "providers" if paused_scope == "provider" else "feeds"
+                table = target_type.__tablename__
                 if sql.lstrip().lower().startswith(f"update {table} set"):
                     pause_update_attempted.set()
 
             event.listen(conn, "before_cursor_execute", observe_update)
             target = session.get(target_type, target_id)
-            assert target is not None and target.paused is False
-            target.paused = True
+            assert target is not None and getattr(target, target_field) == active_value
+            setattr(target, target_field, revoked_value)
             session.flush()  # Actual UPDATE must try to obtain the scope-row lock.
             session.commit()
             pause_committed.set()
@@ -125,7 +131,7 @@ def test_provider_or_feed_pause_cannot_overtake_pending_command_claim(
     with SessionLocal() as verify:
         target = verify.get(target_type, target_id)
         command = verify.get(models.Command, command_id)
-        assert target is not None and target.paused is True
+        assert target is not None and getattr(target, target_field) == revoked_value
         assert command is not None and command.status == "SENT_TO_EA"
         assert command.sent_to_ea_at is not None
         assert verify.query(models.Execution).count() == 0
@@ -140,35 +146,34 @@ def test_provider_or_feed_pause_cannot_overtake_pending_command_claim(
         assert sent_audits == 1
 
     if pause_overtook_claim:
-        raise _ScopePauseCommittedAheadOfHeldClaim(
-            f"{paused_scope} pause committed while the approved command's SENT audit "
+        raise _ScopeRevocationCommittedAheadOfHeldClaim(
+            f"{revoked_scope} pause committed while the approved command's SENT audit "
             "was held, yet that older command claim committed afterward"
         )
 
 
-class _PauseWriterFirstUnsafeDelivery(AssertionError):
-    """EA claim crossed an uncommitted feed pause and delivered the command."""
+class _RevocationWriterFirstUnsafeDelivery(AssertionError):
+    """EA claim crossed an uncommitted revocation and delivered the command."""
 
 
-@pytest.mark.parametrize("paused_scope", ("provider", "feed"))
-def test_provider_or_feed_pause_writer_first_blocks_or_refuses_pending_claim(
-    client, db, paused_scope
+@pytest.mark.parametrize("revoked_scope", ("provider", "feed", "subscription", "account"))
+def test_scope_revocation_writer_first_blocks_or_refuses_pending_claim(
+    client, db, revoked_scope
 ):
-    """Hold the provider/feed pause UPDATE first; an EA claim may not overtake it.
+    """Hold a provider/feed pause or subscription/account deactivation first.
 
-    The first connection has flushed paused=True but has not committed, and
-    therefore owns the PostgreSQL provider/feed row lock. The second connection polls
-    an already-YES-approved PENDING command. A safe claim either refuses
-    immediately or waits on that feed lock, observes the committed pause and
-    returns None. A delivered command is a failing safety regression,
+    The first connection flushes the revocation but holds its PostgreSQL
+    row lock. The second polls an approved PENDING command. It may refuse
+    immediately or wait until the revocation commits and return None.
+    Delivery after a committed revocation is a failing safety regression,
     never a passing safety control. No actual broker or EA is used.
     """
     if db.get_bind().dialect.name != "postgresql":
         pytest.skip("Requires independent PostgreSQL writer and claimer sessions")
 
-    provider, feed, raw_key = _provider(db, f"pg-{paused_scope}-pause-writer-first")
+    provider, feed, raw_key = _provider(db, f"pg-{revoked_scope}-pause-writer-first")
     user = register_user(client, "990094", "synthetic_writer_first", "Synthetic")
-    crud.subscribe_user_to_feed(
+    subscription, account = crud.subscribe_user_to_feed(
         db, provider, feed, db.get(models.User, user["id"])
     )
     db.commit()
@@ -186,8 +191,14 @@ def test_provider_or_feed_pause_writer_first_blocks_or_refuses_pending_claim(
     assert approved.status_code == 200, approved.text
     assert approved.json()["result"] == "APPROVED", approved.text
     command_id = approved.json()["command_id"]
-    target_type = models.Provider if paused_scope == "provider" else models.Feed
-    target_id = provider.id if paused_scope == "provider" else feed.id
+    target_type, target_id, target_field = {
+        "provider": (models.Provider, provider.id, "paused"),
+        "feed": (models.Feed, feed.id, "paused"),
+        "subscription": (models.Subscription, subscription.id, "status"),
+        "account": (models.TradingAccount, account.id, "status"),
+    }[revoked_scope]
+    active_value = False if target_field == "paused" else "ACTIVE"
+    revoked_value = True if target_field == "paused" else "INACTIVE"
     user_id = user["id"]
     db.rollback()
 
@@ -202,15 +213,15 @@ def test_provider_or_feed_pause_writer_first_blocks_or_refuses_pending_claim(
     pause_pid = []
     claim_pid = []
 
-    def hold_paused_scope_row():
+    def hold_revoked_scope_row():
         with SessionLocal() as session:
             conn = session.connection()
             conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
             conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
             pause_pid.append(conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one())
             target = session.get(target_type, target_id)
-            assert target is not None and target.paused is False
-            target.paused = True
+            assert target is not None and getattr(target, target_field) == active_value
+            setattr(target, target_field, revoked_value)
             session.flush()  # Scope-row UPDATE and lock occur before the EA poll.
             pause_flushed.set()
             assert release_pause.wait(timeout=15), "Pause writer was not released"
@@ -233,7 +244,7 @@ def test_provider_or_feed_pause_writer_first_blocks_or_refuses_pending_claim(
                 claim_finished.set()
 
     with ThreadPoolExecutor(max_workers=2) as workers:
-        pause_future = workers.submit(hold_paused_scope_row)
+        pause_future = workers.submit(hold_revoked_scope_row)
         try:
             assert pause_flushed.wait(timeout=8), "Pause UPDATE was never flushed"
             claim_future = workers.submit(claim_while_pause_uncommitted)
@@ -269,7 +280,7 @@ def test_provider_or_feed_pause_writer_first_blocks_or_refuses_pending_claim(
     with SessionLocal() as verify:
         target = verify.get(target_type, target_id)
         persisted_command = verify.get(models.Command, command_id)
-        assert target is not None and target.paused is True
+        assert target is not None and getattr(target, target_field) == revoked_value
         assert persisted_command is not None
         sent_audits = (
             verify.query(models.AuditLog)
@@ -288,8 +299,8 @@ def test_provider_or_feed_pause_writer_first_blocks_or_refuses_pending_claim(
             assert persisted_command.status == "SENT_TO_EA"
             assert persisted_command.sent_to_ea_at is not None
             assert sent_audits == 1
-            raise _PauseWriterFirstUnsafeDelivery(
-                f"EA delivered an approved command while the {paused_scope}'s "
+            raise _RevocationWriterFirstUnsafeDelivery(
+                f"EA delivered an approved command while the {revoked_scope}'s "
                 "pause UPDATE was already flushed and held uncommitted; "
                 f"claim completed before pause commit: {finished_before_pause_commit}"
             )
