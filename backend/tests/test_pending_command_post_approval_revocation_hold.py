@@ -509,3 +509,139 @@ def test_same_subscriber_tied_timestamp_revoked_heads_skip_to_active_feed(client
         )
     assert db.query(models.Execution).count() == 0
 
+
+
+def test_revoked_head_backlog_keeps_eligible_sibling_reachable(client, db):
+    """Synthetic 20-head backlog: delivery safety and claim-query observation.
+
+    The query count is an *upper sanity bound*, not a release latency SLO.
+    This exercises the real EA-poll route on both SQLite and PostgreSQL.
+    It does not prove production-scale performance or broker acceptance.
+    """
+    from sqlalchemy import event
+
+    from app.database import engine
+
+    provider, revoked_feed, raw_key = _provider(db, "synthetic-backlog-provider")
+    active_feed = crud.create_feed(
+        db, provider, "Active sibling", "synthetic-backlog-active-source"
+    )
+    db.commit()
+    user = register_user(
+        client, "990098", "synthetic_backlog_user", "Synthetic Subscriber"
+    )
+    revoked_membership, first_account = crud.subscribe_user_to_feed(
+        db, provider, revoked_feed, db.get(models.User, user["id"])
+    )
+    active_membership, second_account = crud.subscribe_user_to_feed(
+        db, provider, active_feed, db.get(models.User, user["id"])
+    )
+    db.commit()
+    assert first_account.id == second_account.id
+    assert revoked_membership.id != active_membership.id
+
+    revoked_ids = []
+    for _ in range(20):
+        created = client.post(
+            "/signals/create",
+            headers=_headers(provider, raw_key),
+            json={"feed_id": revoked_feed.id, "raw_text": VALID},
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["parser_status"] == "VALID"
+        approved = client.post(
+            f"/signals/{created.json()['id']}/approve",
+            json={"telegram_user_id": user["telegram_user_id"]},
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["result"] == "APPROVED"
+        revoked_ids.append(approved.json()["command_id"])
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, raw_key),
+        json={"feed_id": active_feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": user["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    eligible_id = approved.json()["command_id"]
+    assert len(set(revoked_ids + [eligible_id])) == 21
+
+    # Explicitly keep the eligible command last, independent of clock speed.
+    ordered_at = models.utcnow()
+    for command_id in revoked_ids:
+        db.get(models.Command, command_id).created_at = ordered_at
+    eligible = db.get(models.Command, eligible_id)
+    eligible.created_at = ordered_at + __import__("datetime").timedelta(seconds=1)
+    revoked_membership.status = "INACTIVE"
+    db.commit()
+    db.rollback()  # Do not hold fixture locks across the API's claim transaction.
+
+    claim_selects = []
+    def observe(_conn, _cursor, statement, _params, _context, _many):
+        sql = statement.lower()
+        if sql.lstrip().startswith("select") and " from commands" in sql:
+            claim_selects.append(statement)
+
+    event.listen(engine, "before_cursor_execute", observe)
+    try:
+        response = client.get(
+            "/commands/pending",
+            headers=EA_HEADERS,
+            params={"user_id": user["id"]},
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", observe)
+    assert response.status_code == 200, response.text
+    assert response.json()["command"] is not None
+    assert response.json()["command"]["command_id"] == eligible_id
+    # This is deliberately not a latency threshold; a future batch-select
+    # optimisation should be allowed to use *fewer* round trips.
+    assert 1 <= len(claim_selects) <= len(revoked_ids) + 1
+
+    db.expire_all()
+    assert db.get(models.Command, eligible_id).status == "SENT_TO_EA"
+    assert all(
+        db.get(models.Command, command_id).status == "PENDING"
+        for command_id in revoked_ids
+    )
+    sent = (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id.in_(revoked_ids + [eligible_id]),
+        )
+        .all()
+    )
+    assert len(sent) == 1 and sent[0].entity_id == eligible_id
+    assert db.query(models.Execution).count() == 0
+
+    db.rollback()
+    repeated = client.get(
+        "/commands/pending",
+        headers=EA_HEADERS,
+        params={"user_id": user["id"]},
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["command"] is None
+    db.expire_all()
+    assert db.get(models.Command, eligible_id).status == "SENT_TO_EA"
+    assert all(
+        db.get(models.Command, command_id).status == "PENDING"
+        for command_id in revoked_ids
+    )
+    assert (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id.in_(revoked_ids + [eligible_id]),
+        )
+        .count()
+        == 1
+    )
+    assert db.query(models.Execution).count() == 0
