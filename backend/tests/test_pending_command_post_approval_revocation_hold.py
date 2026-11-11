@@ -242,6 +242,129 @@ def test_postapproval_revocation_keeps_other_provider_pending_poll_available(
     assert db.query(models.Execution).count() == 0
 
 
+
+@pytest.mark.parametrize("revoked_scope", ("provider_paused", "subscription_inactive"))
+def test_same_subscriber_cross_provider_revocation_skips_ineligible_oldest(
+    client, db, revoked_scope
+):
+    """An earlier revoked tenant cannot block this user's other provider.
+
+    Separate providers/organisations and trading accounts share *one* user.
+    Both commands were explicitly YES-approved while valid. This catches a
+    global early return or a broken cross-provider keyset poll; it does not
+    grant execution, broker, pilot or independent acceptance.
+    """
+    import datetime as dt
+
+    provider_a, feed_a, key_a = _provider(db, f"cross-provider-a-{revoked_scope}")
+    provider_b, feed_b, key_b = _provider(db, f"cross-provider-b-{revoked_scope}")
+    assert provider_a.organization_id != provider_b.organization_id
+    db.commit()
+    user = register_user(
+        client,
+        "990099" if revoked_scope == "provider_paused" else "990100",
+        f"synthetic_cross_provider_{revoked_scope}",
+        "Synthetic Subscriber",
+    )
+    subscription_a, account_a = crud.subscribe_user_to_feed(
+        db, provider_a, feed_a, db.get(models.User, user["id"])
+    )
+    subscription_b, account_b = crud.subscribe_user_to_feed(
+        db, provider_b, feed_b, db.get(models.User, user["id"])
+    )
+    db.commit()
+    assert subscription_a.provider_id != subscription_b.provider_id
+    assert account_a.id != account_b.id
+    assert account_a.provider_id == provider_a.id
+    assert account_b.provider_id == provider_b.id
+
+    approved_ids = []
+    for provider, feed, key in (
+        (provider_a, feed_a, key_a),
+        (provider_b, feed_b, key_b),
+    ):
+        created = client.post(
+            "/signals/create",
+            headers=_headers(provider, key),
+            json={"feed_id": feed.id, "raw_text": VALID},
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["parser_status"] == "VALID"
+        approved = client.post(
+            f"/signals/{created.json()['id']}/approve",
+            json={"telegram_user_id": user["telegram_user_id"]},
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["result"] == "APPROVED", approved.text
+        approved_ids.append(approved.json()["command_id"])
+
+    revoked_id, eligible_id = approved_ids
+    assert revoked_id != eligible_id
+    revoked = db.get(models.Command, revoked_id)
+    eligible = db.get(models.Command, eligible_id)
+    assert revoked.status == eligible.status == "PENDING"
+    assert revoked.user_id == eligible.user_id == user["id"]
+    assert revoked.account_id == account_a.id
+    assert eligible.account_id == account_b.id
+    # Enforce exact ordering rather than relying on wall-clock resolution.
+    ordered_at = models.utcnow()
+    revoked.created_at = ordered_at
+    eligible.created_at = ordered_at + dt.timedelta(seconds=1)
+    if revoked_scope == "provider_paused":
+        provider_a.paused = True
+    else:
+        subscription_a.status = "INACTIVE"
+    db.commit()
+    db.rollback()  # Release fixture locks before the independent EA poll.
+
+    polled = client.get(
+        "/commands/pending",
+        headers=EA_HEADERS,
+        params={"user_id": user["id"]},
+    )
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["command"] is not None
+    assert polled.json()["command"]["command_id"] == eligible_id
+
+    db.expire_all()
+    assert db.get(models.Command, revoked_id).status == "PENDING"
+    assert db.get(models.Command, revoked_id).sent_to_ea_at is None
+    assert db.get(models.Command, eligible_id).status == "SENT_TO_EA"
+    for command_id, expected_count in ((revoked_id, 0), (eligible_id, 1)):
+        assert (
+            db.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count()
+            == expected_count
+        )
+    assert db.query(models.Execution).count() == 0
+
+    db.rollback()
+    repeated = client.get(
+        "/commands/pending",
+        headers=EA_HEADERS,
+        params={"user_id": user["id"]},
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["command"] is None
+    db.expire_all()
+    assert db.get(models.Command, revoked_id).status == "PENDING"
+    assert db.get(models.Command, eligible_id).status == "SENT_TO_EA"
+    assert (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id.in_((revoked_id, eligible_id)),
+        )
+        .count()
+        == 1
+    )
+    assert db.query(models.Execution).count() == 0
+
+
 class _RevokedOldestPendingStarvesActiveSibling(AssertionError):
     """An ineligible older command blocked a later, currently authorised YES."""
 
