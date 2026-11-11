@@ -2,8 +2,8 @@
 
 Offline, fabricated TestClient/ORM data only. No Telegram messages, broker,
 MT5, orders, external services, provider data, or execution are used. These
-strict XFAIL witnesses demonstrate a known unsafe poll path; they do NOT
-establish a repaired control or external acceptance.
+must-pass regressions verify claim-time revocation but do not establish
+independent lock-order review or external acceptance.
 
 The existing execution/pause owner must define revocation/reactivation
 semantics, add two-session PostgreSQL commit-order tests, independently review
@@ -32,14 +32,6 @@ class _RevokedApprovedCommandDelivered(AssertionError):
         "feed_inactive",
         "subscription_inactive",
         "account_inactive",
-    ),
-)
-@pytest.mark.xfail(
-    strict=True,
-    raises=_RevokedApprovedCommandDelivered,
-    reason=(
-        "RELEASE HOLD: EA pending-claim does not recheck committed provider/feed "
-        "pause or ACTIVE state, subscriber membership, or trading-account status"
     ),
 )
 def test_approved_provider_command_not_delivered_after_revocation(
@@ -137,7 +129,7 @@ def test_approved_provider_command_not_delivered_after_revocation(
             f"EA was issued {command_id} after committed {revoked_scope}"
         )
 
-    # Becomes a normal passing safety requirement only after the owner fix.
+    # Revoked commands must remain PENDING without a SENT audit.
     assert command.status == "PENDING"
     assert sent_audits == 0
 
@@ -161,7 +153,7 @@ def test_postapproval_revocation_keeps_other_provider_pending_poll_available(
     Two independent synthetic providers, feeds, users, subscriptions and
     trading accounts have already received explicit YES approvals. The
     revocation belongs only to provider A. Poll B, not A: the separate
-    strict-XFAIL witness above still tracks the unsafe delivery of A.
+    must-pass witness above blocks unsafe delivery of A.
 
     This must stay a normal PASS when the execution owner adds the required
     fail-closed eligibility checks. A global pause-on-any-revocation repair

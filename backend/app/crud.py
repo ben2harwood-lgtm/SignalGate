@@ -1883,6 +1883,66 @@ def _create_command(
 
 # --- EA command polling ---------------------------------------------------
 
+def _pending_command_tenant_eligible(db: Session, command: models.Command) -> bool:
+    """Recheck provider command authority at EA claim, not only at approval.
+
+    PostgreSQL shared row locks are held through the caller's SENT_TO_EA audit
+    and commit, serializing the claim with pause, deactivation, subscription
+    revocation and account-status writers. Lock order is global pause (caller),
+    command (caller), provider, feed, subscription, account. FOR KEY SHARE
+    would not block pause/status updates to non-key columns.
+    """
+    tenant_ids = (command.provider_id, command.feed_id, command.account_id)
+    if all(identifier is None for identifier in tenant_ids):
+        # Preserve historical tenantless local-demo command delivery.
+        return True
+    if not all(tenant_ids):
+        return False
+
+    is_postgresql = db.get_bind().dialect.name == "postgresql"
+
+    def fresh_locked(statement):
+        if is_postgresql:
+            statement = statement.with_for_update(read=True)
+        return db.scalar(statement.execution_options(populate_existing=True))
+
+    provider = fresh_locked(
+        select(models.Provider).where(models.Provider.id == command.provider_id)
+    )
+    if provider is None or provider.status != "ACTIVE" or provider.paused:
+        return False
+
+    feed = fresh_locked(
+        select(models.Feed).where(
+            models.Feed.id == command.feed_id,
+            models.Feed.provider_id == provider.id,
+        )
+    )
+    if feed is None or feed.status != "ACTIVE" or feed.paused:
+        return False
+
+    subscription = fresh_locked(
+        select(models.Subscription).where(
+            models.Subscription.provider_id == provider.id,
+            models.Subscription.feed_id == feed.id,
+            models.Subscription.user_id == command.user_id,
+            models.Subscription.status == "ACTIVE",
+        )
+    )
+    if subscription is None:
+        return False
+
+    account = fresh_locked(
+        select(models.TradingAccount).where(
+            models.TradingAccount.id == command.account_id,
+            models.TradingAccount.provider_id == provider.id,
+            models.TradingAccount.user_id == command.user_id,
+            models.TradingAccount.status == "ACTIVE",
+        )
+    )
+    return account is not None
+
+
 def get_pending_command_for_user(
     db: Session, user_id: str
 ) -> Optional[models.Command]:
@@ -1929,6 +1989,11 @@ def get_pending_command_for_user(
             db.flush()
             add_audit(db, "COMMAND_EXPIRED", "command", command.id)
             continue
+
+        # Never deliver an earlier YES command after a tenant revocation.
+        # Leave ineligible commands PENDING and emit no SENT audit.
+        if not _pending_command_tenant_eligible(db, command):
+            return None
 
         command.status = "SENT_TO_EA"
         command.sent_to_ea_at = utcnow()

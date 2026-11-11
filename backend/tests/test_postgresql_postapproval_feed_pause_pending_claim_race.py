@@ -2,8 +2,8 @@
 
 PostgreSQL-only two-session witness with fabricated users and providers.
 This uses the database CRUD path, not a real EA, MT5, Telegram, broker or order.
-The strict XFAIL is evidence of an UNFIXED command-delivery race, not a guard
-that has passed and not an external or production acceptance receipt.
+Passing these regressions remains machine evidence only, not independent
+security review or external demo acceptance.
 """
 from __future__ import annotations
 
@@ -25,14 +25,6 @@ class _ScopePauseCommittedAheadOfHeldClaim(AssertionError):
 
 
 @pytest.mark.parametrize("paused_scope", ("provider", "feed"))
-@pytest.mark.xfail(
-    strict=True,
-    raises=_ScopePauseCommittedAheadOfHeldClaim,
-    reason=(
-        "RELEASE HOLD: pending EA claim does not serialize against a "
-        "concurrently committed provider/feed pause on PostgreSQL"
-    ),
-)
 def test_provider_or_feed_pause_cannot_overtake_pending_command_claim(
     client, db, monkeypatch, paused_scope
 ):
@@ -159,14 +151,6 @@ class _PauseWriterFirstUnsafeDelivery(AssertionError):
 
 
 @pytest.mark.parametrize("paused_scope", ("provider", "feed"))
-@pytest.mark.xfail(
-    strict=True,
-    raises=_PauseWriterFirstUnsafeDelivery,
-    reason=(
-        "RELEASE HOLD: EA claim can deliver while another PostgreSQL "
-        "transaction has already updated the provider/feed row to paused"
-    ),
-)
 def test_provider_or_feed_pause_writer_first_blocks_or_refuses_pending_claim(
     client, db, paused_scope
 ):
@@ -176,7 +160,7 @@ def test_provider_or_feed_pause_writer_first_blocks_or_refuses_pending_claim(
     therefore owns the PostgreSQL provider/feed row lock. The second connection polls
     an already-YES-approved PENDING command. A safe claim either refuses
     immediately or waits on that feed lock, observes the committed pause and
-    returns None. A delivered command is a strict expected-failure witness,
+    returns None. A delivered command is a failing safety regression,
     never a passing safety control. No actual broker or EA is used.
     """
     if db.get_bind().dialect.name != "postgresql":
@@ -298,7 +282,7 @@ def test_provider_or_feed_pause_writer_first_blocks_or_refuses_pending_claim(
         assert verify.query(models.Execution).count() == 0
 
         if claimed_id is not None:
-            # Raise the narrow XFAIL only after positive proof of the unsafe
+            # Raise a narrow failure only after positive proof of the unsafe
             # claimed state and persisted audit, never for fixture errors.
             assert claimed_id == command_id
             assert persisted_command.status == "SENT_TO_EA"
