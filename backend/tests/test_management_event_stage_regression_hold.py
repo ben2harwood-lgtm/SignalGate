@@ -787,3 +787,54 @@ def test_execution_success_notification_distinguishes_ea_report_from_broker_proo
     assert duplicate.status_code == 200, duplicate.text
     assert duplicate.json()["status"] == "duplicate_ignored"
     assert len(notifications) == 1
+
+def test_execution_failure_notification_distinguishes_ea_report_from_broker_proof(client, monkeypatch):
+    """A FAILED EA callback does not prove that no broker position was opened.
+
+    Synthetic offline notification evidence only; this does not reconcile
+    ambiguous broker outcomes or constitute MT5 demo-broker acceptance.
+    """
+    from app.routes import commands as command_routes
+
+    owner = register_user(client, "990098")
+    signal = create_signal(client, "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363")
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990098"},
+    )
+    assert approved.status_code == 200, approved.text
+    pending = client.get(
+        "/commands/pending", params={"user_id": owner["id"]}, headers=EA_HEADERS
+    )
+    assert pending.status_code == 200, pending.text
+    command_id = pending.json()["command"]["command_id"]
+
+    notifications = []
+    monkeypatch.setattr(
+        command_routes,
+        "notify_user_and_admins",
+        lambda _chat_id, message: notifications.append(message),
+    )
+    payload = {
+        "status": "FAILED",
+        "error_code": "NETWORK_TIMEOUT",
+        "error_message": "synthetic uncertain broker response",
+    }
+    first = client.post(
+        f"/commands/{command_id}/execution", json=payload, headers=EA_HEADERS
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "ok"
+    assert len(notifications) == 1
+    assert "Demo EA reports execution FAILED" in notifications[0]
+    assert "Broker outcome not independently confirmed" in notifications[0]
+    assert "check demo terminal" in notifications[0]
+    assert "NETWORK_TIMEOUT" in notifications[0]
+    assert "⚠️ Demo trade FAILED" not in notifications[0]
+
+    duplicate = client.post(
+        f"/commands/{command_id}/execution", json=payload, headers=EA_HEADERS
+    )
+    assert duplicate.status_code == 200, duplicate.text
+    assert duplicate.json()["status"] == "duplicate_ignored"
+    assert len(notifications) == 1
