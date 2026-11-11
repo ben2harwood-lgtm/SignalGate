@@ -75,7 +75,9 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client, monkeypatch
     assert len(stage_notifications) == 2
     for level, (args, _kwargs) in zip(("TP1", "TP2"), stage_notifications):
         message = args[1]
-        assert f"{level} close reported" in message
+        assert f"Demo EA reports {level} close" in message
+        assert f"Broker {level} exit not independently confirmed" in message
+        assert "check demo terminal" in message
         assert "Stop-loss change not yet confirmed" in message
         assert "SL moved" not in message
 
