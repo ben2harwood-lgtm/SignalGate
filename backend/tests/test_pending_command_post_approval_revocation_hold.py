@@ -586,7 +586,11 @@ def test_revoked_head_backlog_keeps_eligible_sibling_reachable(
     db.rollback()  # Do not hold fixture locks across the API's claim transaction.
 
     claim_selects = []
+    all_sql_statements = []
     def observe(_conn, _cursor, statement, _params, _context, _many):
+        # The command-only count misses tenant/pause reads performed per
+        # skipped revoked head. Count every request SQL round trip as well.
+        all_sql_statements.append(statement)
         sql = statement.lower()
         if sql.lstrip().startswith("select") and "from commands" in sql:
             claim_selects.append(statement)
@@ -606,8 +610,13 @@ def test_revoked_head_backlog_keeps_eligible_sibling_reachable(
     # This is deliberately not a latency threshold; a future batch-select
     # optimisation should be allowed to use *fewer* round trips.
     assert 1 <= len(claim_selects) <= len(revoked_ids) + 1
+    # Loose statement-count guard, NOT a latency or production SLO. The
+    # claim currently reads the provider/feed/subscription for every skipped
+    # head; command SELECT counts alone substantially understate DB work.
+    assert len(claim_selects) <= len(all_sql_statements) <= 10 * (revoked_count + 1) + 30
     record_property("revoked_backlog_size", revoked_count)
     record_property("first_poll_command_selects", len(claim_selects))
+    record_property("first_poll_all_sql_statements", len(all_sql_statements))
 
     db.expire_all()
     assert db.get(models.Command, eligible_id).status == "SENT_TO_EA"
@@ -630,6 +639,7 @@ def test_revoked_head_backlog_keeps_eligible_sibling_reachable(
     # Measure the second poll too: these revoked rows are deliberately left
     # PENDING and may be scanned again. Observation is not a latency SLO.
     claim_selects.clear()
+    all_sql_statements.clear()
     event.listen(engine, "before_cursor_execute", observe)
     try:
         repeated = client.get(
@@ -642,7 +652,9 @@ def test_revoked_head_backlog_keeps_eligible_sibling_reachable(
     assert repeated.status_code == 200, repeated.text
     assert repeated.json()["command"] is None
     assert 1 <= len(claim_selects) <= revoked_count + 1
+    assert len(claim_selects) <= len(all_sql_statements) <= 10 * (revoked_count + 1) + 30
     record_property("repeat_poll_command_selects", len(claim_selects))
+    record_property("repeat_poll_all_sql_statements", len(all_sql_statements))
     db.expire_all()
     assert db.get(models.Command, eligible_id).status == "SENT_TO_EA"
     assert all(
