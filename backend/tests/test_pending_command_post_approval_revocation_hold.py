@@ -1795,3 +1795,160 @@ def test_postgresql_pending_claim_waits_for_approval_owner_rewrite(client, db):
             .count() == 1
         )
         assert verify.query(models.Execution).count() == 0
+
+def test_postgresql_pending_claim_blocks_later_approval_status_rewrite(client, db):
+    """Claim-first Approval row lock blocks a later status change until commit.
+
+    Synthetic offline PostgreSQL only: independent transactions, a genuine
+    pg_blocking_pids lock wait, and an audit/Execution negative control. This
+    does not exercise a real MT5 EA or establish independent acceptance.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL claim and approval writer sessions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from time import monotonic, sleep
+
+    from sqlalchemy import text as sql_text
+
+    from app.database import SessionLocal
+
+    provider, feed, raw_key = _provider(db, "pg-approval-claim-first")
+    db.commit()
+    user = register_user(
+        client, "990215", "synthetic_claim_first_approval", "Synthetic Subscriber"
+    )
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, user["id"])
+    )
+    db.commit()
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, raw_key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["parser_status"] == "VALID"
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": user["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    user_id = user["id"]
+    command = db.get(models.Command, command_id)
+    approval_id = command.approval_id
+    original = db.get(models.Approval, approval_id)
+    assert (original.user_id, original.signal_id) == (
+        user_id, command.signal_id
+    )
+    assert (original.decision, original.status) == ("YES", "APPROVED")
+    assert command.status == "PENDING"
+    db.rollback()  # No fixture-session locks must masquerade as the claim lock.
+
+    claim_held = Event()
+    allow_claim_commit = Event()
+    approval_update_attempted = Event()
+    claim_pids = []
+    writer_pids = []
+
+    def claim_and_hold_before_commit():
+        with SessionLocal() as session:
+            conn = session.connection()
+            conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            claim_pids.append(
+                conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
+            )
+            claimed = crud.get_pending_command_for_user(session, user_id)
+            assert claimed is not None and claimed.id == command_id
+            assert claimed.status == "SENT_TO_EA"
+            claim_held.set()
+            assert allow_claim_commit.wait(timeout=15), "Claim was not released"
+            session.commit()
+
+    def rewrite_approval_after_claim():
+        with SessionLocal() as session:
+            conn = session.connection()
+            conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            writer_pids.append(
+                conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
+            )
+            approval = session.get(models.Approval, approval_id)
+            assert approval is not None
+            assert (approval.decision, approval.status) == ("YES", "APPROVED")
+            approval.status = "REJECTED"
+            approval_update_attempted.set()
+            session.flush()  # UPDATE must wait for the claim's Approval SHARE lock.
+            session.commit()
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        claim_future = workers.submit(claim_and_hold_before_commit)
+        try:
+            assert claim_held.wait(timeout=8), "Claim not held before commit"
+            writer_future = workers.submit(rewrite_approval_after_claim)
+            assert approval_update_attempted.wait(timeout=8), (
+                "Approval UPDATE was never attempted"
+            )
+            blocked_by_claim = False
+            deadline = monotonic() + 2.5
+            while monotonic() < deadline:
+                with SessionLocal() as observer:
+                    observer.execute(sql_text("SELECT pg_stat_clear_snapshot()"))
+                    blockers = observer.scalar(
+                        sql_text("SELECT pg_blocking_pids(:pid)"),
+                        {"pid": writer_pids[0]},
+                    )
+                if claim_pids[0] in blockers:
+                    blocked_by_claim = True
+                    break
+                if writer_future.done():
+                    break
+                sleep(0.05)
+            assert blocked_by_claim, (
+                "Approval writer did not wait on original YES row SHARE lock"
+            )
+            assert not writer_future.done(), (
+                "Approval UPDATE escaped an uncommitted demo EA claim"
+            )
+        finally:
+            allow_claim_commit.set()
+        claim_future.result(timeout=20)
+        writer_future.result(timeout=20)
+
+    assert len(claim_pids) == len(writer_pids) == 1
+    assert claim_pids[0] != writer_pids[0], "Not independent PostgreSQL sessions"
+    with SessionLocal() as verify:
+        command = verify.get(models.Command, command_id)
+        approval = verify.get(models.Approval, approval_id)
+        assert (approval.decision, approval.status) == ("YES", "REJECTED")
+        assert command.status == "SENT_TO_EA"
+        assert command.sent_to_ea_at is not None
+        assert (
+            verify.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count() == 1
+        )
+        assert verify.query(models.Execution).count() == 0
+
+    # The original command has already been sent exactly once. A later
+    # Approval mutation must not create a duplicate SEND on another poll.
+    with SessionLocal() as repeat:
+        assert crud.get_pending_command_for_user(repeat, user_id) is None
+        repeat.commit()
+    with SessionLocal() as verify:
+        assert (
+            verify.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count() == 1
+        )
+        assert verify.query(models.Execution).count() == 0
