@@ -243,6 +243,7 @@ def test_postapproval_revocation_keeps_other_provider_pending_poll_available(
 
 
 
+@pytest.mark.parametrize("tie_created_at", (False, True), ids=("staggered", "same-time"))
 @pytest.mark.parametrize(
     "revoked_scope",
     (
@@ -255,7 +256,7 @@ def test_postapproval_revocation_keeps_other_provider_pending_poll_available(
     ),
 )
 def test_same_subscriber_cross_provider_revocation_skips_ineligible_oldest(
-    client, db, revoked_scope
+    client, db, revoked_scope, tie_created_at
 ):
     """An earlier revoked tenant cannot block this user's other provider.
 
@@ -316,10 +317,16 @@ def test_same_subscriber_cross_provider_revocation_skips_ineligible_oldest(
     assert revoked.user_id == eligible.user_id == user["id"]
     assert revoked.account_id == account_a.id
     assert eligible.account_id == account_b.id
-    # Enforce exact ordering rather than relying on wall-clock resolution.
+    # Exercise time-separated candidates and timestamp ties across
+    # distinct providers. On a tie the (created_at, id) cursor must still
+    # skip revoked A without hiding the eligible B command for this EA user.
     ordered_at = models.utcnow()
     revoked.created_at = ordered_at
-    eligible.created_at = ordered_at + dt.timedelta(seconds=1)
+    eligible.created_at = (
+        ordered_at if tie_created_at else ordered_at + dt.timedelta(seconds=1)
+    )
+    if tie_created_at:
+        assert revoked_id < eligible_id, "Tied revoked A must sort before eligible B"
     if revoked_scope == "provider_paused":
         provider_a.paused = True
         revoked_model, revoked_entity_id, field, expected = models.Provider, provider_a.id, "paused", True
@@ -342,6 +349,12 @@ def test_same_subscriber_cross_provider_revocation_skips_ineligible_oldest(
         raise AssertionError(f"Unknown revocation scope: {revoked_scope}")
 
     db.commit()
+    # Verify the time order survived persistence, not just dirty ORM state.
+    db.expire_all()
+    assert db.get(models.Command, revoked_id).created_at == ordered_at
+    assert db.get(models.Command, eligible_id).created_at == (
+        ordered_at if tie_created_at else ordered_at + dt.timedelta(seconds=1)
+    )
     # Prove the actual database persisted A's revocation and B's continuing
     # authority, instead of relying on dirty in-memory ORM objects.
     db.expire_all()
