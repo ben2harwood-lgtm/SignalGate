@@ -1952,3 +1952,107 @@ def test_postgresql_pending_claim_blocks_later_approval_status_rewrite(client, d
             .count() == 1
         )
         assert verify.query(models.Execution).count() == 0
+
+
+@pytest.mark.parametrize(
+    "alteration", ("decision_no", "status_rejected", "signal_relabel")
+)
+def test_pending_claim_rechecks_original_yes_approval_fields(client, db, alteration):
+    """A stale/corrupted YES cannot be delivered; restoring consent still works.
+
+    Synthetic database-integrity faults only, not an external mutation
+    primitive, broker execution, or independent security acceptance.
+    """
+    provider, feed, raw_key = _provider(db, f"approval-fields-{alteration}")
+    db.commit()
+    user = register_user(
+        client, "990216", f"synthetic_approval_fields_{alteration}",
+        "Synthetic Subscriber",
+    )
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, user["id"])
+    )
+    db.commit()
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, raw_key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["parser_status"] == "VALID"
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": user["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    command = db.get(models.Command, command_id)
+    approval_id = command.approval_id
+    approval = db.get(models.Approval, approval_id)
+    assert (approval.signal_id, approval.user_id) == (
+        command.signal_id, user["id"]
+    )
+    assert (approval.decision, approval.status) == ("YES", "APPROVED")
+    original_signal_id = approval.signal_id
+    if alteration == "decision_no":
+        approval.decision = "NO"
+    elif alteration == "status_rejected":
+        approval.status = "REJECTED"
+    else:
+        different_signal = client.post(
+            "/signals/create",
+            headers=_headers(provider, raw_key),
+            json={"feed_id": feed.id, "raw_text": VALID},
+        )
+        assert different_signal.status_code == 200, different_signal.text
+        assert different_signal.json()["id"] != original_signal_id
+        approval.signal_id = different_signal.json()["id"]
+    db.commit()
+    db.rollback()
+
+    polled = client.get(
+        "/commands/pending", headers=EA_HEADERS,
+        params={"user_id": user["id"]},
+    )
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["command"] is None
+    db.expire_all()
+    command = db.get(models.Command, command_id)
+    assert command.status == "PENDING"
+    assert command.sent_to_ea_at is None
+    assert (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id == command_id,
+        )
+        .count() == 0
+    )
+    assert db.query(models.Execution).count() == 0
+
+    # Positive control: a restored original YES can be claimed once.
+    db.rollback()
+    approval = db.get(models.Approval, approval_id)
+    approval.signal_id = original_signal_id
+    approval.decision = "YES"
+    approval.status = "APPROVED"
+    db.commit()
+    db.rollback()
+    legitimate = client.get(
+        "/commands/pending", headers=EA_HEADERS,
+        params={"user_id": user["id"]},
+    )
+    assert legitimate.status_code == 200, legitimate.text
+    assert legitimate.json()["command"]["command_id"] == command_id
+    db.expire_all()
+    assert db.get(models.Command, command_id).status == "SENT_TO_EA"
+    assert (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id == command_id,
+        )
+        .count() == 1
+    )
+    assert db.query(models.Execution).count() == 0
