@@ -1889,7 +1889,8 @@ def _pending_command_tenant_eligible(db: Session, command: models.Command) -> bo
     PostgreSQL shared row locks are held through the caller's SENT_TO_EA audit
     and commit, serializing the claim with pause, deactivation, subscription
     revocation and account-status writers. Lock order is global pause (caller),
-    command (caller), original signal, provider, feed, subscription, account.
+    command (caller), original signal, original approval, provider, feed,
+    subscription, account.
     FOR KEY SHARE
     would not block pause/status updates to non-key columns.
     """
@@ -1903,8 +1904,8 @@ def _pending_command_tenant_eligible(db: Session, command: models.Command) -> bo
     # fully scoped provider claim) to the original Signal's independent
     # provider/feed identity; keep its PostgreSQL SHARE lock until claim commit.
     # This prevents a writer from changing origin mid-claim and preserves the
-    # global pause -> command -> origin -> provider -> feed -> membership ->
-    # account lock order.
+    # global pause -> command -> origin -> approval -> provider -> feed ->
+    # membership -> account lock order.
     origin_query = select(models.Signal.provider_id, models.Signal.feed_id).where(
         models.Signal.id == command.signal_id
     )
@@ -1913,8 +1914,29 @@ def _pending_command_tenant_eligible(db: Session, command: models.Command) -> bo
     origin = db.execute(origin_query).one_or_none()
     if origin is None:
         return False
+
+    # A current licence and feed membership are not substitute approval from
+    # this subscriber. The original YES is independent of mutable Command
+    # user/account links. SHARE locks protect its provenance until the claim
+    # audit commits, including a concurrent NO/status or ownership rewrite.
+    approval_query = select(models.Approval).where(
+        models.Approval.id == command.approval_id
+    )
+    if is_postgresql:
+        approval_query = approval_query.with_for_update(read=True)
+    approval = db.scalar(approval_query.execution_options(populate_existing=True))
+    if (
+        approval is None
+        or approval.signal_id != command.signal_id
+        or approval.user_id != command.user_id
+        or approval.decision != "YES"
+        or approval.status != "APPROVED"
+    ):
+        return False
+
     if all(identifier is None for identifier in tenant_ids):
-        # Only an originally tenantless signal may use legacy local-demo claim.
+        # Only an originally tenantless signal with its own YES approval can
+        # use the historical local-demo claim path.
         return origin.provider_id is None and origin.feed_id is None
     if (origin.provider_id, origin.feed_id) != (
         command.provider_id,

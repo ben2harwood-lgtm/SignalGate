@@ -1477,23 +1477,14 @@ def test_postgresql_pending_claim_blocks_later_signal_origin_rewrite(client, db)
         assert verify.query(models.Execution).count() == 0
 
 
-class _CrossSubscriberApprovalRelabel(AssertionError):
-    """Command reached another subscriber without that subscriber's YES."""
-
-
-@pytest.mark.xfail(
-    raises=_CrossSubscriberApprovalRelabel,
-    strict=True,
-    reason="HOLD: pending EA claim does not bind Command user to original Approval user",
-)
 def test_approved_command_cannot_be_relabelled_to_other_subscriber(client, db):
     """A valid B licence/subscription must not inherit subscriber A's approval.
 
     Fabricated same-feed users; corruption of two Command ownership fields
     after A's genuine synthetic YES. This does not show an external mutation
     primitive or constitute MT5, broker, or independent acceptance evidence.
-    Only a witnessed cross-subscriber delivery is an expected failure; any
-    fixture, authentication, or unexpected side-effect failure is a real FAIL.
+    Must pass on both SQLite and PostgreSQL. Neither an unexpected delivery
+    nor a broken fixture may be hidden as an expected failure.
     """
     provider, feed, raw_key = _provider(db, "approval-owner-relabel")
     db.commit()
@@ -1576,15 +1567,44 @@ def test_approved_command_cannot_be_relabelled_to_other_subscriber(client, db):
         .count()
     )
     assert db.query(models.Execution).count() == 0
-    delivery = polled.json()["command"]
-    if delivery is not None:
-        assert delivery["command_id"] == command_id
-        assert altered.status == "SENT_TO_EA"
-        assert sent_count == 1
-        raise _CrossSubscriberApprovalRelabel(
-            "Subscriber B's valid licence received subscriber A's YES command"
-        )
-
+    assert polled.json()["command"] is None
     assert altered.status == "PENDING"
     assert altered.sent_to_ea_at is None
     assert sent_count == 0
+
+    # Positive control: the actual approving subscriber can still claim the
+    # same command after its two altered links are restored. Do not mistake
+    # a global deny-all for a passing provenance check.
+    db.rollback()
+    restored = db.get(models.Command, command_id)
+    restored.user_id = subscriber_a["id"]
+    restored.account_id = account_a.id
+    db.commit()
+    db.rollback()
+    previous_require_license = crud.settings.require_license
+    crud.settings.require_license = True
+    try:
+        original_owner_poll = client.get(
+            "/commands/pending",
+            headers={
+                **EA_HEADERS,
+                "X-SG-License-Key": subscriber_a["license_key"],
+            },
+        )
+    finally:
+        crud.settings.require_license = previous_require_license
+    assert original_owner_poll.status_code == 200, original_owner_poll.text
+    assert original_owner_poll.json()["command"]["command_id"] == command_id
+
+    db.expire_all()
+    approved_command = db.get(models.Command, command_id)
+    assert approved_command.status == "SENT_TO_EA"
+    assert (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id == command_id,
+        )
+        .count() == 1
+    )
+    assert db.query(models.Execution).count() == 0
