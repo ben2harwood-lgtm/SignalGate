@@ -1608,3 +1608,190 @@ def test_approved_command_cannot_be_relabelled_to_other_subscriber(client, db):
         .count() == 1
     )
     assert db.query(models.Execution).count() == 0
+
+def test_postgresql_pending_claim_waits_for_approval_owner_rewrite(client, db):
+    """A held Approval writer must finish before an EA can claim its YES.
+
+    This is a synthetic, offline PostgreSQL writer-first concurrency witness.
+    It proves a real Approval-row lock wait and denial after a subscriber
+    provenance rewrite, not broker execution or independent acceptance.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL approval writer/claim sessions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from time import monotonic, sleep
+
+    from sqlalchemy import event, text as sql_text
+
+    from app.database import SessionLocal
+
+    provider, feed, raw_key = _provider(db, "pg-approval-writer-first")
+    db.commit()
+    subscriber_a = register_user(
+        client, "990213", "synthetic_approval_race_a", "Synthetic A"
+    )
+    subscriber_b = register_user(
+        client, "990214", "synthetic_approval_race_b", "Synthetic B"
+    )
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber_a["id"])
+    )
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, raw_key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["parser_status"] == "VALID"
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": subscriber_a["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    command = db.get(models.Command, command_id)
+    approval_id = command.approval_id
+    original_user_id, replacement_user_id = (
+        subscriber_a["id"], subscriber_b["id"]
+    )
+    original_approval = db.get(models.Approval, approval_id)
+    assert original_approval.signal_id == command.signal_id
+    assert original_approval.user_id == original_user_id
+    assert (original_approval.decision, original_approval.status) == (
+        "YES", "APPROVED"
+    )
+    assert command.status == "PENDING"
+    db.rollback()  # Fixture session must not hold the race's row locks.
+
+    writer_flushed = Event()
+    release_writer = Event()
+    claim_approval_select_attempted = Event()
+    writer_pids = []
+    claim_pids = []
+
+    def change_approval_owner_and_hold():
+        with SessionLocal() as session:
+            conn = session.connection()
+            conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            writer_pids.append(
+                conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
+            )
+            approval = session.get(models.Approval, approval_id)
+            assert approval is not None
+            assert approval.user_id == original_user_id
+            approval.user_id = replacement_user_id
+            session.flush()  # PostgreSQL UPDATE locks Approval until commit.
+            writer_flushed.set()
+            assert release_writer.wait(timeout=15), "Approval writer not released"
+            session.commit()
+
+    def claim_while_approval_is_uncommitted():
+        with SessionLocal() as session:
+            conn = session.connection()
+            conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            claim_pids.append(
+                conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
+            )
+
+            def observe_approval_select(_conn, _cursor, statement, _params, _ctx, _many):
+                lowered = statement.lower()
+                if lowered.lstrip().startswith("select") and "from approvals" in lowered:
+                    claim_approval_select_attempted.set()
+
+            event.listen(conn, "before_cursor_execute", observe_approval_select)
+            claimed = crud.get_pending_command_for_user(
+                session, original_user_id
+            )
+            claimed_id = claimed.id if claimed is not None else None
+            session.commit()
+            return claimed_id
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        writer_future = workers.submit(change_approval_owner_and_hold)
+        try:
+            assert writer_flushed.wait(timeout=8), "Approval UPDATE not flushed"
+            claim_future = workers.submit(claim_while_approval_is_uncommitted)
+            assert claim_approval_select_attempted.wait(timeout=8), (
+                "EA claim never reached original Approval lookup"
+            )
+            blocked_by_writer = False
+            deadline = monotonic() + 2.5
+            while monotonic() < deadline:
+                with SessionLocal() as observer:
+                    observer.execute(sql_text("SELECT pg_stat_clear_snapshot()"))
+                    blockers = observer.scalar(
+                        sql_text("SELECT pg_blocking_pids(:pid)"),
+                        {"pid": claim_pids[0]},
+                    )
+                if writer_pids[0] in blockers:
+                    blocked_by_writer = True
+                    break
+                if claim_future.done():
+                    break
+                sleep(0.05)
+            assert blocked_by_writer, (
+                "Claim did not wait on the original Approval row UPDATE"
+            )
+            assert not claim_future.done(), "Claim escaped uncommitted Approval"
+        finally:
+            release_writer.set()
+        writer_future.result(timeout=20)
+        claimed_id = claim_future.result(timeout=20)
+
+    assert len(writer_pids) == len(claim_pids) == 1
+    assert writer_pids[0] != claim_pids[0], "Not two PostgreSQL sessions"
+    assert claimed_id is None, "An A command escaped B-owned approval"
+    with SessionLocal() as verify:
+        approval = verify.get(models.Approval, approval_id)
+        command = verify.get(models.Command, command_id)
+        assert approval.user_id == replacement_user_id
+        assert command.user_id == original_user_id
+        assert command.status == "PENDING"
+        assert command.sent_to_ea_at is None
+        assert (
+            verify.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count() == 0
+        )
+        assert verify.query(models.Execution).count() == 0
+
+    # A true positive control: restoring original consent permits exactly one
+    # ordinary demo EA claim, never a second delivery.
+    with SessionLocal() as restore:
+        approval = restore.get(models.Approval, approval_id)
+        approval.user_id = original_user_id
+        restore.commit()
+    with SessionLocal() as claim_restored:
+        claimed = crud.get_pending_command_for_user(
+            claim_restored, original_user_id
+        )
+        assert claimed is not None and claimed.id == command_id
+        claim_restored.commit()
+    with SessionLocal() as repeat:
+        assert crud.get_pending_command_for_user(
+            repeat, original_user_id
+        ) is None
+        repeat.commit()
+    with SessionLocal() as verify:
+        command = verify.get(models.Command, command_id)
+        assert command.status == "SENT_TO_EA"
+        assert command.sent_to_ea_at is not None
+        assert (
+            verify.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count() == 1
+        )
+        assert verify.query(models.Execution).count() == 0
