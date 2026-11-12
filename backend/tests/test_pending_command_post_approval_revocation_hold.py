@@ -1176,8 +1176,8 @@ def test_postgresql_original_signal_feed_writer_serializes_with_pending_claim(
     assert approved.json()["result"] == "APPROVED", approved.text
     command_id = approved.json()["command_id"]
     signal_id = created.json()["id"]
-    original_feed_id, sibling_feed_id, user_id = (
-        original_feed.id, sibling_feed.id, user["id"]
+    original_feed_id, sibling_feed_id, user_id, provider_id = (
+        original_feed.id, sibling_feed.id, user["id"], provider.id
     )
     assert original_feed_id != sibling_feed_id
     assert db.get(models.Command, command_id).status == "PENDING"
@@ -1201,7 +1201,7 @@ def test_postgresql_original_signal_feed_writer_serializes_with_pending_claim(
             origin = session.get(models.Signal, signal_id)
             assert origin is not None
             assert (origin.provider_id, origin.feed_id) == (
-                provider.id, original_feed_id
+                provider_id, original_feed_id
             )
             origin.feed_id = sibling_feed_id
             session.flush()  # Real UPDATE holds the origin row until commit.
@@ -1270,10 +1270,10 @@ def test_postgresql_original_signal_feed_writer_serializes_with_pending_claim(
         origin = verify.get(models.Signal, signal_id)
         command = verify.get(models.Command, command_id)
         assert (origin.provider_id, origin.feed_id) == (
-            provider.id, sibling_feed_id
+            provider_id, sibling_feed_id
         )
         assert (command.provider_id, command.feed_id) == (
-            provider.id, original_feed_id
+            provider_id, original_feed_id
         )
         assert command.status == "PENDING"
         assert command.sent_to_ea_at is None
