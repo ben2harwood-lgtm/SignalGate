@@ -89,6 +89,105 @@ def test_incomplete_provider_tenancy_never_claimed(client, db, missing_field):
     assert db.query(models.Execution).count() == 0
 
 
+
+class _HostedTenantlessProviderCommandDelivered(AssertionError):
+    """A once-provider-scoped YES escaped tenant checks in hosted EA polling."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_HostedTenantlessProviderCommandDelivered,
+    reason="Hosted EA claim currently treats all-null provider links as legacy local demo",
+)
+def test_hosted_provider_command_with_all_tenant_links_lost_never_delivered(
+    client, db
+):
+    """Diagnostic HOLD: licence alone must not reinstate lost provider authority.
+
+    This deliberately simulates corruption of *all three* nullable ownership
+    fields after a genuine synthetic provider YES. Unlike the three partial-
+    link normal-PASS cases, all-null currently takes the legacy local fallback.
+    This is an isolated hosted-mode claim-path test, not a real hosted startup,
+    exploitation proof, EA execution, or broker acceptance.
+    """
+    provider, feed, raw_key = _provider(db, "hosted-all-null-command")
+    db.commit()
+    user = register_user(
+        client, "990098", "synthetic_hosted_lost_tenancy", "Synthetic Subscriber"
+    )
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, user["id"])
+    )
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, raw_key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["parser_status"] == "VALID"
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": user["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    command = db.get(models.Command, command_id)
+    assert command.status == "PENDING"
+    assert all((command.provider_id, command.feed_id, command.account_id))
+
+    command.provider_id = None
+    command.feed_id = None
+    command.account_id = None
+    db.commit()
+    db.expire_all()
+    persisted = db.get(models.Command, command_id)
+    assert (
+        persisted.provider_id,
+        persisted.feed_id,
+        persisted.account_id,
+    ) == (None, None, None)
+    db.rollback()
+
+    previous = crud.settings.require_license
+    crud.settings.require_license = True
+    try:
+        polled = client.get(
+            "/commands/pending",
+            headers={**EA_HEADERS, "X-SG-License-Key": user["license_key"]},
+        )
+    finally:
+        crud.settings.require_license = previous
+    assert polled.status_code == 200, polled.text
+
+    db.expire_all()
+    command = db.get(models.Command, command_id)
+    sent_audits = (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id == command_id,
+        )
+        .count()
+    )
+    assert db.query(models.Execution).count() == 0
+    delivered = polled.json()["command"]
+    if delivered is not None:
+        assert delivered["command_id"] == command_id
+        assert command.status == "SENT_TO_EA"
+        assert sent_audits == 1
+        raise _HostedTenantlessProviderCommandDelivered(
+            "Hosted EA received a once-provider-scoped command after all "
+            "three tenant links were lost"
+        )
+
+    assert command.status == "PENDING"
+    assert command.sent_to_ea_at is None
+    assert sent_audits == 0
+
+
 class _RevokedApprovedCommandDelivered(AssertionError):
     """A pending provider command crossed a committed eligibility revocation."""
 
