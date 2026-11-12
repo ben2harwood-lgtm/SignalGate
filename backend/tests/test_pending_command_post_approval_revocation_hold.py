@@ -187,15 +187,6 @@ def test_hosted_provider_command_with_all_tenant_links_lost_never_delivered(
 
 
 
-class _CrossProviderOriginCommandDelivered(AssertionError):
-    """A forged tenant rebinding released another provider's signal to the EA."""
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=_CrossProviderOriginCommandDelivered,
-    reason="HOLD: claim checks live tenant rows but not original Signal provenance",
-)
 def test_fully_scoped_command_with_other_provider_origin_never_delivered(client, db):
     """A valid B membership cannot launder an A-approved signal into B.
 
@@ -276,13 +267,9 @@ def test_fully_scoped_command_with_other_provider_origin_never_delivered(client,
         .count()
     )
     assert db.query(models.Execution).count() == 0
-    if polled.json()["command"] is not None:
-        assert polled.json()["command"]["command_id"] == command_id
-        assert command.status == "SENT_TO_EA"
-        assert sent_audits == 1
-        raise _CrossProviderOriginCommandDelivered(
-            "A-origin approved command was delivered after Command links became B"
-        )
+    # The independently stored A-origin must override B's otherwise active
+    # provider/feed/subscription/account rows, with no SENT audit or execution.
+    assert polled.json()["command"] is None
     assert command.status == "PENDING"
     assert command.sent_to_ea_at is None
     assert sent_audits == 0

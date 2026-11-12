@@ -1889,30 +1889,38 @@ def _pending_command_tenant_eligible(db: Session, command: models.Command) -> bo
     PostgreSQL shared row locks are held through the caller's SENT_TO_EA audit
     and commit, serializing the claim with pause, deactivation, subscription
     revocation and account-status writers. Lock order is global pause (caller),
-    command (caller), provider, feed, subscription, account. FOR KEY SHARE
+    command (caller), original signal, provider, feed, subscription, account.
+    FOR KEY SHARE
     would not block pause/status updates to non-key columns.
     """
     tenant_ids = (command.provider_id, command.feed_id, command.account_id)
-    if all(identifier is None for identifier in tenant_ids):
-        # A provider command that lost all three nullable tenant links must not
-        # masquerade as a historical local-demo command. Its source signal
-        # retains independent provider/feed provenance; lock that row through
-        # claim commit so this decision cannot race an origin update.
-        origin_query = select(
-            models.Signal.provider_id, models.Signal.feed_id
-        ).where(models.Signal.id == command.signal_id)
-        if db.get_bind().dialect.name == "postgresql":
-            origin_query = origin_query.with_for_update(read=True)
-        origin = db.execute(origin_query).one_or_none()
-        return (
-            origin is not None
-            and origin.provider_id is None
-            and origin.feed_id is None
-        )
-    if not all(tenant_ids):
+    # Partial tenant links never imply the historical local-demo identity.
+    if any(tenant_ids) and not all(tenant_ids):
         return False
 
     is_postgresql = db.get_bind().dialect.name == "postgresql"
+    # Command links are mutable legacy columns. Bind every claim (including a
+    # fully scoped provider claim) to the original Signal's independent
+    # provider/feed identity; keep its PostgreSQL SHARE lock until claim commit.
+    # This prevents a writer from changing origin mid-claim and preserves the
+    # global pause -> command -> origin -> provider -> feed -> membership ->
+    # account lock order.
+    origin_query = select(models.Signal.provider_id, models.Signal.feed_id).where(
+        models.Signal.id == command.signal_id
+    )
+    if is_postgresql:
+        origin_query = origin_query.with_for_update(read=True)
+    origin = db.execute(origin_query).one_or_none()
+    if origin is None:
+        return False
+    if all(identifier is None for identifier in tenant_ids):
+        # Only an originally tenantless signal may use legacy local-demo claim.
+        return origin.provider_id is None and origin.feed_id is None
+    if (origin.provider_id, origin.feed_id) != (
+        command.provider_id,
+        command.feed_id,
+    ):
+        return False
 
     def fresh_locked(statement):
         if is_postgresql:
