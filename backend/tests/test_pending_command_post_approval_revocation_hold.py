@@ -1475,3 +1475,116 @@ def test_postgresql_pending_claim_blocks_later_signal_origin_rewrite(client, db)
             .count() == 1
         )
         assert verify.query(models.Execution).count() == 0
+
+
+class _CrossSubscriberApprovalRelabel(AssertionError):
+    """Command reached another subscriber without that subscriber's YES."""
+
+
+@pytest.mark.xfail(
+    raises=_CrossSubscriberApprovalRelabel,
+    strict=True,
+    reason="HOLD: pending EA claim does not bind Command user to original Approval user",
+)
+def test_approved_command_cannot_be_relabelled_to_other_subscriber(client, db):
+    """A valid B licence/subscription must not inherit subscriber A's approval.
+
+    Fabricated same-feed users; corruption of two Command ownership fields
+    after A's genuine synthetic YES. This does not show an external mutation
+    primitive or constitute MT5, broker, or independent acceptance evidence.
+    Only a witnessed cross-subscriber delivery is an expected failure; any
+    fixture, authentication, or unexpected side-effect failure is a real FAIL.
+    """
+    provider, feed, raw_key = _provider(db, "approval-owner-relabel")
+    db.commit()
+    subscriber_a = register_user(
+        client, "990211", "synthetic_approval_owner_a", "Synthetic A"
+    )
+    subscriber_b = register_user(
+        client, "990212", "synthetic_approval_owner_b", "Synthetic B"
+    )
+    _, account_a = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber_a["id"])
+    )
+    subscription_b, account_b = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber_b["id"])
+    )
+    assert account_a.id != account_b.id
+    assert subscription_b.status == "ACTIVE"
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, raw_key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["parser_status"] == "VALID"
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": subscriber_a["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    command = db.get(models.Command, command_id)
+    approval = db.get(models.Approval, command.approval_id)
+    assert approval.user_id == subscriber_a["id"]
+    assert approval.signal_id == command.signal_id
+    assert approval.decision == "YES"
+    assert command.user_id == subscriber_a["id"]
+    assert (command.provider_id, command.feed_id, command.account_id) == (
+        provider.id, feed.id, account_a.id
+    )
+
+    # Leave independently persisted Signal + Approval unchanged; give Command
+    # B's otherwise valid subscriber/account links for this same provider/feed.
+    command.user_id = subscriber_b["id"]
+    command.account_id = account_b.id
+    db.commit()
+    db.expire_all()
+    altered = db.get(models.Command, command_id)
+    assert (altered.user_id, altered.account_id) == (
+        subscriber_b["id"], account_b.id
+    )
+    original_approval = db.get(models.Approval, altered.approval_id)
+    assert original_approval.user_id == subscriber_a["id"]
+    db.rollback()  # Separate HTTP poll must not inherit test-session locks.
+
+    previous_require_license = crud.settings.require_license
+    crud.settings.require_license = True
+    try:
+        polled = client.get(
+            "/commands/pending",
+            headers={
+                **EA_HEADERS,
+                "X-SG-License-Key": subscriber_b["license_key"],
+            },
+        )
+    finally:
+        crud.settings.require_license = previous_require_license
+    assert polled.status_code == 200, polled.text
+
+    db.expire_all()
+    altered = db.get(models.Command, command_id)
+    sent_count = (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id == command_id,
+        )
+        .count()
+    )
+    assert db.query(models.Execution).count() == 0
+    delivery = polled.json()["command"]
+    if delivery is not None:
+        assert delivery["command_id"] == command_id
+        assert altered.status == "SENT_TO_EA"
+        assert sent_count == 1
+        raise _CrossSubscriberApprovalRelabel(
+            "Subscriber B's valid licence received subscriber A's YES command"
+        )
+
+    assert altered.status == "PENDING"
+    assert altered.sent_to_ea_at is None
+    assert sent_count == 0
