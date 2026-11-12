@@ -186,6 +186,110 @@ def test_hosted_provider_command_with_all_tenant_links_lost_never_delivered(
     assert sent_audits == 0
 
 
+
+class _CrossProviderOriginCommandDelivered(AssertionError):
+    """A forged tenant rebinding released another provider's signal to the EA."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_CrossProviderOriginCommandDelivered,
+    reason="HOLD: claim checks live tenant rows but not original Signal provenance",
+)
+def test_fully_scoped_command_with_other_provider_origin_never_delivered(client, db):
+    """A valid B membership cannot launder an A-approved signal into B.
+
+    Synthetic integrity-fault regression only: this deliberately rebinds the
+    fully scoped Command ownership columns in the database after an actual
+    synthetic YES. It does not demonstrate an external corruption primitive
+    or broker execution. A clean fix must preserve historical local demo.
+    """
+    provider_a, feed_a, raw_key_a = _provider(db, "origin-mismatch-a")
+    provider_b, feed_b, _ = _provider(db, "origin-mismatch-b")
+    assert provider_a.organization_id != provider_b.organization_id
+    db.commit()
+    user = register_user(
+        client, "990097", "synthetic_origin_mismatch", "Synthetic Subscriber"
+    )
+    _, account_a = crud.subscribe_user_to_feed(
+        db, provider_a, feed_a, db.get(models.User, user["id"])
+    )
+    _, account_b = crud.subscribe_user_to_feed(
+        db, provider_b, feed_b, db.get(models.User, user["id"])
+    )
+    assert account_a.id != account_b.id
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider_a, raw_key_a),
+        json={"feed_id": feed_a.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["parser_status"] == "VALID"
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": user["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    command = db.get(models.Command, command_id)
+    assert command is not None and command.status == "PENDING"
+    assert (command.provider_id, command.feed_id, command.account_id) == (
+        provider_a.id, feed_a.id, account_a.id
+    )
+    origin_id = command.signal_id
+    origin = db.get(models.Signal, origin_id)
+    assert (origin.provider_id, origin.feed_id) == (provider_a.id, feed_a.id)
+
+    # Corrupt all three Command links to a separate, otherwise valid tenant.
+    # A naive "check the new links" gate now passes, despite Signal A origin.
+    command.provider_id = provider_b.id
+    command.feed_id = feed_b.id
+    command.account_id = account_b.id
+    db.commit()
+    db.expire_all()
+    command = db.get(models.Command, command_id)
+    assert (command.provider_id, command.feed_id, command.account_id) == (
+        provider_b.id, feed_b.id, account_b.id
+    )
+    origin = db.get(models.Signal, origin_id)
+    assert (origin.provider_id, origin.feed_id) == (provider_a.id, feed_a.id)
+    assert db.get(models.Provider, provider_b.id).status == "ACTIVE"
+    assert db.get(models.Subscription, crud.get_subscription(
+        db, provider_b.id, feed_b.id, user["id"]
+    ).id).status == "ACTIVE"
+    db.rollback()  # Release test-session read locks before independent poll.
+
+    polled = client.get(
+        "/commands/pending", headers=EA_HEADERS, params={"user_id": user["id"]}
+    )
+    assert polled.status_code == 200, polled.text
+
+    db.expire_all()
+    command = db.get(models.Command, command_id)
+    sent_audits = (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id == command_id,
+        )
+        .count()
+    )
+    assert db.query(models.Execution).count() == 0
+    if polled.json()["command"] is not None:
+        assert polled.json()["command"]["command_id"] == command_id
+        assert command.status == "SENT_TO_EA"
+        assert sent_audits == 1
+        raise _CrossProviderOriginCommandDelivered(
+            "A-origin approved command was delivered after Command links became B"
+        )
+    assert command.status == "PENDING"
+    assert command.sent_to_ea_at is None
+    assert sent_audits == 0
+
+
 class _RevokedApprovedCommandDelivered(AssertionError):
     """A pending provider command crossed a committed eligibility revocation."""
 
