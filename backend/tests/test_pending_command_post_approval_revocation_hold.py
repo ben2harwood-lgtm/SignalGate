@@ -243,7 +243,11 @@ def test_postapproval_revocation_keeps_other_provider_pending_poll_available(
 
 
 
-@pytest.mark.parametrize("tie_created_at", (False, True), ids=("staggered", "same-time"))
+@pytest.mark.parametrize(
+    "cursor_case",
+    ("staggered", "same_time_revoked_first", "same_time_eligible_first"),
+    ids=("staggered", "same-time-revoked-first", "same-time-eligible-first"),
+)
 @pytest.mark.parametrize(
     "revoked_scope",
     (
@@ -256,7 +260,7 @@ def test_postapproval_revocation_keeps_other_provider_pending_poll_available(
     ),
 )
 def test_same_subscriber_cross_provider_revocation_skips_ineligible_oldest(
-    client, db, revoked_scope, tie_created_at
+    client, db, revoked_scope, cursor_case
 ):
     """An earlier revoked tenant cannot block this user's other provider.
 
@@ -309,10 +313,15 @@ def test_same_subscriber_cross_provider_revocation_skips_ineligible_oldest(
         assert approved.json()["result"] == "APPROVED", approved.text
         approved_ids.append(approved.json()["command_id"])
 
-    # Command IDs are random, not insertion-order counters. For the tied-time
-    # variant, select the lexicographically first tenant as the revoked one
-    # so the keyset cursor must really skip it before reaching the sibling.
-    if tie_created_at and approved_ids[0] > approved_ids[1]:
+    # Command IDs are random. Exercise both tie orders: a revoked command
+    # before the eligible sibling (cursor must skip), and an eligible sibling
+    # before the revoked one (subsequent polls must not leak the latter).
+    tie_created_at = cursor_case != "staggered"
+    swap_tied_order = tie_created_at and (
+        (cursor_case == "same_time_revoked_first" and approved_ids[0] > approved_ids[1])
+        or (cursor_case == "same_time_eligible_first" and approved_ids[0] < approved_ids[1])
+    )
+    if swap_tied_order:
         approved_ids.reverse()
         provider_a, provider_b = provider_b, provider_a
         feed_a, feed_b = feed_b, feed_a
@@ -335,8 +344,10 @@ def test_same_subscriber_cross_provider_revocation_skips_ineligible_oldest(
     eligible.created_at = (
         ordered_at if tie_created_at else ordered_at + dt.timedelta(seconds=1)
     )
-    if tie_created_at:
+    if cursor_case == "same_time_revoked_first":
         assert revoked_id < eligible_id, "Tied revoked A must sort before eligible B"
+    elif cursor_case == "same_time_eligible_first":
+        assert eligible_id < revoked_id, "Tied eligible B must sort before revoked A"
     if revoked_scope == "provider_paused":
         provider_a.paused = True
         revoked_model, revoked_entity_id, field, expected = models.Provider, provider_a.id, "paused", True
