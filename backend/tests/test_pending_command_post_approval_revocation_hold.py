@@ -19,6 +19,76 @@ from .conftest import EA_HEADERS, register_user
 from .test_provider_export import VALID, _headers, _provider
 
 
+@pytest.mark.parametrize("missing_field", ("provider_id", "feed_id", "account_id"))
+def test_incomplete_provider_tenancy_never_claimed(client, db, missing_field):
+    """A corrupt/legacy partial tenant link cannot reach the demo EA.
+
+    All three nullable ownership columns are required together for a hosted
+    provider command. Keep the deliberate all-null local-demo compatibility
+    separate; no real provider, EA, broker, or trading data is used here.
+    """
+    provider, feed, raw_key = _provider(db, f"partial-tenant-{missing_field}")
+    db.commit()
+    user = register_user(
+        client, "990099", f"synthetic_partial_{missing_field}", "Synthetic Subscriber"
+    )
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, user["id"])
+    )
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, raw_key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["parser_status"] == "VALID"
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": user["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    command = db.get(models.Command, command_id)
+    assert command is not None and command.status == "PENDING"
+    assert all((command.provider_id, command.feed_id, command.account_id))
+
+    # Deliberately corrupt one nullable tenant link *after* approval. It must
+    # not be treated as an old all-null local-demo command on the next poll.
+    setattr(command, missing_field, None)
+    db.commit()
+    db.expire_all()
+    persisted = db.get(models.Command, command_id)
+    assert getattr(persisted, missing_field) is None
+    assert sum(value is None for value in (
+        persisted.provider_id, persisted.feed_id, persisted.account_id
+    )) == 1
+    db.rollback()  # Release fixture read locks before the separate poll.
+
+    polled = client.get(
+        "/commands/pending", headers=EA_HEADERS, params={"user_id": user["id"]}
+    )
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["command"] is None
+
+    db.expire_all()
+    command = db.get(models.Command, command_id)
+    assert command.status == "PENDING"
+    assert command.sent_to_ea_at is None
+    assert (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id == command_id,
+        )
+        .count()
+        == 0
+    )
+    assert db.query(models.Execution).count() == 0
+
+
 class _RevokedApprovedCommandDelivered(AssertionError):
     """A pending provider command crossed a committed eligibility revocation."""
 
