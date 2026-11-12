@@ -1123,3 +1123,190 @@ def test_revoked_head_backlog_keeps_eligible_sibling_reachable(
         == 1
     )
     assert db.query(models.Execution).count() == 0
+
+
+def test_postgresql_original_signal_feed_writer_serializes_with_pending_claim(
+    client, db
+):
+    """A held origin-feed rewrite must not be outrun by a pending EA claim.
+
+    Offline two-session PostgreSQL witness for the original Signal FOR SHARE
+    check: the writer flushes a fabricated *same-provider sibling feed*
+    reassignment first; the pending claim must wait, re-read the committed
+    origin, and refuse the now-mismatched Command. Restoring the authentic
+    original feed is a normal positive control. No EA, broker, execution,
+    real provider, customer data, or external service is involved.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL writer and claim sessions")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from time import monotonic, sleep
+
+    from sqlalchemy import event, text as sql_text
+
+    from app.database import SessionLocal
+
+    provider, original_feed, raw_key = _provider(db, "pg-origin-writer-first")
+    sibling_feed = crud.create_feed(
+        db, provider, "Synthetic sibling feed", "pg-origin-sibling-source"
+    )
+    db.commit()  # Release audit-chain lock before the separate HTTP requests.
+    user = register_user(
+        client, "990096", "synthetic_origin_writer", "Synthetic Subscriber"
+    )
+    crud.subscribe_user_to_feed(
+        db, provider, original_feed, db.get(models.User, user["id"])
+    )
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, raw_key),
+        json={"feed_id": original_feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["parser_status"] == "VALID"
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": user["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED", approved.text
+    command_id = approved.json()["command_id"]
+    signal_id = created.json()["id"]
+    original_feed_id, sibling_feed_id, user_id = (
+        original_feed.id, sibling_feed.id, user["id"]
+    )
+    assert original_feed_id != sibling_feed_id
+    assert db.get(models.Command, command_id).status == "PENDING"
+    assert db.get(models.Signal, signal_id).feed_id == original_feed_id
+    db.rollback()  # Do not hold fixture locks across the actual race.
+
+    writer_flushed = Event()
+    release_writer = Event()
+    claim_origin_select_attempted = Event()
+    writer_pids = []
+    claim_pids = []
+
+    def rewrite_origin_and_hold():
+        with SessionLocal() as session:
+            conn = session.connection()
+            conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            writer_pids.append(
+                conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
+            )
+            origin = session.get(models.Signal, signal_id)
+            assert origin is not None
+            assert (origin.provider_id, origin.feed_id) == (
+                provider.id, original_feed_id
+            )
+            origin.feed_id = sibling_feed_id
+            session.flush()  # Real UPDATE holds the origin row until commit.
+            writer_flushed.set()
+            assert release_writer.wait(timeout=15), "Origin writer not released"
+            session.commit()
+
+    def claim_while_origin_is_uncommitted():
+        with SessionLocal() as session:
+            conn = session.connection()
+            conn.exec_driver_sql("SET LOCAL lock_timeout = '8s'")
+            conn.exec_driver_sql("SET LOCAL statement_timeout = '12s'")
+            claim_pids.append(
+                conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
+            )
+
+            def observe_origin_select(_conn, _cursor, statement, _params, _ctx, _many):
+                lowered = statement.lower()
+                if lowered.lstrip().startswith("select") and "from signals" in lowered:
+                    claim_origin_select_attempted.set()
+
+            event.listen(conn, "before_cursor_execute", observe_origin_select)
+            claimed = crud.get_pending_command_for_user(session, user_id)
+            claimed_id = claimed.id if claimed is not None else None
+            session.commit()
+            return claimed_id
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        writer_future = workers.submit(rewrite_origin_and_hold)
+        try:
+            assert writer_flushed.wait(timeout=8), "Origin UPDATE not flushed"
+            claim_future = workers.submit(claim_while_origin_is_uncommitted)
+            assert claim_origin_select_attempted.wait(timeout=8), (
+                "Claim did not reach original Signal lookup"
+            )
+            # Prove a *real* Signal row-lock wait instead of passing because
+            # the worker was late, sleeping, or deadlocked elsewhere.
+            observed_origin_blocker = False
+            deadline = monotonic() + 2.5
+            while monotonic() < deadline:
+                with SessionLocal() as observer:
+                    observer.execute(sql_text("SELECT pg_stat_clear_snapshot()"))
+                    blockers = observer.scalar(
+                        sql_text("SELECT pg_blocking_pids(:pid)"),
+                        {"pid": claim_pids[0]},
+                    )
+                if writer_pids[0] in blockers:
+                    observed_origin_blocker = True
+                    break
+                if claim_future.done():
+                    break
+                sleep(0.05)
+            assert observed_origin_blocker, (
+                "Claim did not wait on the writer's original-Signal row lock"
+            )
+            assert not claim_future.done(), "Claim escaped held origin mutation"
+        finally:
+            release_writer.set()
+        writer_future.result(timeout=20)
+        claimed_id = claim_future.result(timeout=20)
+
+    assert len(writer_pids) == len(claim_pids) == 1
+    assert writer_pids[0] != claim_pids[0], "Not two PostgreSQL sessions"
+    assert claimed_id is None, "A mismatched original feed reached the demo EA"
+    with SessionLocal() as verify:
+        origin = verify.get(models.Signal, signal_id)
+        command = verify.get(models.Command, command_id)
+        assert (origin.provider_id, origin.feed_id) == (
+            provider.id, sibling_feed_id
+        )
+        assert (command.provider_id, command.feed_id) == (
+            provider.id, original_feed_id
+        )
+        assert command.status == "PENDING"
+        assert command.sent_to_ea_at is None
+        assert (
+            verify.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count() == 0
+        )
+        assert verify.query(models.Execution).count() == 0
+
+    # Positive control: after an independently committed restoration to the
+    # authentic provider/feed, an approved eligible command is still claimable.
+    with SessionLocal() as restore:
+        origin = restore.get(models.Signal, signal_id)
+        origin.feed_id = original_feed_id
+        restore.commit()
+    with SessionLocal() as claim_restored:
+        claimed = crud.get_pending_command_for_user(claim_restored, user_id)
+        assert claimed is not None and claimed.id == command_id
+        claim_restored.commit()
+    with SessionLocal() as verify:
+        command = verify.get(models.Command, command_id)
+        assert command.status == "SENT_TO_EA"
+        assert command.sent_to_ea_at is not None
+        assert (
+            verify.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+                models.AuditLog.entity_id == command_id,
+            )
+            .count() == 1
+        )
+        assert verify.query(models.Execution).count() == 0
