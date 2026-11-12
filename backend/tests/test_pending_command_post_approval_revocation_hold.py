@@ -90,14 +90,15 @@ def test_incomplete_provider_tenancy_never_claimed(client, db, missing_field):
 
 
 
+@pytest.mark.parametrize("origin_missing", (None, "provider_id", "feed_id"))
 def test_hosted_provider_command_with_all_tenant_links_lost_never_delivered(
-    client, db
+    client, db, origin_missing
 ):
     """A valid licence cannot reinstate a provider command with lost links.
 
-    This deliberately simulates corruption of *all three* nullable ownership
-    fields after a genuine synthetic provider YES. Unlike the three partial-
-    link normal-PASS cases, all-null currently takes the legacy local fallback.
+    This simulates loss of all three Command ownership fields after a real
+    synthetic provider YES. The original Signal's complete or partially
+    missing provider/feed origin must prevent the historical local fallback.
     This tests a hosted-mode claim path, not real hosted startup,
     exploitation proof, EA execution, or broker acceptance.
     """
@@ -129,11 +130,24 @@ def test_hosted_provider_command_with_all_tenant_links_lost_never_delivered(
     assert command.status == "PENDING"
     assert all((command.provider_id, command.feed_id, command.account_id))
 
+    origin = db.get(models.Signal, command.signal_id)
+    assert origin is not None
+    assert (origin.provider_id, origin.feed_id) == (provider.id, feed.id)
     command.provider_id = None
     command.feed_id = None
     command.account_id = None
+    if origin_missing is not None:
+        setattr(origin, origin_missing, None)
     db.commit()
     db.expire_all()
+    persisted_origin = db.get(models.Signal, origin.id)
+    assert (
+        persisted_origin.provider_id,
+        persisted_origin.feed_id,
+    ) == (
+        None if origin_missing == "provider_id" else provider.id,
+        None if origin_missing == "feed_id" else feed.id,
+    )
     persisted = db.get(models.Command, command_id)
     assert (
         persisted.provider_id,
@@ -164,8 +178,8 @@ def test_hosted_provider_command_with_all_tenant_links_lost_never_delivered(
         .count()
     )
     assert db.query(models.Execution).count() == 0
-    # Even with a valid hosted licence, the original provider Signal proves
-    # that this is not an old local-demo command. No delivery/audit may occur.
+    # Even with a valid hosted licence, a fully or partially provider-scoped
+    # origin is never a historical local-demo signal. No SENT audit may occur.
     assert polled.json()["command"] is None
     assert command.status == "PENDING"
     assert command.sent_to_ea_at is None
