@@ -243,7 +243,17 @@ def test_postapproval_revocation_keeps_other_provider_pending_poll_available(
 
 
 
-@pytest.mark.parametrize("revoked_scope", ("provider_paused", "subscription_inactive"))
+@pytest.mark.parametrize(
+    "revoked_scope",
+    (
+        "provider_paused",
+        "feed_paused",
+        "provider_inactive",
+        "feed_inactive",
+        "subscription_inactive",
+        "account_inactive",
+    ),
+)
 def test_same_subscriber_cross_provider_revocation_skips_ineligible_oldest(
     client, db, revoked_scope
 ):
@@ -312,9 +322,38 @@ def test_same_subscriber_cross_provider_revocation_skips_ineligible_oldest(
     eligible.created_at = ordered_at + dt.timedelta(seconds=1)
     if revoked_scope == "provider_paused":
         provider_a.paused = True
-    else:
+        revoked_model, revoked_id, field, expected = models.Provider, provider_a.id, "paused", True
+    elif revoked_scope == "feed_paused":
+        feed_a.paused = True
+        revoked_model, revoked_id, field, expected = models.Feed, feed_a.id, "paused", True
+    elif revoked_scope == "provider_inactive":
+        provider_a.status = "INACTIVE"
+        revoked_model, revoked_id, field, expected = models.Provider, provider_a.id, "status", "INACTIVE"
+    elif revoked_scope == "feed_inactive":
+        feed_a.status = "INACTIVE"
+        revoked_model, revoked_id, field, expected = models.Feed, feed_a.id, "status", "INACTIVE"
+    elif revoked_scope == "subscription_inactive":
         subscription_a.status = "INACTIVE"
+        revoked_model, revoked_id, field, expected = models.Subscription, subscription_a.id, "status", "INACTIVE"
+    elif revoked_scope == "account_inactive":
+        account_a.status = "INACTIVE"
+        revoked_model, revoked_id, field, expected = models.TradingAccount, account_a.id, "status", "INACTIVE"
+    else:
+        raise AssertionError(f"Unknown revocation scope: {revoked_scope}")
+
     db.commit()
+    # Prove the actual database persisted A's revocation and B's continuing
+    # authority, instead of relying on dirty in-memory ORM objects.
+    db.expire_all()
+    assert getattr(db.get(revoked_model, revoked_id), field) == expected
+    assert db.get(models.Provider, provider_b.id).status == "ACTIVE"
+    assert db.get(models.Provider, provider_b.id).paused is False
+    assert db.get(models.Feed, feed_b.id).status == "ACTIVE"
+    assert db.get(models.Feed, feed_b.id).paused is False
+    assert db.get(models.Subscription, subscription_b.id).status == "ACTIVE"
+    assert db.get(models.TradingAccount, account_b.id).status == "ACTIVE"
+    assert db.get(models.Command, revoked_id).status == "PENDING"
+    assert db.get(models.Command, eligible_id).status == "PENDING"
     db.rollback()  # Release fixture locks before the independent EA poll.
 
     polled = client.get(
