@@ -309,6 +309,16 @@ def test_same_subscriber_cross_provider_revocation_skips_ineligible_oldest(
         assert approved.json()["result"] == "APPROVED", approved.text
         approved_ids.append(approved.json()["command_id"])
 
+    # Command IDs are random, not insertion-order counters. For the tied-time
+    # variant, select the lexicographically first tenant as the revoked one
+    # so the keyset cursor must really skip it before reaching the sibling.
+    if tie_created_at and approved_ids[0] > approved_ids[1]:
+        approved_ids.reverse()
+        provider_a, provider_b = provider_b, provider_a
+        feed_a, feed_b = feed_b, feed_a
+        subscription_a, subscription_b = subscription_b, subscription_a
+        account_a, account_b = account_b, account_a
+
     revoked_id, eligible_id = approved_ids
     assert revoked_id != eligible_id
     revoked = db.get(models.Command, revoked_id)
