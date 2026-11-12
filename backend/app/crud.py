@@ -1894,8 +1894,21 @@ def _pending_command_tenant_eligible(db: Session, command: models.Command) -> bo
     """
     tenant_ids = (command.provider_id, command.feed_id, command.account_id)
     if all(identifier is None for identifier in tenant_ids):
-        # Preserve historical tenantless local-demo command delivery.
-        return True
+        # A provider command that lost all three nullable tenant links must not
+        # masquerade as a historical local-demo command. Its source signal
+        # retains independent provider/feed provenance; lock that row through
+        # claim commit so this decision cannot race an origin update.
+        origin_query = select(
+            models.Signal.provider_id, models.Signal.feed_id
+        ).where(models.Signal.id == command.signal_id)
+        if db.get_bind().dialect.name == "postgresql":
+            origin_query = origin_query.with_for_update(read=True)
+        origin = db.execute(origin_query).one_or_none()
+        return (
+            origin is not None
+            and origin.provider_id is None
+            and origin.feed_id is None
+        )
     if not all(tenant_ids):
         return False
 

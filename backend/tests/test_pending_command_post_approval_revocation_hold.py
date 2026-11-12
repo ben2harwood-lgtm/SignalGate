@@ -90,24 +90,15 @@ def test_incomplete_provider_tenancy_never_claimed(client, db, missing_field):
 
 
 
-class _HostedTenantlessProviderCommandDelivered(AssertionError):
-    """A once-provider-scoped YES escaped tenant checks in hosted EA polling."""
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=_HostedTenantlessProviderCommandDelivered,
-    reason="Hosted EA claim currently treats all-null provider links as legacy local demo",
-)
 def test_hosted_provider_command_with_all_tenant_links_lost_never_delivered(
     client, db
 ):
-    """Diagnostic HOLD: licence alone must not reinstate lost provider authority.
+    """A valid licence cannot reinstate a provider command with lost links.
 
     This deliberately simulates corruption of *all three* nullable ownership
     fields after a genuine synthetic provider YES. Unlike the three partial-
     link normal-PASS cases, all-null currently takes the legacy local fallback.
-    This is an isolated hosted-mode claim-path test, not a real hosted startup,
+    This tests a hosted-mode claim path, not real hosted startup,
     exploitation proof, EA execution, or broker acceptance.
     """
     provider, feed, raw_key = _provider(db, "hosted-all-null-command")
@@ -173,16 +164,9 @@ def test_hosted_provider_command_with_all_tenant_links_lost_never_delivered(
         .count()
     )
     assert db.query(models.Execution).count() == 0
-    delivered = polled.json()["command"]
-    if delivered is not None:
-        assert delivered["command_id"] == command_id
-        assert command.status == "SENT_TO_EA"
-        assert sent_audits == 1
-        raise _HostedTenantlessProviderCommandDelivered(
-            "Hosted EA received a once-provider-scoped command after all "
-            "three tenant links were lost"
-        )
-
+    # Even with a valid hosted licence, the original provider Signal proves
+    # that this is not an old local-demo command. No delivery/audit may occur.
+    assert polled.json()["command"] is None
     assert command.status == "PENDING"
     assert command.sent_to_ea_at is None
     assert sent_audits == 0
