@@ -214,7 +214,7 @@ def test_fully_scoped_command_with_other_provider_origin_never_delivered(client,
     _, account_a = crud.subscribe_user_to_feed(
         db, provider_a, feed_a, db.get(models.User, user["id"])
     )
-    _, account_b = crud.subscribe_user_to_feed(
+    subscription_b, account_b = crud.subscribe_user_to_feed(
         db, provider_b, feed_b, db.get(models.User, user["id"])
     )
     assert account_a.id != account_b.id
@@ -257,9 +257,7 @@ def test_fully_scoped_command_with_other_provider_origin_never_delivered(client,
     origin = db.get(models.Signal, origin_id)
     assert (origin.provider_id, origin.feed_id) == (provider_a.id, feed_a.id)
     assert db.get(models.Provider, provider_b.id).status == "ACTIVE"
-    assert db.get(models.Subscription, crud.get_subscription(
-        db, provider_b.id, feed_b.id, user["id"]
-    ).id).status == "ACTIVE"
+    assert db.get(models.Subscription, subscription_b.id).status == "ACTIVE"
     db.rollback()  # Release test-session read locks before independent poll.
 
     polled = client.get(
