@@ -90,6 +90,94 @@ def test_incomplete_provider_tenancy_never_claimed(client, db, missing_field):
 
 
 
+
+class _HostedTenantlessCommandDelivered(AssertionError):
+    """An original local-demo command reached a licence-authenticated hosted EA."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_HostedTenantlessCommandDelivered,
+    reason=(
+        "RELEASE HOLD: a valid hosted licence can still claim an originally "
+        "tenantless historical local-demo command; provider tenancy is absent"
+    ),
+)
+def test_hosted_licence_refuses_originally_tenantless_demo_command(
+    client, db, monkeypatch
+):
+    """Historic all-null local authority must not migrate into hosted delivery.
+
+    A *genuine* historical local-demo signal, YES and pending command are
+    created while local mode is active. Switch only the synthetic request's
+    licence gate to hosted and supply this same user's otherwise valid EA
+    licence. No broker, EA process, Telegram, external data or schema is used.
+    This is a migration/policy witness, not a deployed exploit.
+    """
+    from .conftest import create_signal
+
+    user = register_user(
+        client, "990300", "synthetic_hosted_legacy", "Synthetic Subscriber"
+    )
+    signal = create_signal(client, VALID)
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": user["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    command = db.get(models.Command, command_id)
+    origin = db.get(models.Signal, command.signal_id)
+    approval = db.get(models.Approval, command.approval_id)
+    assert (command.provider_id, command.feed_id, command.account_id) == (
+        None, None, None
+    )
+    assert (origin.provider_id, origin.feed_id) == (None, None)
+    assert (approval.user_id, approval.signal_id, approval.decision, approval.status) == (
+        user["id"], command.signal_id, "YES", "APPROVED"
+    )
+    assert command.status == "PENDING"
+    db.rollback()
+
+    # Preserve old local-mode positive tests. This explicitly tests a
+    # licence-authenticated claim against a legacy row, not hosted startup.
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        result = client.get(
+            "/commands/pending",
+            headers={
+                **EA_HEADERS,
+                "X-SG-License-Key": user["license_key"],
+            },
+        )
+    assert result.status_code == 200, result.text
+
+    db.expire_all()
+    command = db.get(models.Command, command_id)
+    sent = (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id == command_id,
+        )
+        .count()
+    )
+    assert db.query(models.Execution).count() == 0
+    if result.json()["command"] is not None:
+        # A deliberately narrow expected-failure witness: unexpected delivery
+        # content or state cannot masquerade as the known security gap.
+        assert result.json()["command"]["command_id"] == command_id
+        assert command.status == "SENT_TO_EA"
+        assert command.sent_to_ea_at is not None and sent == 1
+        raise _HostedTenantlessCommandDelivered(
+            "Hosted licence claimed historically tenantless local-demo command"
+        )
+    assert result.json()["command"] is None
+    assert command.status == "PENDING"
+    assert command.sent_to_ea_at is None and sent == 0
+
+
 @pytest.mark.parametrize("origin_missing", (None, "provider_id", "feed_id"))
 def test_hosted_provider_command_with_all_tenant_links_lost_never_delivered(
     client, db, origin_missing
