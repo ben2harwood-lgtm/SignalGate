@@ -1590,3 +1590,174 @@ def test_postgresql_command_account_relabel_management_observation_after_auth(
         f"result={callback_result!r}, events={len(events)}, audits={audits}"
     )
 
+def test_postgresql_command_account_relabel_recovery_after_auth(
+    client, db, monkeypatch
+):
+    """Synthetic broker-recovery provenance race; never contacts a broker.
+
+    A authorizes its delivered command and pauses. B reassigns only the
+    command's account to another subscriber and commits. A must not recover
+    a fabricated broker snapshot under that now-foreign account. Strict XFAIL
+    is permitted only if the independent rewrite committed and both the
+    unauthorized execution and its recovery audit persisted. All fixture,
+    barrier and unexpected outcomes remain ordinary failures.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires two independent PostgreSQL transactions")
+
+    from app.schemas import BrokerPositionReconcileRequest
+    from .test_provider_export import _provider, _headers
+
+    provider, feed, provider_key = _provider(
+        db, "callback-recovery-account-relabel-race"
+    )
+    db.commit()
+    owner = register_user(
+        client, "990367", "synthetic_reconcile_relabel_a", "Synthetic A"
+    )
+    foreign = register_user(
+        client, "990368", "synthetic_reconcile_relabel_b", "Synthetic B"
+    )
+    _, own_account = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, owner["id"])
+    )
+    _, foreign_account = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, foreign["id"])
+    )
+    assert own_account.id != foreign_account.id
+    own_account_id, foreign_account_id = own_account.id, foreign_account.id
+    db.commit()
+
+    signal = client.post(
+        "/signals/create",
+        headers=_headers(provider, provider_key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert signal.status_code == 200, signal.text
+    approved = client.post(
+        f"/signals/{signal.json()['id']}/approve",
+        json={"telegram_user_id": owner["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    db.rollback()
+    claimed = client.get(
+        "/commands/pending", headers=EA_HEADERS,
+        params={"user_id": owner["id"]},
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["command"]["command_id"] == command_id
+    db.expire_all()
+    assert db.get(models.Command, command_id).account_id == own_account_id
+    assert db.get(models.Command, command_id).status == "SENT_TO_EA"
+    db.rollback()
+
+    authorized = Event()
+    resume_callback = Event()
+    rewrite_committed = Event()
+    original_resolver = command_routes._get_authorized_callback_command
+
+    def pause_after_authorization(session, cid, license_key):
+        command = original_resolver(session, cid, license_key)
+        authorized.set()
+        assert resume_callback.wait(timeout=15), (
+            "Recovery callback never resumed after account reassignment"
+        )
+        return command
+
+    def recover_in_session():
+        with SessionLocal() as session:
+            session.connection().exec_driver_sql(
+                "SET LOCAL statement_timeout = '12s'"
+            )
+            try:
+                return command_routes.reconcile_open_position(
+                    command_id,
+                    BrokerPositionReconcileRequest(
+                        broker_tickets=["SYNTHETIC-NO-BROKER-990367"],
+                        executed_symbol="XAUUSD",
+                        executed_direction="BUY",
+                        executed_price=2345.0,
+                        lot_size=0.1,
+                    ),
+                    x_sg_license_key=owner["license_key"],
+                    db=session,
+                    _ea="offline-test",
+                ).status
+            except HTTPException as exc:
+                return exc.status_code
+
+    def relabel_in_session():
+        with SessionLocal() as session:
+            session.connection().exec_driver_sql(
+                "SET LOCAL statement_timeout = '12s'"
+            )
+            command = session.get(models.Command, command_id)
+            assert command is not None
+            command.account_id = foreign_account_id
+            session.commit()
+            rewrite_committed.set()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(
+            command_routes, "_get_authorized_callback_command",
+            pause_after_authorization,
+        )
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            recovery_future = workers.submit(recover_in_session)
+            try:
+                assert authorized.wait(timeout=8), (
+                    "Recovery callback failed to reach authorization barrier"
+                )
+                relabel_future = workers.submit(relabel_in_session)
+                assert rewrite_committed.wait(timeout=8), (
+                    "Account reassignment did not commit before recovery resumed"
+                )
+            finally:
+                resume_callback.set()
+            callback_result = recovery_future.result(timeout=22)
+            relabel_future.result(timeout=22)
+
+    with SessionLocal() as session:
+        command = session.get(models.Command, command_id)
+        assert command is not None
+        assert command.user_id == owner["id"]
+        assert command.account_id == foreign_account_id
+        executions = session.query(models.Execution).filter(
+            models.Execution.command_id == command_id
+        ).all()
+        audits = (
+            session.query(models.AuditLog).filter(
+                models.AuditLog.event_type
+                == "EXECUTION_RECOVERED_FROM_BROKER_SNAPSHOT",
+                models.AuditLog.entity_id == executions[0].id,
+            ).count()
+            if len(executions) == 1 else 0
+        )
+
+    if callback_result == 403:
+        assert not executions, "Denied stale recovery must create no execution"
+        assert audits == 0
+        return
+
+    if (
+        callback_result == "recovered"
+        and len(executions) == 1
+        and executions[0].status == "SUCCESS"
+        and executions[0].user_id == owner["id"]
+        and command.status == "EXECUTED_OPEN"
+        and audits == 1
+    ):
+        pytest.xfail(
+            "RELEASE HOLD: A's fabricated broker-recovery execution and audit "
+            "committed AFTER B's Command.account_id reassignment committed"
+        )
+
+    pytest.fail(
+        "Unexpected post-reassignment recovery outcome: "
+        f"result={callback_result!r}, executions={len(executions)}, "
+        f"audits={audits}, command_status={command.status}"
+    )
