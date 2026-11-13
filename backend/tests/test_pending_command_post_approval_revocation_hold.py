@@ -2267,6 +2267,7 @@ def test_hosted_legacy_pending_callback_refused_before_any_ea_claim(
     ) == original_command_audits
 
 
+@pytest.mark.parametrize("account_status_after_delivery", ("ACTIVE", "INACTIVE"))
 @pytest.mark.parametrize(
     "endpoint,payload,expected_status,expected_executions",
     [
@@ -2292,14 +2293,16 @@ def test_hosted_legacy_pending_callback_refused_before_any_ea_claim(
     ],
 )
 def test_scoped_command_delivered_before_hosted_mode_keeps_ea_receipt_path(
-    client, db, monkeypatch, endpoint, payload, expected_status, expected_executions
+    client, db, monkeypatch, endpoint, payload, expected_status,
+    expected_executions, account_status_after_delivery
 ):
     """A previously delivered, tenant-scoped command retains broker-audit paths.
 
     This is a synthetic local-to-hosted mode-transition compatibility test.
     Unlike a historical tenantless command, the original Signal, approval,
     account and Command are provider/feed scoped. We preserve evidence from
-    a command that was already SENT_TO_EA; we do not connect to an EA/broker.
+    a command that was already SENT_TO_EA, even if its trading account is later
+    deactivated; we do not connect to an EA/broker.
     """
     from app.routes import commands as command_routes
 
@@ -2343,6 +2346,19 @@ def test_scoped_command_delivered_before_hosted_mode_keeps_ea_receipt_path(
         provider.id, feed.id
     )
     assert command.status == "SENT_TO_EA" and command.sent_to_ea_at is not None
+    original_account_id = command.account_id
+    db.rollback()
+
+    # A paused/inactive account must prevent *new* delivery, but cannot erase
+    # the genuine historical audit path for a command already sent to the EA.
+    # Offline mode transition and simulated account deactivation only.
+    account = db.get(models.TradingAccount, original_account_id)
+    assert account.user_id == subscriber["id"] and account.provider_id == provider.id
+    if account_status_after_delivery == "INACTIVE":
+        account.status = "INACTIVE"
+        db.commit()
+        db.rollback()
+    assert db.get(models.TradingAccount, original_account_id).status == account_status_after_delivery
     db.rollback()
 
     with monkeypatch.context() as patch:
