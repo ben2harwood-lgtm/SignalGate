@@ -11,6 +11,7 @@ from app import crud
 from app.database import SessionLocal
 
 from .conftest import ADMIN_HEADERS, EA_HEADERS, create_signal, register_user
+from .test_commands import _hosted_provider_signal_for
 
 VALID = "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363"
 
@@ -91,7 +92,7 @@ def test_pending_by_license_key(client):
 def test_require_license_mode_rejects_userid_only(client):
     """In hosted mode, user_id alone must not yield commands; a valid license must."""
     user = register_user(client, telegram_id="123")
-    sig = create_signal(client, VALID)
+    sig = _hosted_provider_signal_for(client, "123")
     _approve(client, sig["id"], "123")
 
     crud.settings.require_license = True
@@ -113,7 +114,7 @@ def test_require_license_mode_rejects_userid_only(client):
 
 def test_hosted_mode_does_not_accept_license_in_query_string(client):
     user = register_user(client, telegram_id="123")
-    sig = create_signal(client, VALID)
+    sig = _hosted_provider_signal_for(client, "123")
     _approve(client, sig["id"], "123")
 
     crud.settings.require_license = True
