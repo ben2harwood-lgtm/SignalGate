@@ -2513,3 +2513,156 @@ def test_hosted_delivered_command_relabel_cannot_transfer_execution_receipt(
     ).one()
     assert execution.user_id == subscriber_a["id"]
     assert db.get(models.Command, command_id).status == "FAILED"
+
+
+class _HostedDeliveredCommandAccountDrift(AssertionError):
+    """A legitimate licence attested execution while its command pointed at another account."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_HostedDeliveredCommandAccountDrift,
+    reason=(
+        "Synthetic account-only post-delivery relabel still admits a hosted "
+        "execution receipt; distinct from the repaired subscriber-owner mismatch"
+    ),
+)
+def test_hosted_delivered_command_account_only_relabel_cannot_forge_execution(
+    client, db, monkeypatch
+):
+    """Historical owner approval must not authorize a foreign trading account.
+
+    Subscriber A alone approves and receives a provider-scoped demo command.
+    After delivery, a deliberate database-integrity fault changes ONLY the
+    Command.account_id to B's legitimate account on the same feed, leaving its
+    user, Signal, original YES and licence unchanged. A's licence must not
+    attest an execution attributed to the foreign account. This is synthetic
+    corruption, not an established external mutation primitive or broker fill.
+    """
+    from app.routes import commands as command_routes
+
+    provider, feed, key = _provider(db, "hosted-delivered-account-only-drift")
+    db.commit()
+    subscriber_a = register_user(
+        client, "990349", "synthetic_account_only_owner_a", "Synthetic A"
+    )
+    subscriber_b = register_user(
+        client, "990350", "synthetic_account_only_owner_b", "Synthetic B"
+    )
+    _, account_a = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber_a["id"])
+    )
+    _, account_b = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber_b["id"])
+    )
+    assert account_a.id != account_b.id
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": subscriber_a["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    db.rollback()
+
+    claimed = client.get(
+        "/commands/pending",
+        headers=EA_HEADERS,
+        params={"user_id": subscriber_a["id"]},
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["command"]["command_id"] == command_id
+    db.expire_all()
+    original = db.get(models.Command, command_id)
+    yes = db.get(models.Approval, original.approval_id)
+    assert original.status == "SENT_TO_EA" and original.sent_to_ea_at is not None
+    assert original.user_id == yes.user_id == subscriber_a["id"]
+    assert yes.signal_id == original.signal_id
+    assert yes.decision == "YES"
+    assert original.account_id == account_a.id
+    db.rollback()
+
+    changed = db.get(models.Command, command_id)
+    changed.account_id = account_b.id  # ONLY the account link is corrupted.
+    db.commit()
+    db.rollback()
+
+    payload = {"status": "FAILED", "error_code": "SYNTHETIC_ACCOUNT_REJECT"}
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_k: None)
+        reported = client.post(
+            f"/commands/{command_id}/execution",
+            headers={
+                **EA_HEADERS,
+                "X-SG-License-Key": subscriber_a["license_key"],
+            },
+            json=payload,
+        )
+
+    db.expire_all()
+    persisted = db.get(models.Command, command_id)
+    execution = db.query(models.Execution).filter(
+        models.Execution.command_id == command_id
+    ).one_or_none()
+    if reported.status_code == 200:
+        # Only flag the known defect after proving that a foreign-account
+        # command really acquired a durable execution and terminal state.
+        assert persisted.account_id == account_b.id
+        assert persisted.user_id == subscriber_a["id"]
+        assert persisted.status == "FAILED"
+        assert execution is not None
+        assert execution.user_id == subscriber_a["id"]
+        assert (
+            db.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "EXECUTION_RECORDED",
+                models.AuditLog.entity_id == execution.id,
+            )
+            .count()
+        ) == 1
+        raise _HostedDeliveredCommandAccountDrift(
+            "Hosted A licence recorded execution against relabelled B account"
+        )
+
+    assert reported.status_code == 403, reported.text
+    assert persisted.status == "SENT_TO_EA"
+    assert persisted.account_id == account_b.id
+    assert execution is None
+    db.rollback()
+
+    # Once the deliberate corruption is repaired, the original A receipt
+    # remains possible; denying B's account must not erase broker truth.
+    restored = db.get(models.Command, command_id)
+    restored.account_id = account_a.id
+    db.commit()
+    db.rollback()
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_k: None)
+        rightful = client.post(
+            f"/commands/{command_id}/execution",
+            headers={
+                **EA_HEADERS,
+                "X-SG-License-Key": subscriber_a["license_key"],
+            },
+            json=payload,
+        )
+    assert rightful.status_code == 200, rightful.text
+    db.expire_all()
+    assert db.get(models.Command, command_id).status == "FAILED"
+    assert (
+        db.query(models.Execution)
+        .filter(models.Execution.command_id == command_id)
+        .count()
+    ) == 1
