@@ -1390,3 +1390,203 @@ def test_postgresql_command_account_relabel_execution_after_auth(
         "Unexpected post-reassignment callback outcome: "
         f"result={callback_result!r}, executions={len(executions)}, audits={audits}"
     )
+def test_postgresql_command_account_relabel_management_observation_after_auth(
+    client, db, monkeypatch
+):
+    """Synthetic two-session HOLD witness for a TP price observation.
+
+    A legitimately delivered demo command and a fabricated prior SUCCESS
+    execution belong to subscriber A. The callback resolves A's original
+    provenance, then B's account-only Command relabel commits before the
+    callback resumes. An authorisation-safe receipt must be refused with no
+    new management row or audit. This never contacts an EA or broker.
+
+    Only a proven foreign-account event AND its persisted audit are XFAIL.
+    Bad setup, timeouts and unexpected outcomes are ordinary failures.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires two independent PostgreSQL transactions")
+
+    from app.schemas import ManagementEventRequest
+    from .test_provider_export import _provider, _headers
+
+    provider, feed, provider_key = _provider(
+        db, "callback-management-account-relabel-race"
+    )
+    db.commit()
+    owner = register_user(
+        client, "990365", "synthetic_mgmt_relabel_a", "Synthetic A"
+    )
+    foreign = register_user(
+        client, "990366", "synthetic_mgmt_relabel_b", "Synthetic B"
+    )
+    _, account_a = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, owner["id"])
+    )
+    _, account_b = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, foreign["id"])
+    )
+    account_a_id, account_b_id = account_a.id, account_b.id
+    assert account_a_id != account_b_id
+    db.commit()
+
+    signal = client.post(
+        "/signals/create",
+        headers=_headers(provider, provider_key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert signal.status_code == 200, signal.text
+    approved = client.post(
+        f"/signals/{signal.json()['id']}/approve",
+        json={"telegram_user_id": owner["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    db.rollback()
+    claimed = client.get(
+        "/commands/pending", headers=EA_HEADERS,
+        params={"user_id": owner["id"]},
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["command"]["command_id"] == command_id
+    db.expire_all()
+    assert db.get(models.Command, command_id).account_id == account_a_id
+    db.rollback()
+
+    # Fabricated EA-shaped result, not a broker fill or external receipt.
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            command_routes, "notify_user_and_admins", lambda *_a, **_kw: None
+        )
+        seeded = client.post(
+            f"/commands/{command_id}/execution",
+            headers=EA_HEADERS,
+            json={
+                "status": "SUCCESS",
+                "broker_ticket": "SYNTHETIC-MGMT-RACE-NO-BROKER",
+                "executed_symbol": "XAUUSD",
+                "executed_direction": "BUY",
+                "executed_price": 2345.0,
+                "lot_size": 0.1,
+            },
+        )
+    assert seeded.status_code == 200, seeded.text
+    assert seeded.json()["status"] == "ok"
+    db.expire_all()
+    assert db.get(models.Command, command_id).status == "EXECUTED_OPEN"
+    db.rollback()
+
+    authorized = Event()
+    resume_callback = Event()
+    rewrite_committed = Event()
+    original_resolver = command_routes._get_authorized_callback_command
+
+    def pause_after_authorization(session, cid, license_key):
+        command = original_resolver(session, cid, license_key)
+        authorized.set()
+        assert resume_callback.wait(timeout=15), (
+            "Management callback never resumed after account rewrite"
+        )
+        return command
+
+    def observation_in_session():
+        with SessionLocal() as session:
+            session.connection().exec_driver_sql(
+                "SET LOCAL statement_timeout = '12s'"
+            )
+            try:
+                return command_routes.report_management_event(
+                    command_id,
+                    ManagementEventRequest(
+                        event_type="TP1_REACHED",
+                        stage="TP1_REACHED",
+                        result="PENDING",
+                    ),
+                    x_sg_license_key=owner["license_key"],
+                    db=session,
+                    _ea="offline-test",
+                ).status
+            except HTTPException as exc:
+                return exc.status_code
+
+    def rewrite_account_in_session():
+        with SessionLocal() as session:
+            session.connection().exec_driver_sql(
+                "SET LOCAL statement_timeout = '12s'"
+            )
+            changed = session.get(models.Command, command_id)
+            assert changed is not None
+            changed.account_id = account_b_id
+            session.commit()
+            rewrite_committed.set()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(
+            command_routes, "_get_authorized_callback_command",
+            pause_after_authorization,
+        )
+        patch.setattr(
+            command_routes, "notify_user_and_admins", lambda *_a, **_kw: None
+        )
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            callback_future = workers.submit(observation_in_session)
+            try:
+                assert authorized.wait(timeout=8), (
+                    "Management callback did not reach authorization barrier"
+                )
+                rewrite_future = workers.submit(rewrite_account_in_session)
+                assert rewrite_committed.wait(timeout=8), (
+                    "Account reassignment did not commit before callback resumed"
+                )
+            finally:
+                resume_callback.set()
+            callback_result = callback_future.result(timeout=22)
+            rewrite_future.result(timeout=22)
+
+    with SessionLocal() as session:
+        changed = session.get(models.Command, command_id)
+        assert changed is not None
+        assert changed.user_id == owner["id"]
+        assert changed.account_id == account_b_id
+        executions = session.query(models.Execution).filter(
+            models.Execution.command_id == command_id
+        ).all()
+        assert len(executions) == 1 and executions[0].status == "SUCCESS"
+        events = session.query(models.TradeManagementEvent).filter(
+            models.TradeManagementEvent.command_id == command_id
+        ).all()
+        audits = (
+            session.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "MANAGEMENT_EVENT",
+                models.AuditLog.entity_id == events[0].id,
+            )
+            .count()
+            if len(events) == 1 else 0
+        )
+
+    if callback_result == 403:
+        assert not events, "Denied stale callback must write no management row"
+        assert audits == 0
+        return
+
+    if (
+        callback_result == "ok"
+        and len(events) == 1
+        and events[0].event_type == "TP1_REACHED"
+        and events[0].result == "PENDING"
+        and audits == 1
+    ):
+        pytest.xfail(
+            "RELEASE HOLD: A's management observation and audit committed "
+            "AFTER B's Command.account_id reassignment committed"
+        )
+
+    pytest.fail(
+        "Unexpected post-reassignment management outcome: "
+        f"result={callback_result!r}, events={len(events)}, audits={audits}"
+    )
+
