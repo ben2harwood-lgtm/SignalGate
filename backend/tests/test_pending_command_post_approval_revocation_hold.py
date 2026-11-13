@@ -2691,3 +2691,157 @@ def test_hosted_delivered_command_account_only_relabel_cannot_forge_execution(
         .filter(models.Execution.command_id == command_id)
         .count()
     ) == 1
+
+
+def test_hosted_delivered_account_relabel_refuses_foreign_management_receipt(
+    client, db, monkeypatch
+):
+    """Post-delivery account drift must not launder a management receipt.
+
+    An original subscriber A approves, receives, and synthetically reports a
+    successful demo execution. Only then does a fabricated integrity fault
+    relink Command.account_id to B's real synthetic account. Neither licence
+    may acknowledge TP1 on B's account; restoring A's link retains the real
+    historical audit path. No EA, broker or external data is used.
+    """
+    from app.routes import commands as command_routes
+
+    provider, feed, key = _provider(db, "hosted-management-account-only-drift")
+    db.commit()
+    subscriber_a = register_user(
+        client, "990351", "synthetic_management_account_a", "Synthetic A"
+    )
+    subscriber_b = register_user(
+        client, "990352", "synthetic_management_account_b", "Synthetic B"
+    )
+    _, account_a = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber_a["id"])
+    )
+    _, account_b = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber_b["id"])
+    )
+    assert account_a.id != account_b.id
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": subscriber_a["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    db.rollback()
+
+    claimed = client.get(
+        "/commands/pending", headers=EA_HEADERS,
+        params={"user_id": subscriber_a["id"]},
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["command"]["command_id"] == command_id
+    db.expire_all()
+    command = db.get(models.Command, command_id)
+    yes = db.get(models.Approval, command.approval_id)
+    assert command.status == "SENT_TO_EA" and command.sent_to_ea_at is not None
+    assert command.user_id == yes.user_id == subscriber_a["id"]
+    assert command.account_id == account_a.id
+    assert yes.signal_id == command.signal_id and yes.decision == "YES"
+    db.rollback()
+
+    # Fabricated EA-shaped SUCCESS, never a broker fill or MT5 receipt.
+    with monkeypatch.context() as patch:
+        patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_k: None)
+        opened = client.post(
+            f"/commands/{command_id}/execution",
+            headers=EA_HEADERS,
+            json={
+                "status": "SUCCESS",
+                "broker_ticket": "SYNTHETIC-MGMT-ACCOUNT-990351",
+                "executed_symbol": "EURUSD",
+                "executed_direction": "BUY",
+                "executed_price": 1.085,
+                "lot_size": 0.1,
+            },
+        )
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["status"] == "ok"
+    db.expire_all()
+    assert db.get(models.Command, command_id).status == "EXECUTED_OPEN"
+    execution = db.query(models.Execution).filter(
+        models.Execution.command_id == command_id
+    ).one()
+    assert execution.user_id == subscriber_a["id"]
+    db.rollback()
+
+    altered = db.get(models.Command, command_id)
+    altered.account_id = account_b.id  # Corrupt ONLY the account link.
+    db.commit()
+    db.rollback()
+
+    payload = {
+        "event_type": "TP1_REACHED", "stage": "TP1_REACHED", "result": "PENDING"
+    }
+    # A's licence is valid but cannot attest B's account. B's valid licence
+    # cannot inherit A's original YES either.
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_k: None)
+        for subscriber in (subscriber_a, subscriber_b):
+            refused = client.post(
+                f"/commands/{command_id}/management_event",
+                headers={**EA_HEADERS, "X-SG-License-Key": subscriber["license_key"]},
+                json=payload,
+            )
+            assert refused.status_code == 403, refused.text
+    db.expire_all()
+    unchanged = db.get(models.Command, command_id)
+    assert unchanged.status == "EXECUTED_OPEN"
+    assert unchanged.account_id == account_b.id
+    assert db.query(models.TradeManagementEvent).filter(
+        models.TradeManagementEvent.command_id == command_id
+    ).count() == 0
+    assert db.query(models.Execution).filter(
+        models.Execution.command_id == command_id
+    ).count() == 1
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.event_type == "MANAGEMENT_EVENT",
+        models.AuditLog.entity_id == command_id,
+    ).count() == 0
+    db.rollback()
+
+    restored = db.get(models.Command, command_id)
+    restored.account_id = account_a.id
+    db.commit()
+    db.rollback()
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_k: None)
+        rightful = client.post(
+            f"/commands/{command_id}/management_event",
+            headers={**EA_HEADERS, "X-SG-License-Key": subscriber_a["license_key"]},
+            json=payload,
+        )
+        repeat = client.post(
+            f"/commands/{command_id}/management_event",
+            headers={**EA_HEADERS, "X-SG-License-Key": subscriber_a["license_key"]},
+            json=payload,
+        )
+    assert rightful.status_code == 200, rightful.text
+    assert rightful.json()["status"] == "ok"
+    assert repeat.status_code == 200, repeat.text
+    assert repeat.json()["status"] == "duplicate_ignored"
+    db.expire_all()
+    assert db.get(models.Command, command_id).status == "EXECUTED_OPEN"
+    assert db.query(models.TradeManagementEvent).filter(
+        models.TradeManagementEvent.command_id == command_id
+    ).count() == 1
+    assert db.query(models.Execution).filter(
+        models.Execution.command_id == command_id
+    ).count() == 1
