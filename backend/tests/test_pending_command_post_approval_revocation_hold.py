@@ -2177,26 +2177,35 @@ def test_pending_claim_rechecks_original_yes_approval_fields(client, db, alterat
     assert db.query(models.Execution).count() == 0
 
 
-class _HostedPrematureLegacyManagementAccepted(AssertionError):
-    """Hosted mode accepted a management receipt for a never-delivered local command."""
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=_HostedPrematureLegacyManagementAccepted,
-    reason="RELEASE HOLD: hosted legacy PENDING management callback bypasses claim-time tenant guard",
+@pytest.mark.parametrize(
+    "endpoint,payload",
+    [
+        ("received", {}),
+        ("execution", {"status": "FAILED", "error_code": "SYNTHETIC"}),
+        (
+            "reconcile_open_position",
+            {
+                "broker_tickets": ["990343"],
+                "executed_symbol": "XAUUSD",
+                "executed_direction": "BUY",
+                "executed_price": 2350.0,
+                "lot_size": 0.1,
+            },
+        ),
+        (
+            "management_event",
+            {"event_type": "FULLY_CLOSED", "stage": "FULLY_CLOSED", "result": "SUCCESS"},
+        ),
+    ],
 )
-def test_hosted_legacy_pending_management_callback_cannot_close_undelivered_command(
-    client, db, monkeypatch
+def test_hosted_legacy_pending_callback_refused_before_any_ea_claim(
+    client, db, monkeypatch, endpoint, payload
 ):
-    """A valid hosted licence must not turn an unclaimed legacy YES into a close.
+    """A valid hosted licence cannot forge an undelivered local-demo receipt.
 
-    Create a genuine tenantless local-demo PENDING command, switch only the
-    synthetic request's licence gate, then report FULLY_CLOSED without ever
-    claiming the command. This exercises callback provenance, not a broker,
-    a real provider, or the already-fixed pending-poll delivery predicate.
-    An actual 200 is a strict expected failure until callback policy is fixed;
-    unexpected errors or missing mutation are regular test FAILURES.
+    Four EA callback routes use the same hosted authorization boundary.
+    The original command was approved locally but has never been SENT_TO_EA.
+    Nothing here connects to an EA or broker or claims external acceptance.
     """
     from .conftest import create_signal
     from app.routes import commands as command_routes
@@ -2220,34 +2229,39 @@ def test_hosted_legacy_pending_management_callback_cannot_close_undelivered_comm
     assert (original_signal.provider_id, original_signal.feed_id) == (None, None)
     assert command.status == "PENDING" and command.sent_to_ea_at is None
     db.rollback()
+    original_command_audits = (
+        db.query(models.AuditLog)
+        .filter(models.AuditLog.entity_id == command_id)
+        .count()
+    )
+    db.rollback()
 
     with monkeypatch.context() as patch:
         patch.setattr(crud.settings, "require_license", True)
         patch.setattr(command_routes.settings, "require_license", True)
-        # No Telegram delivery (and no actual EA/broker operation) in this test.
         patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_k: None)
         reported = client.post(
-            f"/commands/{command_id}/management_event",
-            json={"event_type": "FULLY_CLOSED", "stage": "FULLY_CLOSED", "result": "SUCCESS"},
+            f"/commands/{command_id}/{endpoint}",
+            json=payload,
             headers={**EA_HEADERS, "X-SG-License-Key": subscriber["license_key"]},
         )
+    assert reported.status_code == 403, (endpoint, reported.text)
     db.expire_all()
     persisted = db.get(models.Command, command_id)
-    receipts = (
+    assert persisted.status == "PENDING"
+    assert persisted.sent_to_ea_at is None and persisted.processed_at is None
+    assert (
         db.query(models.TradeManagementEvent)
         .filter(models.TradeManagementEvent.command_id == command_id)
         .count()
-    )
-    assert db.query(models.Execution).count() == 0
-
-    if reported.status_code == 200:
-        # Pin the concrete integrity impact before recording this safety XFAIL.
-        assert persisted.status == "FULLY_CLOSED"
-        assert persisted.sent_to_ea_at is None
-        assert receipts == 1
-        raise _HostedPrematureLegacyManagementAccepted(
-            "A valid hosted licence closed a never-claimed tenantless command"
-        )
-    assert reported.status_code in (403, 409), reported.text
-    assert persisted.status == "PENDING"
-    assert persisted.sent_to_ea_at is None and receipts == 0
+    ) == 0
+    assert (
+        db.query(models.Execution)
+        .filter(models.Execution.command_id == command_id)
+        .count()
+    ) == 0
+    assert (
+        db.query(models.AuditLog)
+        .filter(models.AuditLog.entity_id == command_id)
+        .count()
+    ) == original_command_audits

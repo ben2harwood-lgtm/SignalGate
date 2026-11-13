@@ -105,6 +105,15 @@ def _get_authorized_callback_command(
         raise HTTPException(
             status_code=403, detail="Command does not belong to this EA licence"
         )
+    # A hosted EA licence cannot turn an undelivered command into a broker
+    # receipt. In particular, local-demo PENDING rows can survive a synthetic
+    # migration to hosted mode without ever passing the hosted claim guard.
+    # This excludes only unclaimed PENDING commands: already-delivered and
+    # terminal callbacks remain available for idempotency and broker truth.
+    if command.status == "PENDING" and command.sent_to_ea_at is None:
+        raise HTTPException(
+            status_code=403, detail="Command does not belong to this EA licence"
+        )
     return command
 
 
