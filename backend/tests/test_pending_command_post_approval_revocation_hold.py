@@ -2515,18 +2515,6 @@ def test_hosted_delivered_command_relabel_cannot_transfer_execution_receipt(
     assert db.get(models.Command, command_id).status == "FAILED"
 
 
-class _HostedDeliveredCommandAccountDrift(AssertionError):
-    """A legitimate licence attested execution while its command pointed at another account."""
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=_HostedDeliveredCommandAccountDrift,
-    reason=(
-        "Synthetic account-only post-delivery relabel still admits a hosted "
-        "execution receipt; distinct from the repaired subscriber-owner mismatch"
-    ),
-)
 def test_hosted_delivered_command_account_only_relabel_cannot_forge_execution(
     client, db, monkeypatch
 ):
@@ -2614,26 +2602,6 @@ def test_hosted_delivered_command_account_only_relabel_cannot_forge_execution(
     execution = db.query(models.Execution).filter(
         models.Execution.command_id == command_id
     ).one_or_none()
-    if reported.status_code == 200:
-        # Only flag the known defect after proving that a foreign-account
-        # command really acquired a durable execution and terminal state.
-        assert persisted.account_id == account_b.id
-        assert persisted.user_id == subscriber_a["id"]
-        assert persisted.status == "FAILED"
-        assert execution is not None
-        assert execution.user_id == subscriber_a["id"]
-        assert (
-            db.query(models.AuditLog)
-            .filter(
-                models.AuditLog.event_type == "EXECUTION_RECORDED",
-                models.AuditLog.entity_id == execution.id,
-            )
-            .count()
-        ) == 1
-        raise _HostedDeliveredCommandAccountDrift(
-            "Hosted A licence recorded execution against relabelled B account"
-        )
-
     assert reported.status_code == 403, reported.text
     assert persisted.status == "SENT_TO_EA"
     assert persisted.account_id == account_b.id

@@ -143,6 +143,24 @@ def _get_authorized_callback_command(
             status_code=403, detail="Command does not belong to this EA licence"
         )
 
+    # Account ownership is another independent tenant link. A delivered
+    # command's mutable account_id must still identify this subscriber's
+    # account under the ORIGINAL provider; a valid licence and YES alone do
+    # not authorize a receipt attributed to somebody else's account.
+    # Preserve late broker truth after an account is paused/deactivated:
+    # historical callback authorization does not require ACTIVE status.
+    account_query = select(crud.models.TradingAccount.id).where(
+        crud.models.TradingAccount.id == command.account_id,
+        crud.models.TradingAccount.user_id == user.id,
+        crud.models.TradingAccount.provider_id == command.provider_id,
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        account_query = account_query.with_for_update(read=True)
+    if db.scalar(account_query) is None:
+        raise HTTPException(
+            status_code=403, detail="Command does not belong to this EA licence"
+        )
+
     # A hosted EA licence cannot turn an undelivered command into a broker
     # receipt. In particular, local-demo PENDING rows can survive a synthetic
     # migration to hosted mode without ever passing the hosted claim guard.
