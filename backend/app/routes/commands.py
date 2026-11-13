@@ -98,14 +98,15 @@ def _get_authorized_callback_command(
             status_code=403, detail="Command does not belong to this EA licence"
         )
 
-    # Keep callback ownership stable across this transaction (including a
-    # concurrent command relabel) before reading its independent provenance.
-    # Match the claim path's Command -> Signal -> Approval row-lock order.
+    # Serialize callbacks and concurrent owner rewrites on the command row.
+    # Take an exclusive lock rather than FOR SHARE: two callbacks upgrading
+    # shared locks to UPDATE during their audit could deadlock. Match the
+    # claim path's Command -> Signal -> Approval row-lock order.
     command_query = select(Command).where(
         Command.id == command_id, Command.user_id == user.id
     )
     if db.get_bind().dialect.name == "postgresql":
-        command_query = command_query.with_for_update(read=True)
+        command_query = command_query.with_for_update()
     command = db.scalar(command_query.execution_options(populate_existing=True))
     if command is None:
         raise HTTPException(
