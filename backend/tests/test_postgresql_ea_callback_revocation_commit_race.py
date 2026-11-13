@@ -1221,3 +1221,172 @@ def test_postgresql_command_account_relabel_serializes_with_callback_receipt(
         assert receipt_count == 1, (
             "Only the authorised callback-first receipt must be committed"
         )
+
+
+def test_postgresql_command_account_relabel_execution_after_auth(
+    client, db, monkeypatch
+):
+    """Fail closed if the command account changes after EA callback authorization.
+
+    A has a delivered synthetic command. A's valid EA callback resolves and
+    retains its customer, signal, approval and original account share locks.
+    B changes ONLY Command.account_id in another PostgreSQL session and commits
+    while A is paused. A must not subsequently record a FAILED execution for
+    a now-foreign-account command. FAILED is a fabricated no-order report;
+    no broker, EA, external HTTP request or customer information is involved.
+
+    Until the invariant is fixed, a strict XFAIL is emitted ONLY after both
+    transactions commit and the unauthorized execution/audit are confirmed.
+    Timeout, fixture, constraint and missing-evidence failures remain FAIL.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires two independent PostgreSQL transactions")
+
+    from app.schemas import ExecutionRequest
+    from .test_provider_export import _provider, _headers
+
+    provider, feed, provider_key = _provider(
+        db, "callback-execution-account-relabel-race"
+    )
+    db.commit()
+    owner = register_user(
+        client, "990360", "synthetic_exec_relabel_a", "Synthetic A"
+    )
+    foreign = register_user(
+        client, "990361", "synthetic_exec_relabel_b", "Synthetic B"
+    )
+    _, account_a = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, owner["id"])
+    )
+    _, account_b = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, foreign["id"])
+    )
+    account_a_id, account_b_id = account_a.id, account_b.id
+    assert account_a_id != account_b_id
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, provider_key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    approval = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": owner["telegram_user_id"]},
+    )
+    assert approval.status_code == 200, approval.text
+    assert approval.json()["result"] == "APPROVED"
+    command_id = approval.json()["command_id"]
+    db.rollback()
+    claimed = client.get(
+        "/commands/pending",
+        headers=EA_HEADERS,
+        params={"user_id": owner["id"]},
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["command"]["command_id"] == command_id
+    db.expire_all()
+    assert db.get(models.Command, command_id).account_id == account_a_id
+    db.rollback()
+
+    authorized = Event()
+    resume_callback = Event()
+    rewrite_committed = Event()
+    original_resolver = command_routes._get_authorized_callback_command
+
+    def pause_after_authorization(session, cid, license_key):
+        command = original_resolver(session, cid, license_key)
+        authorized.set()
+        assert resume_callback.wait(timeout=15), (
+            "Execution callback never resumed after independent rewrite"
+        )
+        return command
+
+    def execution_in_session():
+        with SessionLocal() as session:
+            session.connection().exec_driver_sql(
+                "SET LOCAL statement_timeout = '12s'"
+            )
+            try:
+                return command_routes.report_execution(
+                    command_id,
+                    ExecutionRequest(
+                        status="FAILED", error_code="SYNTHETIC_NO_ORDER"
+                    ),
+                    x_sg_license_key=owner["license_key"],
+                    db=session,
+                    _ea="offline-test",
+                ).status
+            except HTTPException as exc:
+                return exc.status_code
+
+    def rewrite_account_in_session():
+        with SessionLocal() as session:
+            session.connection().exec_driver_sql(
+                "SET LOCAL statement_timeout = '12s'"
+            )
+            changed = session.get(models.Command, command_id)
+            assert changed is not None
+            changed.account_id = account_b_id
+            session.commit()
+            rewrite_committed.set()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(
+            command_routes, "_get_authorized_callback_command",
+            pause_after_authorization,
+        )
+        patch.setattr(
+            command_routes, "notify_user_and_admins", lambda *_a, **_kw: None
+        )
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            execution_future = workers.submit(execution_in_session)
+            try:
+                assert authorized.wait(timeout=8), (
+                    "Execution callback failed to reach authorization barrier"
+                )
+                rewrite_future = workers.submit(rewrite_account_in_session)
+                assert rewrite_committed.wait(timeout=8), (
+                    "Account reassignment did not commit before callback resumed"
+                )
+            finally:
+                resume_callback.set()
+            callback_result = execution_future.result(timeout=22)
+            rewrite_future.result(timeout=22)
+
+    with SessionLocal() as session:
+        changed = session.get(models.Command, command_id)
+        assert changed is not None and changed.account_id == account_b_id
+        assert changed.user_id == owner["id"]
+        executions = session.query(models.Execution).filter(
+            models.Execution.command_id == command_id
+        ).all()
+        audits = session.query(models.AuditLog).filter(
+            models.AuditLog.event_type == "EXECUTION_RECORDED",
+            models.AuditLog.entity_id == executions[0].id,
+        ).count() if len(executions) == 1 else 0
+
+    if callback_result == 403:
+        assert not executions, "A denied stale callback must leave no execution"
+        assert audits == 0
+        return
+
+    if (
+        callback_result == "ok"
+        and len(executions) == 1
+        and executions[0].user_id == owner["id"]
+        and executions[0].status == "FAILED"
+        and audits == 1
+    ):
+        pytest.xfail(
+            "RELEASE HOLD: subscriber A's FAILED execution and audit committed "
+            "AFTER subscriber B's Command.account_id reassignment committed"
+        )
+
+    pytest.fail(
+        "Unexpected post-reassignment callback outcome: "
+        f"result={callback_result!r}, executions={len(executions)}, audits={audits}"
+    )
