@@ -2373,3 +2373,164 @@ def test_scoped_command_delivered_before_hosted_mode_keeps_ea_receipt_path(
         .filter(models.Execution.command_id == command_id)
         .count()
     ) == expected_executions
+
+
+class _HostedDeliveredCommandOwnershipDrift(AssertionError):
+    """A different subscriber's valid licence acquired another's delivered command."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_HostedDeliveredCommandOwnershipDrift,
+    reason=(
+        "HOLD: hosted post-delivery callbacks check mutable Command.user_id, "
+        "not the original YES approval's subscriber; independent safety review required"
+    ),
+)
+def test_hosted_delivered_command_relabel_cannot_transfer_execution_receipt(
+    client, db, monkeypatch
+):
+    """Original subscriber approval must survive a post-delivery owner rewrite.
+
+    Two legitimate licensed synthetic subscribers share a provider/feed.
+    Subscriber A alone approves and claims a demo command. An intentional
+    post-claim database-integrity fault rewrites the Command's user/account
+    to B while leaving the original Signal and YES approval untouched.
+    This is NOT proof of an external mutation path, broker fill or acceptance.
+    A valid B licence is not a substitute for A's historical authorisation.
+    """
+    from app.routes import commands as command_routes
+
+    provider, feed, key = _provider(db, "hosted-post-delivery-owner-drift")
+    db.commit()
+    subscriber_a = register_user(
+        client, "990347", "synthetic_delivered_owner_a", "Synthetic A"
+    )
+    subscriber_b = register_user(
+        client, "990348", "synthetic_delivered_owner_b", "Synthetic B"
+    )
+    _, account_a = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber_a["id"])
+    )
+    _, account_b = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber_b["id"])
+    )
+    assert account_a.id != account_b.id
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": subscriber_a["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    db.rollback()
+
+    claimed = client.get(
+        "/commands/pending",
+        headers=EA_HEADERS,
+        params={"user_id": subscriber_a["id"]},
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["command"]["command_id"] == command_id
+    db.expire_all()
+    command = db.get(models.Command, command_id)
+    approval = db.get(models.Approval, command.approval_id)
+    assert command.status == "SENT_TO_EA" and command.sent_to_ea_at is not None
+    assert command.user_id == approval.user_id == subscriber_a["id"]
+    assert (command.provider_id, command.feed_id, command.account_id) == (
+        provider.id, feed.id, account_a.id
+    )
+    original_approval_id = approval.id
+    db.rollback()
+
+    # Simulate corrupt mutable ownership after legitimate delivery. The
+    # independent YES approval still binds only subscriber A.
+    changed = db.get(models.Command, command_id)
+    changed.user_id = subscriber_b["id"]
+    changed.account_id = account_b.id
+    db.commit()
+    db.rollback()
+
+    payload = {"status": "FAILED", "error_code": "SYNTHETIC_REJECT"}
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_k: None)
+        reported = client.post(
+            f"/commands/{command_id}/execution",
+            headers={
+                **EA_HEADERS,
+                "X-SG-License-Key": subscriber_b["license_key"],
+            },
+            json=payload,
+        )
+
+    db.expire_all()
+    command = db.get(models.Command, command_id)
+    approval = db.get(models.Approval, original_approval_id)
+    execution = (
+        db.query(models.Execution)
+        .filter(models.Execution.command_id == command_id)
+        .one_or_none()
+    )
+    assert (approval.user_id, approval.signal_id, approval.decision) == (
+        subscriber_a["id"], command.signal_id, "YES"
+    )
+    assert (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+            models.AuditLog.entity_id == command_id,
+        )
+        .count()
+    ) == 1
+
+    if reported.status_code == 200:
+        # Precisely reproduce the unsafe state mutation before XFAIL. Never
+        # turn a malformed synthetic fixture into a passing security witness.
+        assert reported.json()["status"] == "ok"
+        assert command.status == "FAILED"
+        assert execution is not None and execution.user_id == subscriber_b["id"]
+        raise _HostedDeliveredCommandOwnershipDrift(
+            "A valid B licence wrote an execution for A's originally approved command"
+        )
+    assert reported.status_code == 403, reported.text
+    assert command.status == "SENT_TO_EA"
+    assert execution is None
+
+    # Positive control after a future fix: restoring historical owner fields
+    # must still permit A's broker-audit receipt exactly once.
+    db.rollback()
+    restored = db.get(models.Command, command_id)
+    restored.user_id = subscriber_a["id"]
+    restored.account_id = account_a.id
+    db.commit()
+    db.rollback()
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_k: None)
+        original = client.post(
+            f"/commands/{command_id}/execution",
+            headers={
+                **EA_HEADERS,
+                "X-SG-License-Key": subscriber_a["license_key"],
+            },
+            json=payload,
+        )
+    assert original.status_code == 200, original.text
+    assert original.json()["status"] == "ok"
+    db.expire_all()
+    execution = db.query(models.Execution).filter(
+        models.Execution.command_id == command_id
+    ).one()
+    assert execution.user_id == subscriber_a["id"]
+    assert db.get(models.Command, command_id).status == "FAILED"
