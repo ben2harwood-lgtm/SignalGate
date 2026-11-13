@@ -1761,3 +1761,215 @@ def test_postgresql_command_account_relabel_recovery_after_auth(
         f"result={callback_result!r}, executions={len(executions)}, "
         f"audits={audits}, command_status={command.status}"
     )
+
+@pytest.mark.parametrize("revocation_kind", ("rotation", "deactivation"))
+def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
+    client, db, monkeypatch, revocation_kind
+):
+    """HOLD witness: a raced recovery must not audit after losing licence locks.
+
+    Session A authorizes a previously delivered synthetic command, then pauses
+    just before inserting a recovered Execution. Session B commits a fabricated
+    SUCCESS report for that command. A resumes, loses the *real* PostgreSQL
+    unique(command_id) race and enters reconcile_open_position's recursive
+    retry after the full IntegrityError rollback. A third transaction then
+    revokes A's licence while that retry is paused. A must not record a
+    BROKER_RECONCILIATION_MATCHED audit after the revocation has committed.
+
+    This never contacts MT5, a broker or a provider and cannot prove external
+    acceptance. XFAIL requires a demonstrated unique race, committed
+    revocation and persisted unauthorized audit; setup errors are not XFAIL.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL sessions and unique constraint")
+
+    from threading import local
+    from app.schemas import BrokerPositionReconcileRequest, ExecutionRequest
+
+    owner = register_user(client, "990369")
+    signal = _hosted_provider_signal_for(client, "990369")
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990369"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+
+    prior_crud_mode = crud.settings.require_license
+    prior_route_mode = command_routes.settings.require_license
+    role = local()
+    before_insert = Event()
+    release_insert = Event()
+    retry_after_rollback = Event()
+    release_retry = Event()
+    revocation_committed = Event()
+    original_next_id = crud._next_id
+    original_reconcile = crud.reconcile_open_position
+
+    def pause_before_first_recovery_insert(session, model):
+        if model is models.Execution and getattr(role, "name", None) == "recovery":
+            before_insert.set()
+            assert release_insert.wait(timeout=15), (
+                "Recovery insert barrier was not released"
+            )
+        return original_next_id(session, model)
+
+    def observe_actual_rollback_retry(session, command, payload):
+        # The initial invocation cannot reach here after before_insert;
+        # only the recursive call after an IntegrityError rollback can do so.
+        if (
+            getattr(role, "name", None) == "recovery"
+            and before_insert.is_set()
+            and not retry_after_rollback.is_set()
+        ):
+            retry_after_rollback.set()
+            assert release_retry.wait(timeout=15), (
+                "Post-rollback reconciliation retry barrier was not released"
+            )
+        return original_reconcile(session, command, payload)
+
+    try:
+        crud.settings.require_license = True
+        command_routes.settings.require_license = True
+        headers = {**EA_HEADERS, "X-SG-License-Key": owner["license_key"]}
+        claimed = client.get("/commands/pending", headers=headers)
+        assert claimed.status_code == 200, claimed.text
+        issued = claimed.json()["command"]
+        assert issued is not None
+        command_id = issued["command_id"]
+        ticket = "SYNTHETIC-RECONCILE-RACE-NO-BROKER"
+        snapshot = BrokerPositionReconcileRequest(
+            broker_tickets=[ticket],
+            executed_symbol="XAUUSD",
+            executed_direction="BUY",
+            executed_price=2345.0,
+            lot_size=0.1,
+        )
+        report = ExecutionRequest(
+            status="SUCCESS",
+            broker_ticket=ticket,
+            executed_symbol="XAUUSD",
+            executed_direction="BUY",
+            executed_price=2345.0,
+            lot_size=0.1,
+        )
+        monkeypatch.setattr(crud, "_next_id", pause_before_first_recovery_insert)
+        monkeypatch.setattr(crud, "reconcile_open_position", observe_actual_rollback_retry)
+        monkeypatch.setattr(
+            command_routes, "notify_user_and_admins", lambda *_a, **_kw: None
+        )
+
+        def recover_in_session():
+            role.name = "recovery"
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                try:
+                    return command_routes.reconcile_open_position(
+                        command_id,
+                        snapshot,
+                        x_sg_license_key=owner["license_key"],
+                        db=session,
+                        _ea="offline-test",
+                    ).status
+                except HTTPException as exc:
+                    return exc.status_code
+
+        def winning_execution_in_session():
+            role.name = "winner"
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                return command_routes.report_execution(
+                    command_id,
+                    report,
+                    x_sg_license_key=owner["license_key"],
+                    db=session,
+                    _ea="offline-test",
+                ).status
+
+        def revoke_in_session():
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                customer = crud.get_user_by_telegram(session, "990369")
+                assert customer is not None
+                if revocation_kind == "rotation":
+                    assert crud.issue_license(session, customer) != owner["license_key"]
+                else:
+                    crud.set_user_status(session, customer, "INACTIVE")
+                session.commit()
+                revocation_committed.set()
+
+        with ThreadPoolExecutor(max_workers=3) as workers:
+            recovering = workers.submit(recover_in_session)
+            try:
+                assert before_insert.wait(timeout=8), (
+                    "Recovery never reached its first Execution insert barrier"
+                )
+                winning = workers.submit(winning_execution_in_session)
+                assert winning.result(timeout=22) == "ok", (
+                    "Competing execution was not durably committed"
+                )
+                release_insert.set()
+                assert retry_after_rollback.wait(timeout=8), (
+                    "A real duplicate Execution insert did not reach the "
+                    "IntegrityError rollback/retry path"
+                )
+                revoked = workers.submit(revoke_in_session)
+                assert revocation_committed.wait(timeout=8), (
+                    "Licence revocation could not commit after rollback"
+                )
+            finally:
+                release_insert.set()
+                release_retry.set()
+            stale_result = recovering.result(timeout=22)
+            revoked.result(timeout=22)
+
+        with SessionLocal() as session:
+            user = crud.get_user_by_telegram(session, "990369")
+            assert user is not None
+            if revocation_kind == "rotation":
+                assert crud.get_user_by_license(session, owner["license_key"]) is None
+            else:
+                assert user.status == "INACTIVE"
+            command = crud.get_command(session, command_id)
+            assert command is not None and command.status == "EXECUTED_OPEN"
+            executions = session.query(models.Execution).filter(
+                models.Execution.command_id == command_id
+            ).all()
+            assert len(executions) == 1
+            assert executions[0].status == "SUCCESS"
+            assert executions[0].broker_ticket == ticket
+            stale_audits = session.query(models.AuditLog).filter(
+                models.AuditLog.event_type == "BROKER_RECONCILIATION_MATCHED",
+                models.AuditLog.entity_id == command_id,
+            ).count()
+            recovered_audits = session.query(models.AuditLog).filter(
+                models.AuditLog.event_type == "EXECUTION_RECOVERED_FROM_BROKER_SNAPSHOT",
+            ).count()
+            assert recovered_audits == 0, (
+                "Losing recovery must not produce a second execution receipt"
+            )
+
+        assert revocation_committed.is_set() and retry_after_rollback.is_set()
+        if stale_result == 403:
+            assert stale_audits == 0, "Denied stale callback must leave no audit"
+            return
+        if stale_result == "matched" and stale_audits == 1:
+            pytest.xfail(
+                "RELEASE HOLD: a stale-authorized reconciliation MATCHED audit "
+                "committed after actual unique-insert rollback and licence revocation"
+            )
+        pytest.fail(
+            "Unexpected post-revocation recovery outcome: "
+            f"result={stale_result!r}, matched_audits={stale_audits}"
+        )
+    finally:
+        release_insert.set()
+        release_retry.set()
+        crud.settings.require_license = prior_crud_mode
+        command_routes.settings.require_license = prior_route_mode
