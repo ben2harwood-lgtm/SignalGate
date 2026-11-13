@@ -2290,6 +2290,12 @@ def test_hosted_legacy_pending_callback_refused_before_any_ea_claim(
             "recovered",
             1,
         ),
+        (
+            "management_event",
+            {"event_type": "TP1_REACHED", "stage": "TP1_REACHED", "result": "PENDING"},
+            "ok",
+            1,
+        ),
     ],
 )
 def test_scoped_command_delivered_before_hosted_mode_keeps_ea_receipt_path(
@@ -2349,6 +2355,29 @@ def test_scoped_command_delivered_before_hosted_mode_keeps_ea_receipt_path(
     original_account_id = command.account_id
     db.rollback()
 
+    # A management receipt follows a prior backend execution record. This
+    # synthetic SUCCESS is an EA-shaped report, not evidence of a broker fill.
+    if endpoint == "management_event":
+        with monkeypatch.context() as patch:
+            patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_k: None)
+            opened = client.post(
+                f"/commands/{command_id}/execution",
+                headers=EA_HEADERS,
+                json={
+                    "status": "SUCCESS",
+                    "broker_ticket": "SYNTHETIC-MANAGEMENT-990344",
+                    "executed_symbol": "EURUSD",
+                    "executed_direction": "BUY",
+                    "executed_price": 1.085,
+                    "lot_size": 0.1,
+                },
+            )
+        assert opened.status_code == 200, opened.text
+        assert opened.json()["status"] == "ok"
+        db.expire_all()
+        assert db.get(models.Command, command_id).status == "EXECUTED_OPEN"
+        db.rollback()
+
     # A paused/inactive account must prevent *new* delivery, but cannot erase
     # the genuine historical audit path for a command already sent to the EA.
     # Offline mode transition and simulated account deactivation only.
@@ -2389,6 +2418,18 @@ def test_scoped_command_delivered_before_hosted_mode_keeps_ea_receipt_path(
         .filter(models.Execution.command_id == command_id)
         .count()
     ) == expected_executions
+    assert (
+        db.query(models.TradeManagementEvent)
+        .filter(models.TradeManagementEvent.command_id == command_id)
+        .count()
+    ) == (1 if endpoint == "management_event" else 0)
+    if endpoint == "management_event":
+        assert command.status == "EXECUTED_OPEN"
+        assert (
+            db.query(models.AuditLog)
+            .filter(models.AuditLog.event_type == "MANAGEMENT_EVENT")
+            .count()
+        ) == 1
 
 
 def test_hosted_delivered_command_relabel_cannot_transfer_execution_receipt(
