@@ -2281,9 +2281,9 @@ def test_hosted_legacy_pending_callback_refused_before_any_ea_claim(
             "reconcile_open_position",
             {
                 "broker_tickets": ["990344"],
-                "executed_symbol": "XAUUSD",
+                "executed_symbol": "EURUSD",
                 "executed_direction": "BUY",
-                "executed_price": 2350.0,
+                "executed_price": 1.0850,
                 "lot_size": 0.1,
             },
             "recovered",
