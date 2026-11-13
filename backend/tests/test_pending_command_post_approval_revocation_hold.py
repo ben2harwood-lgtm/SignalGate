@@ -2265,3 +2265,111 @@ def test_hosted_legacy_pending_callback_refused_before_any_ea_claim(
         .filter(models.AuditLog.entity_id == command_id)
         .count()
     ) == original_command_audits
+
+
+@pytest.mark.parametrize(
+    "endpoint,payload,expected_status,expected_executions",
+    [
+        ("received", {}, "received", 0),
+        (
+            "execution",
+            {"status": "FAILED", "error_code": "SYNTHETIC_REJECTION"},
+            "ok",
+            1,
+        ),
+        (
+            "reconcile_open_position",
+            {
+                "broker_tickets": ["990344"],
+                "executed_symbol": "XAUUSD",
+                "executed_direction": "BUY",
+                "executed_price": 2350.0,
+                "lot_size": 0.1,
+            },
+            "recovered",
+            1,
+        ),
+    ],
+)
+def test_scoped_command_delivered_before_hosted_mode_keeps_ea_receipt_path(
+    client, db, monkeypatch, endpoint, payload, expected_status, expected_executions
+):
+    """A previously delivered, tenant-scoped command retains broker-audit paths.
+
+    This is a synthetic local-to-hosted mode-transition compatibility test.
+    Unlike a historical tenantless command, the original Signal, approval,
+    account and Command are provider/feed scoped. We preserve evidence from
+    a command that was already SENT_TO_EA; we do not connect to an EA/broker.
+    """
+    from app.routes import commands as command_routes
+
+    provider, feed, key = _provider(db, "scoped-pre-hosted-ea-callback")
+    db.commit()
+    subscriber = register_user(
+        client, "990344", "synthetic_scoped_ea_callback", "Synthetic Subscriber"
+    )
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber["id"])
+    )
+    db.commit()
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    approval = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": subscriber["telegram_user_id"]},
+    )
+    assert approval.status_code == 200, approval.text
+    assert approval.json()["result"] == "APPROVED"
+    command_id = approval.json()["command_id"]
+    db.rollback()
+
+    # Claim in local-demo mode, then simulate only the licence gate changing.
+    claimed = client.get(
+        "/commands/pending",
+        params={"user_id": subscriber["id"]},
+        headers=EA_HEADERS,
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["command"]["command_id"] == command_id
+    db.expire_all()
+    command = db.get(models.Command, command_id)
+    original_signal = db.get(models.Signal, command.signal_id)
+    assert (command.provider_id, command.feed_id) == (provider.id, feed.id)
+    assert (original_signal.provider_id, original_signal.feed_id) == (
+        provider.id, feed.id
+    )
+    assert command.status == "SENT_TO_EA" and command.sent_to_ea_at is not None
+    db.rollback()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_k: None)
+        reported = client.post(
+            f"/commands/{command_id}/{endpoint}",
+            json=payload,
+            headers={**EA_HEADERS, "X-SG-License-Key": subscriber["license_key"]},
+        )
+    assert reported.status_code == 200, (endpoint, reported.text)
+    assert reported.json()["status"] == expected_status
+
+    db.expire_all()
+    command = db.get(models.Command, command_id)
+    assert command.sent_to_ea_at is not None
+    assert (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.entity_id == command_id,
+            models.AuditLog.event_type == "COMMAND_SENT_TO_EA",
+        )
+        .count()
+    ) == 1
+    assert (
+        db.query(models.Execution)
+        .filter(models.Execution.command_id == command_id)
+        .count()
+    ) == expected_executions
