@@ -225,6 +225,27 @@ def command_received(
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
     command = _get_authorized_callback_command(db, command_id, x_sg_license_key)
+    if settings.require_license and db.get_bind().dialect.name == "postgresql":
+        # The initial Command lookup was deliberately nonlocking for concurrent
+        # execution/SAVEPOINT retries. But an acknowledgement is audit-only:
+        # SHARE-lock its own Command row through COMMIT, and recheck every
+        # original tenant link after waiting for a concurrent account relabel.
+        # Do not prelock execution/reconciliation/management callback paths.
+        unchanged_id = db.scalar(
+            select(Command.id).where(
+                Command.id == command.id,
+                Command.user_id == command.user_id,
+                Command.provider_id == command.provider_id,
+                Command.feed_id == command.feed_id,
+                Command.signal_id == command.signal_id,
+                Command.approval_id == command.approval_id,
+                Command.account_id == command.account_id,
+            ).with_for_update(read=True)
+        )
+        if unchanged_id is None:
+            raise HTTPException(
+                status_code=403, detail="Command does not belong to this EA licence"
+            )
     crud.mark_command_received(db, command)
     db.commit()
     return SimpleStatus(status="received")

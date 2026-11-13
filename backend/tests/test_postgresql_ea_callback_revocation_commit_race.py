@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
 import pytest
+from fastapi import HTTPException
 
 from app import crud, models
 from app.database import SessionLocal
@@ -1041,19 +1042,19 @@ def test_postgresql_pending_poll_claim_holds_customer_lock_until_commit(
         command_routes.settings.require_license = previous_route_mode
 
 
-def test_postgresql_command_account_relabel_waits_for_callback_receipt_commit(
-    client, db, monkeypatch
+@pytest.mark.parametrize(
+    "writer_first", (True, False), ids=("writer-first-denied", "callback-first-serialized")
+)
+def test_postgresql_command_account_relabel_serializes_with_callback_receipt(
+    client, db, monkeypatch, writer_first
 ):
-    """Synthetic two-session command-account drift witness; not broker evidence.
+    """Two synthetic PostgreSQL sessions verify both account-relabel orders.
 
-    The callback authenticates subscriber A and SHARE-locks the original
-    Signal/Approval/TradingAccount provenance, then deliberately pauses BEFORE
-    recording an acknowledgement. An independent transaction tries to relabel
-    Command.account_id to another subscriber's account. It must not commit a
-    conflicting account association while A can still commit a receipt.
-
-    This is a strict expected failure until independently reviewed concurrency
-    protection is implemented. No external EA, MT5, trades or customer data.
+    Writer first: reassignment after initial auth but before the acknowledgement
+    row lock must return 403 and write NO historical receipt.
+    Callback first: the acknowledgement lock must hold through the audit commit
+    and block the competing account rewrite until the receipt is durable.
+    No real EA, MT5, broker, trade or customer data is involved.
     """
     if db.get_bind().dialect.name != "postgresql":
         pytest.skip("Requires independent PostgreSQL transactions")
@@ -1106,32 +1107,45 @@ def test_postgresql_command_account_relabel_waits_for_callback_receipt_commit(
     assert command.status == "SENT_TO_EA"
     db.rollback()
 
-    authorized = Event()
+    gated = Event()
     release_receipt = Event()
     relabel_committed = Event()
     relabel_attempted = Event()
     original_resolver = command_routes._get_authorized_callback_command
+    original_mark = crud.mark_command_received
 
     def hold_after_original_authorization(session, cid, license_key):
         resolved = original_resolver(session, cid, license_key)
-        authorized.set()
+        gated.set()
         assert release_receipt.wait(timeout=15), (
             "Callback did not resume after the relabel transaction"
         )
         return resolved
+
+    def hold_after_receipt_row_lock(session, resolved):
+        # mark_command_received is reached only after the route holds the
+        # new shared Command lock, before the audit INSERT and COMMIT.
+        gated.set()
+        assert release_receipt.wait(timeout=15), (
+            "Callback did not resume after the acknowledgement row lock"
+        )
+        return original_mark(session, resolved)
 
     def acknowledge_in_independent_transaction():
         with SessionLocal() as session:
             session.connection().exec_driver_sql(
                 "SET LOCAL statement_timeout = '12s'"
             )
-            return command_routes.command_received(
-                command_id,
-                CommandReceivedRequest(),
-                x_sg_license_key=owner["license_key"],
-                db=session,
-                _ea="offline-test",
-            ).status
+            try:
+                return command_routes.command_received(
+                    command_id,
+                    CommandReceivedRequest(),
+                    x_sg_license_key=owner["license_key"],
+                    db=session,
+                    _ea="offline-test",
+                ).status
+            except HTTPException as exc:
+                return exc.status_code
 
     def relabel_account_in_independent_transaction():
         with SessionLocal() as session:
@@ -1148,17 +1162,22 @@ def test_postgresql_command_account_relabel_waits_for_callback_receipt_commit(
     with monkeypatch.context() as patch:
         patch.setattr(crud.settings, "require_license", True)
         patch.setattr(command_routes.settings, "require_license", True)
-        patch.setattr(
-            command_routes, "_get_authorized_callback_command",
-            hold_after_original_authorization,
-        )
+        if writer_first:
+            patch.setattr(
+                command_routes, "_get_authorized_callback_command",
+                hold_after_original_authorization,
+            )
+        else:
+            patch.setattr(
+                crud, "mark_command_received", hold_after_receipt_row_lock
+            )
         with ThreadPoolExecutor(max_workers=2) as workers:
             receipt_future = workers.submit(
                 acknowledge_in_independent_transaction
             )
             try:
-                assert authorized.wait(timeout=8), (
-                    "Hosted callback never reached original-ownership barrier"
+                assert gated.wait(timeout=8), (
+                    "Hosted callback never reached its designated barrier"
                 )
                 writer_future = workers.submit(
                     relabel_account_in_independent_transaction
@@ -1180,20 +1199,25 @@ def test_postgresql_command_account_relabel_waits_for_callback_receipt_commit(
         ).count()
         assert changed.account_id == account_b_id
         assert changed.status == "SENT_TO_EA"
-        assert receipt_result == "received"
-        assert receipt_count == 1, (
-            "Callback must have actually committed a historical receipt"
-        )
         assert session.query(models.Execution).filter(
             models.Execution.command_id == command_id
         ).count() == 0
 
-    # Never mask a setup exception, broken fixture, lock timeout or missing
-    # audit as an expected safety failure. XFAIL only after BOTH synthetic
-    # commits and the historical acknowledgement audit are proven above.
-    if relabel_overtook_receipt:
-        pytest.xfail(
-            "RELEASE HOLD CONFIRMED: PostgreSQL committed Command.account_id "
-            "relabel to subscriber B while A's authorized callback was still "
-            "paused; A then committed its receipt against that changed command"
+    if writer_first:
+        assert relabel_overtook_receipt, (
+            "Account rewrite must commit before releasing the initial-auth barrier"
+        )
+        assert receipt_result == 403, (
+            "The original EA licence must be refused after account reassignment"
+        )
+        assert receipt_count == 0, (
+            "Stale-authorised acknowledgement must write no audit"
+        )
+    else:
+        assert not relabel_overtook_receipt, (
+            "Account rewrite committed before the acknowledgement audit"
+        )
+        assert receipt_result == "received"
+        assert receipt_count == 1, (
+            "Only the authorised callback-first receipt must be committed"
         )
