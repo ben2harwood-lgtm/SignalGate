@@ -2375,18 +2375,6 @@ def test_scoped_command_delivered_before_hosted_mode_keeps_ea_receipt_path(
     ) == expected_executions
 
 
-class _HostedDeliveredCommandOwnershipDrift(AssertionError):
-    """A different subscriber's valid licence acquired another's delivered command."""
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=_HostedDeliveredCommandOwnershipDrift,
-    reason=(
-        "HOLD: hosted post-delivery callbacks check mutable Command.user_id, "
-        "not the original YES approval's subscriber; independent safety review required"
-    ),
-)
 def test_hosted_delivered_command_relabel_cannot_transfer_execution_receipt(
     client, db, monkeypatch
 ):
@@ -2493,15 +2481,6 @@ def test_hosted_delivered_command_relabel_cannot_transfer_execution_receipt(
         .count()
     ) == 1
 
-    if reported.status_code == 200:
-        # Precisely reproduce the unsafe state mutation before XFAIL. Never
-        # turn a malformed synthetic fixture into a passing security witness.
-        assert reported.json()["status"] == "ok"
-        assert command.status == "FAILED"
-        assert execution is not None and execution.user_id == subscriber_b["id"]
-        raise _HostedDeliveredCommandOwnershipDrift(
-            "A valid B licence wrote an execution for A's originally approved command"
-        )
     assert reported.status_code == 403, reported.text
     assert command.status == "SENT_TO_EA"
     assert execution is None

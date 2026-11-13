@@ -98,13 +98,51 @@ def _get_authorized_callback_command(
             status_code=403, detail="Command does not belong to this EA licence"
         )
 
-    command = db.scalar(
-        select(Command).where(Command.id == command_id, Command.user_id == user.id)
+    # Keep callback ownership stable across this transaction (including a
+    # concurrent command relabel) before reading its independent provenance.
+    # Match the claim path's Command -> Signal -> Approval row-lock order.
+    command_query = select(Command).where(
+        Command.id == command_id, Command.user_id == user.id
     )
+    if db.get_bind().dialect.name == "postgresql":
+        command_query = command_query.with_for_update(read=True)
+    command = db.scalar(command_query.execution_options(populate_existing=True))
     if command is None:
         raise HTTPException(
             status_code=403, detail="Command does not belong to this EA licence"
         )
+
+    # A current licence plus mutable Command.user_id does NOT establish the
+    # subscriber who originally approved and received this command. Check the
+    # independent origin and approval links, without requiring the approval to
+    # remain active AFTER delivery: late broker-truth receipts must survive
+    # subsequent revocations/pauses. SHARE locks hold these links to commit.
+    origin_query = select(
+        crud.models.Signal.provider_id, crud.models.Signal.feed_id
+    ).where(crud.models.Signal.id == command.signal_id)
+    approval_query = select(crud.models.Approval).where(
+        crud.models.Approval.id == command.approval_id
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        origin_query = origin_query.with_for_update(read=True)
+        approval_query = approval_query.with_for_update(read=True)
+    origin = db.execute(origin_query).one_or_none()
+    approval = db.scalar(
+        approval_query.execution_options(populate_existing=True)
+    )
+    if (
+        origin is None
+        or (origin.provider_id, origin.feed_id) != (
+            command.provider_id, command.feed_id
+        )
+        or approval is None
+        or approval.signal_id != command.signal_id
+        or approval.user_id != user.id
+    ):
+        raise HTTPException(
+            status_code=403, detail="Command does not belong to this EA licence"
+        )
+
     # A hosted EA licence cannot turn an undelivered command into a broker
     # receipt. In particular, local-demo PENDING rows can survive a synthetic
     # migration to hosted mode without ever passing the hosted claim guard.
