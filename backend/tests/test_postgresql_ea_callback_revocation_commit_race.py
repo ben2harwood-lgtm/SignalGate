@@ -1956,17 +1956,12 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
             )
 
         assert revocation_committed.is_set() and retry_after_rollback.is_set()
-        if stale_result == 403:
-            assert stale_audits == 0, "Denied stale callback must leave no audit"
-            return
-        if stale_result == "matched" and stale_audits == 1:
-            pytest.xfail(
-                "RELEASE HOLD: a stale-authorized reconciliation MATCHED audit "
-                "committed after actual unique-insert rollback and licence revocation"
-            )
-        pytest.fail(
-            "Unexpected post-revocation recovery outcome: "
-            f"result={stale_result!r}, matched_audits={stale_audits}"
+        assert stale_result == 403, (
+            "Post-rollback reconciliation must revalidate the current EA "
+            f"licence before commit; received {stale_result!r}"
+        )
+        assert stale_audits == 0, (
+            "Post-revocation reconciliation must not persist a MATCHED audit"
         )
     finally:
         release_insert.set()
