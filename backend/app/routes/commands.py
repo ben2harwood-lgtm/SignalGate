@@ -313,8 +313,20 @@ def reconcile_open_position(
     except crud.BrokerReconciliationConflict as exc:
         # Persist the discrepancy receipt. Never mutate an execution to make
         # contradictory broker state fit.
+        if settings.require_license:
+            # The CRUD uniqueness retry may have rolled back the entire
+            # transaction, releasing the original licence/tenant locks.
+            # Re-attest before committing even a conflict audit.
+            _get_authorized_callback_command(db, command_id, x_sg_license_key)
         db.commit()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if settings.require_license:
+        # reconcile_open_position's unique-Execution retry can roll back the
+        # transaction and release its original licence/tenant SHARE locks.
+        # Recheck the current licence and provenance after any such rollback;
+        # the new locks must be held through the evidence commit. In particular,
+        # never commit a MATCHED audit after licence rotation/deactivation.
+        _get_authorized_callback_command(db, command_id, x_sg_license_key)
     db.commit()
     return BrokerPositionReconcileResponse(
         status=reconciliation_status,
