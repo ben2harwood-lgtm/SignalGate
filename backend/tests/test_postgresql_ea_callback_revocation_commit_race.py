@@ -16,7 +16,8 @@ from app.database import SessionLocal
 from app.routes import commands as command_routes
 from app.schemas import CommandReceivedRequest
 
-from .conftest import EA_HEADERS, create_signal, register_user
+from .conftest import EA_HEADERS, register_user
+from .test_commands import _hosted_provider_signal_for
 
 
 VALID = "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363"
@@ -40,7 +41,7 @@ def test_postgresql_callback_receipt_cannot_overtake_committed_licence_rotation(
         pytest.skip("Requires two independent PostgreSQL transactions")
 
     owner = register_user(client, "990021")
-    signal = create_signal(client, VALID)
+    signal = _hosted_provider_signal_for(client, "990021")
     decision = client.post(
         f"/signals/{signal['id']}/approve",
         json={"telegram_user_id": "990021"},
@@ -166,7 +167,7 @@ def test_postgresql_execution_retry_rechecks_license_after_integrity_rollback(
     from app.schemas import ExecutionRequest
 
     owner = register_user(client, "990022")
-    signal = create_signal(client, VALID)
+    signal = _hosted_provider_signal_for(client, "990022")
     decision = client.post(
         f"/signals/{signal['id']}/approve",
         json={"telegram_user_id": "990022"},
@@ -350,7 +351,7 @@ def test_postgresql_waiting_callback_rechecks_revocation_after_lock_release(
     from time import monotonic, sleep
 
     owner = register_user(client, "990023")
-    signal = create_signal(client, VALID)
+    signal = _hosted_provider_signal_for(client, "990023")
     approved = client.post(
         f"/signals/{signal['id']}/approve",
         json={"telegram_user_id": "990023"},
@@ -546,7 +547,7 @@ def test_postgresql_management_retry_cannot_audit_after_licence_revocation(
     from app.schemas import ManagementEventRequest
 
     owner = register_user(client, "990024")
-    signal = create_signal(client, VALID)
+    signal = _hosted_provider_signal_for(client, "990024")
     approved = client.post(
         f"/signals/{signal['id']}/approve",
         json={"telegram_user_id": "990024"},
@@ -733,7 +734,7 @@ def test_postgresql_pending_poll_rechecks_revocation_before_delivery(
     from sqlalchemy import select
 
     owner = register_user(client, "990025")
-    signal = create_signal(client, VALID)
+    signal = _hosted_provider_signal_for(client, "990025")
     approved = client.post(
         f"/signals/{signal['id']}/approve",
         json={"telegram_user_id": "990025"},
@@ -900,7 +901,7 @@ def test_postgresql_pending_poll_claim_holds_customer_lock_until_commit(
     from time import monotonic, sleep
 
     owner = register_user(client, "990026")
-    signal = create_signal(client, VALID)
+    signal = _hosted_provider_signal_for(client, "990026")
     approved = client.post(
         f"/signals/{signal['id']}/approve",
         json={"telegram_user_id": "990026"},
