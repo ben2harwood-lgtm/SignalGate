@@ -8,6 +8,38 @@ from .conftest import EA_HEADERS, create_signal, register_user
 VALID = "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363"
 
 
+def _hosted_provider_signal_for(client, telegram_id):
+    """Build a real tenant-scoped *synthetic* provider signal for hosted EA tests.
+
+    The existing tests formerly created a tenantless admin/local-demo signal
+    before switching to hosted mode. That does not exercise hosted authority.
+    This fixture creates an authenticated provider/feed and explicit test-only
+    membership for the already-registered subscriber; no broker or external
+    provider is involved. Local-demo tests keep using create_signal unchanged.
+    """
+    from app import crud
+    from app.database import SessionLocal
+    from .test_provider_export import _headers, _provider
+
+    with SessionLocal() as db:
+        provider, feed, key = _provider(db, f"hosted-command-{telegram_id}")
+        user = crud.get_user_by_telegram(db, telegram_id)
+        assert user is not None
+        crud.subscribe_user_to_feed(db, provider, feed, user)
+        db.commit()
+        provider_headers = _headers(provider, key)
+        feed_id = feed.id
+
+    created = client.post(
+        "/signals/create",
+        headers=provider_headers,
+        json={"raw_text": VALID, "feed_id": feed_id},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["parser_status"] == "VALID"
+    return created.json()
+
+
 def _approve(client, telegram_id="123"):
     register_user(client, telegram_id)
     sig = create_signal(client, VALID)
@@ -222,7 +254,7 @@ def test_hosted_callback_is_bound_to_owning_license(client):
 
     owner = register_user(client, "123")
     attacker = register_user(client, "456")
-    sig = create_signal(client, VALID)
+    sig = _hosted_provider_signal_for(client, "123")
     client.post(f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"})
 
     crud.settings.require_license = True
@@ -570,7 +602,7 @@ def test_hosted_reconciliation_is_bound_to_owning_license(client):
 
     owner = register_user(client, "805")
     attacker = register_user(client, "806")
-    sig = create_signal(client, VALID)
+    sig = _hosted_provider_signal_for(client, "805")
     client.post(
         f"/signals/{sig['id']}/approve",
         json={"telegram_user_id": "805"},
@@ -615,7 +647,7 @@ def test_rotated_license_refuses_execution_and_reconciliation_after_claim(client
     from app.database import SessionLocal
 
     owner = register_user(client, "809")
-    sig = create_signal(client, VALID)
+    sig = _hosted_provider_signal_for(client, "809")
     approved = client.post(
         f"/signals/{sig['id']}/approve",
         json={"telegram_user_id": "809"},
@@ -705,7 +737,7 @@ def test_hosted_ack_and_management_reject_missing_or_foreign_customer_license(cl
 
     owner = register_user(client, "807")
     other = register_user(client, "808")
-    sig = create_signal(client, VALID)
+    sig = _hosted_provider_signal_for(client, "807")
     approval = client.post(
         f"/signals/{sig['id']}/approve",
         json={"telegram_user_id": "807"},
@@ -812,7 +844,7 @@ def test_hosted_callback_does_not_reveal_foreign_command_existence(
 
     owner = register_user(client, "812")
     nonowner = register_user(client, "813")
-    signal = create_signal(client, VALID)
+    signal = _hosted_provider_signal_for(client, "812")
     approved = client.post(
         f"/signals/{signal['id']}/approve",
         json={"telegram_user_id": "812"},
