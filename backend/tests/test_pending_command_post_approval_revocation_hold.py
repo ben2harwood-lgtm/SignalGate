@@ -1955,10 +1955,10 @@ def test_postgresql_pending_claim_blocks_later_approval_status_rewrite(client, d
 
 
 @pytest.mark.parametrize(
-    "alteration", ("decision_no", "status_rejected", "signal_relabel")
+    "alteration", ("decision_no", "status_rejected", "signal_relabel", "command_approval_relabel")
 )
 def test_pending_claim_rechecks_original_yes_approval_fields(client, db, alteration):
-    """A stale/corrupted YES cannot be delivered; restoring consent still works.
+    """A stale/corrupted or substituted YES cannot be delivered; restore works.
 
     Synthetic database-integrity faults only, not an external mutation
     primitive, broker execution, or independent security acceptance.
@@ -1999,7 +1999,7 @@ def test_pending_claim_rechecks_original_yes_approval_fields(client, db, alterat
         approval.decision = "NO"
     elif alteration == "status_rejected":
         approval.status = "REJECTED"
-    else:
+    elif alteration == "signal_relabel":
         different_signal = client.post(
             "/signals/create",
             headers=_headers(provider, raw_key),
@@ -2008,6 +2008,23 @@ def test_pending_claim_rechecks_original_yes_approval_fields(client, db, alterat
         assert different_signal.status_code == 200, different_signal.text
         assert different_signal.json()["id"] != original_signal_id
         approval.signal_id = different_signal.json()["id"]
+    else:
+        # The Command points at a different *valid YES* from the same subscriber
+        # and provider, but that YES belongs to another signal. A valid
+        # approval record cannot authorise the original command by substitution.
+        different_signal = client.post(
+            "/signals/create",
+            headers=_headers(provider, raw_key),
+            json={"feed_id": feed.id, "raw_text": VALID},
+        )
+        assert different_signal.status_code == 200, different_signal.text
+        assert different_signal.json()["id"] != original_signal_id
+        other_approval = crud._record_approval(
+            db, db.get(models.Signal, different_signal.json()["id"]),
+            db.get(models.User, user["id"]), "YES", "APPROVED",
+        )
+        assert other_approval.id != approval_id
+        command.approval_id = other_approval.id
     db.commit()
     db.rollback()
 
@@ -2037,6 +2054,8 @@ def test_pending_claim_rechecks_original_yes_approval_fields(client, db, alterat
     approval.signal_id = original_signal_id
     approval.decision = "YES"
     approval.status = "APPROVED"
+    if alteration == "command_approval_relabel":
+        db.get(models.Command, command_id).approval_id = approval_id
     db.commit()
     db.rollback()
     legitimate = client.get(
