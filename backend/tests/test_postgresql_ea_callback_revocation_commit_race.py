@@ -1039,3 +1039,160 @@ def test_postgresql_pending_poll_claim_holds_customer_lock_until_commit(
         release_poll.set()
         crud.settings.require_license = previous_crud_mode
         command_routes.settings.require_license = previous_route_mode
+
+
+@pytest.mark.xfail(
+    reason=(
+        "RELEASE HOLD: unlocked Command.account_id can change after hosted callback "
+        "provenance authorization but before a receipt commits"
+    ),
+    strict=True,
+)
+def test_postgresql_command_account_relabel_waits_for_callback_receipt_commit(
+    client, db, monkeypatch
+):
+    """Synthetic two-session command-account drift witness; not broker evidence.
+
+    The callback authenticates subscriber A and SHARE-locks the original
+    Signal/Approval/TradingAccount provenance, then deliberately pauses BEFORE
+    recording an acknowledgement. An independent transaction tries to relabel
+    Command.account_id to another subscriber's account. It must not commit a
+    conflicting account association while A can still commit a receipt.
+
+    This is a strict expected failure until independently reviewed concurrency
+    protection is implemented. No external EA, MT5, trades or customer data.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from .test_provider_export import _provider, _headers
+
+    provider, feed, provider_key = _provider(db, "callback-account-drift-race")
+    db.commit()
+    owner = register_user(
+        client, "990356", "synthetic_account_drift_a", "Synthetic A"
+    )
+    foreign = register_user(
+        client, "990357", "synthetic_account_drift_b", "Synthetic B"
+    )
+    _, account_a = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, owner["id"])
+    )
+    _, account_b = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, foreign["id"])
+    )
+    account_a_id, account_b_id = account_a.id, account_b.id
+    assert account_a_id != account_b_id
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, provider_key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": owner["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    db.rollback()
+
+    claimed = client.get(
+        "/commands/pending",
+        headers=EA_HEADERS,
+        params={"user_id": owner["id"]},
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["command"]["command_id"] == command_id
+    db.expire_all()
+    command = db.get(models.Command, command_id)
+    assert command.account_id == account_a_id
+    assert command.status == "SENT_TO_EA"
+    db.rollback()
+
+    authorized = Event()
+    release_receipt = Event()
+    relabel_committed = Event()
+    original_resolver = command_routes._get_authorized_callback_command
+
+    def hold_after_original_authorization(session, cid, license_key):
+        resolved = original_resolver(session, cid, license_key)
+        authorized.set()
+        assert release_receipt.wait(timeout=15), (
+            "Callback did not resume after the relabel transaction"
+        )
+        return resolved
+
+    def acknowledge_in_independent_transaction():
+        with SessionLocal() as session:
+            session.connection().exec_driver_sql(
+                "SET LOCAL statement_timeout = '12s'"
+            )
+            return command_routes.command_received(
+                command_id,
+                CommandReceivedRequest(),
+                x_sg_license_key=owner["license_key"],
+                db=session,
+                _ea="offline-test",
+            ).status
+
+    def relabel_account_in_independent_transaction():
+        with SessionLocal() as session:
+            session.connection().exec_driver_sql(
+                "SET LOCAL statement_timeout = '12s'"
+            )
+            changed = session.get(models.Command, command_id)
+            assert changed is not None
+            changed.account_id = account_b_id
+            session.commit()
+            relabel_committed.set()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(
+            command_routes, "_get_authorized_callback_command",
+            hold_after_original_authorization,
+        )
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            receipt_future = workers.submit(
+                acknowledge_in_independent_transaction
+            )
+            try:
+                assert authorized.wait(timeout=8), (
+                    "Hosted callback never reached original-ownership barrier"
+                )
+                writer_future = workers.submit(
+                    relabel_account_in_independent_transaction
+                )
+                relabel_overtook_receipt = relabel_committed.wait(timeout=3)
+            finally:
+                release_receipt.set()
+            receipt_result = receipt_future.result(timeout=22)
+            writer_future.result(timeout=22)
+
+    with SessionLocal() as session:
+        changed = session.get(models.Command, command_id)
+        receipt_count = session.query(models.AuditLog).filter(
+            models.AuditLog.event_type == "COMMAND_RECEIVED_BY_EA",
+            models.AuditLog.entity_id == command_id,
+        ).count()
+        assert changed.account_id == account_b_id
+        assert changed.status == "SENT_TO_EA"
+        assert receipt_result == "received"
+        assert receipt_count == 1, (
+            "Callback must have actually committed a historical receipt"
+        )
+        assert session.query(models.Execution).filter(
+            models.Execution.command_id == command_id
+        ).count() == 0
+
+    assert not relabel_overtook_receipt, (
+        "PostgreSQL Command.account_id ownership relabel committed while "
+        "an originally authorized hosted callback was paused BEFORE its "
+        "acknowledgement audit; the stale-authorized receipt then committed "
+        "against the relabelled command"
+    )
