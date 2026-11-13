@@ -91,18 +91,6 @@ def test_incomplete_provider_tenancy_never_claimed(client, db, missing_field):
 
 
 
-class _HostedTenantlessCommandDelivered(AssertionError):
-    """An original local-demo command reached a licence-authenticated hosted EA."""
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=_HostedTenantlessCommandDelivered,
-    reason=(
-        "RELEASE HOLD: a valid hosted licence can still claim an originally "
-        "tenantless historical local-demo command; provider tenancy is absent"
-    ),
-)
 def test_hosted_licence_refuses_originally_tenantless_demo_command(
     client, db, monkeypatch
 ):
@@ -164,16 +152,9 @@ def test_hosted_licence_refuses_originally_tenantless_demo_command(
         .count()
     )
     assert db.query(models.Execution).count() == 0
-    if result.json()["command"] is not None:
-        # A deliberately narrow expected-failure witness: unexpected delivery
-        # content or state cannot masquerade as the known security gap.
-        assert result.json()["command"]["command_id"] == command_id
-        assert command.status == "SENT_TO_EA"
-        assert command.sent_to_ea_at is not None and sent == 1
-        raise _HostedTenantlessCommandDelivered(
-            "Hosted licence claimed historically tenantless local-demo command"
-        )
-    assert result.json()["command"] is None
+    # The hosted EA must not accept old tenantless local-demo authority.
+    # Unlike the earlier strict XFAIL witness, this is now mandatory PASS.
+    assert result.json()["command"] is None, result.text
     assert command.status == "PENDING"
     assert command.sent_to_ea_at is None and sent == 0
 
