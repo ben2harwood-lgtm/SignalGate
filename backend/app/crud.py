@@ -1935,9 +1935,14 @@ def _pending_command_tenant_eligible(db: Session, command: models.Command) -> bo
         return False
 
     if all(identifier is None for identifier in tenant_ids):
-        # Only an originally tenantless signal with its own YES approval can
-        # use the historical local-demo claim path.
-        return origin.provider_id is None and origin.feed_id is None
+        # A legitimate old local-demo YES is not hosted delivery authority.
+        # After a mode transition, even a valid customer EA licence must
+        # refuse tenantless historic commands. Preserve local offline demo.
+        return (
+            not settings.require_license
+            and origin.provider_id is None
+            and origin.feed_id is None
+        )
     if (origin.provider_id, origin.feed_id) != (
         command.provider_id,
         command.feed_id,
