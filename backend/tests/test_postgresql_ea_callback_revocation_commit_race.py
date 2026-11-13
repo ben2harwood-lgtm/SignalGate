@@ -1041,13 +1041,6 @@ def test_postgresql_pending_poll_claim_holds_customer_lock_until_commit(
         command_routes.settings.require_license = previous_route_mode
 
 
-@pytest.mark.xfail(
-    reason=(
-        "RELEASE HOLD: unlocked Command.account_id can change after hosted callback "
-        "provenance authorization but before a receipt commits"
-    ),
-    strict=True,
-)
 def test_postgresql_command_account_relabel_waits_for_callback_receipt_commit(
     client, db, monkeypatch
 ):
@@ -1116,6 +1109,7 @@ def test_postgresql_command_account_relabel_waits_for_callback_receipt_commit(
     authorized = Event()
     release_receipt = Event()
     relabel_committed = Event()
+    relabel_attempted = Event()
     original_resolver = command_routes._get_authorized_callback_command
 
     def hold_after_original_authorization(session, cid, license_key):
@@ -1147,6 +1141,7 @@ def test_postgresql_command_account_relabel_waits_for_callback_receipt_commit(
             changed = session.get(models.Command, command_id)
             assert changed is not None
             changed.account_id = account_b_id
+            relabel_attempted.set()
             session.commit()
             relabel_committed.set()
 
@@ -1167,6 +1162,9 @@ def test_postgresql_command_account_relabel_waits_for_callback_receipt_commit(
                 )
                 writer_future = workers.submit(
                     relabel_account_in_independent_transaction
+                )
+                assert relabel_attempted.wait(timeout=8), (
+                    "Second transaction never reached account relabel commit"
                 )
                 relabel_overtook_receipt = relabel_committed.wait(timeout=3)
             finally:
@@ -1190,9 +1188,12 @@ def test_postgresql_command_account_relabel_waits_for_callback_receipt_commit(
             models.Execution.command_id == command_id
         ).count() == 0
 
-    assert not relabel_overtook_receipt, (
-        "PostgreSQL Command.account_id ownership relabel committed while "
-        "an originally authorized hosted callback was paused BEFORE its "
-        "acknowledgement audit; the stale-authorized receipt then committed "
-        "against the relabelled command"
-    )
+    # Never mask a setup exception, broken fixture, lock timeout or missing
+    # audit as an expected safety failure. XFAIL only after BOTH synthetic
+    # commits and the historical acknowledgement audit are proven above.
+    if relabel_overtook_receipt:
+        pytest.xfail(
+            "RELEASE HOLD CONFIRMED: PostgreSQL committed Command.account_id "
+            "relabel to subscriber B while A's authorized callback was still "
+            "paused; A then committed its receipt against that changed command"
+        )
