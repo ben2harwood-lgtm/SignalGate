@@ -1955,7 +1955,14 @@ def test_postgresql_pending_claim_blocks_later_approval_status_rewrite(client, d
 
 
 @pytest.mark.parametrize(
-    "alteration", ("decision_no", "status_rejected", "signal_relabel", "command_approval_relabel")
+    "alteration",
+    (
+        "decision_no",
+        "status_rejected",
+        "signal_relabel",
+        "approval_user_relabel",
+        "command_approval_relabel",
+    ),
 )
 def test_pending_claim_rechecks_original_yes_approval_fields(client, db, alteration):
     """A stale/corrupted or substituted YES cannot be delivered; restore works.
@@ -1995,10 +2002,23 @@ def test_pending_claim_rechecks_original_yes_approval_fields(client, db, alterat
     )
     assert (approval.decision, approval.status) == ("YES", "APPROVED")
     original_signal_id = approval.signal_id
+    original_approval_user_id = approval.user_id
     if alteration == "decision_no":
         approval.decision = "NO"
     elif alteration == "status_rejected":
         approval.status = "REJECTED"
+    elif alteration == "approval_user_relabel":
+        # A different legitimate subscriber in the same feed cannot inherit
+        # the original YES solely by changing the approval's owner.
+        other_subscriber = register_user(
+            client, "990217", "synthetic_approval_fields_other",
+            "Synthetic Other Subscriber",
+        )
+        crud.subscribe_user_to_feed(
+            db, provider, feed, db.get(models.User, other_subscriber["id"])
+        )
+        assert other_subscriber["id"] != original_approval_user_id
+        approval.user_id = other_subscriber["id"]
     elif alteration == "signal_relabel":
         different_signal = client.post(
             "/signals/create",
@@ -2052,6 +2072,7 @@ def test_pending_claim_rechecks_original_yes_approval_fields(client, db, alterat
     db.rollback()
     approval = db.get(models.Approval, approval_id)
     approval.signal_id = original_signal_id
+    approval.user_id = original_approval_user_id
     approval.decision = "YES"
     approval.status = "APPROVED"
     if alteration == "command_approval_relabel":
