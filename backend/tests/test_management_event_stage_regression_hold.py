@@ -12,6 +12,59 @@ import pytest
 from app import crud, models
 from app.database import SessionLocal
 from .conftest import EA_HEADERS, create_signal, register_user
+from .test_provider_export import _headers, _provider
+
+
+def _scoped_management_race_command(client, db, telegram_id):
+    """Create a genuinely tenant-scoped, already-executed synthetic demo command.
+
+    The PostgreSQL race tests below switch the callback licence gate to hosted
+    AFTER this setup. Historical tenantless local-demo commands are not valid
+    hosted callback fixtures; their rejection is an intentional safety guard.
+    """
+    provider, feed, key = _provider(db, f"management-race-{telegram_id}")
+    db.commit()
+    owner = register_user(client, telegram_id)
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, owner["id"])
+    )
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, key),
+        json={
+            "feed_id": feed.id,
+            "raw_text": "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363",
+        },
+    )
+    assert created.status_code == 200, created.text
+    signal = created.json()
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": telegram_id},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    db.rollback()
+
+    pending = client.get(
+        "/commands/pending",
+        params={"user_id": owner["id"]},
+        headers=EA_HEADERS,
+    )
+    assert pending.status_code == 200, pending.text
+    assert pending.json()["command"]["command_id"] == command_id
+    opened = client.post(
+        f"/commands/{command_id}/execution",
+        json={"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04},
+        headers=EA_HEADERS,
+    )
+    assert opened.status_code == 200, opened.text
+    db.rollback()  # Clear fixture reads before independent PostgreSQL threads.
+    return owner, signal, command_id
+
 
 
 def test_late_tp1_success_cannot_regress_committed_tp2_stage(client, monkeypatch):
@@ -527,24 +580,7 @@ def test_postgresql_stale_tp1_callback_cannot_reopen_concurrently_closed_trade(
     from app.routes import commands as command_routes
     from app.schemas import ManagementEventRequest
 
-    owner = register_user(client, "990095")
-    signal = create_signal(client, "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363")
-    approved = client.post(
-        f"/signals/{signal['id']}/approve",
-        json={"telegram_user_id": "990095"},
-    )
-    assert approved.status_code == 200, approved.text
-    pending = client.get(
-        "/commands/pending", params={"user_id": owner["id"]}, headers=EA_HEADERS
-    )
-    assert pending.status_code == 200, pending.text
-    command_id = pending.json()["command"]["command_id"]
-    opened = client.post(
-        f"/commands/{command_id}/execution",
-        json={"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04},
-        headers=EA_HEADERS,
-    )
-    assert opened.status_code == 200, opened.text
+    owner, signal, command_id = _scoped_management_race_command(client, db, "990095")
 
     previous_crud_mode = crud.settings.require_license
     previous_route_mode = command_routes.settings.require_license
@@ -657,24 +693,7 @@ def test_postgresql_concurrent_distinct_stage_full_closures_notify_once(
     from app.routes import commands as command_routes
     from app.schemas import ManagementEventRequest
 
-    owner = register_user(client, "990096")
-    signal = create_signal(client, "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363")
-    approved = client.post(
-        f"/signals/{signal['id']}/approve",
-        json={"telegram_user_id": "990096"},
-    )
-    assert approved.status_code == 200, approved.text
-    pending = client.get(
-        "/commands/pending", params={"user_id": owner["id"]}, headers=EA_HEADERS
-    )
-    assert pending.status_code == 200, pending.text
-    command_id = pending.json()["command"]["command_id"]
-    executed = client.post(
-        f"/commands/{command_id}/execution",
-        json={"status": "SUCCESS", "executed_price": 2345.0, "lot_size": 0.04},
-        headers=EA_HEADERS,
-    )
-    assert executed.status_code == 200, executed.text
+    owner, signal, command_id = _scoped_management_race_command(client, db, "990096")
 
     previous_crud_mode = crud.settings.require_license
     previous_route_mode = command_routes.settings.require_license
