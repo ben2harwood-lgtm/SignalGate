@@ -1763,8 +1763,9 @@ def test_postgresql_command_account_relabel_recovery_after_auth(
     )
 
 @pytest.mark.parametrize("revocation_kind", ("rotation", "deactivation"))
+@pytest.mark.parametrize("reconciliation_outcome", ("matched", "conflict"))
 def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
-    client, db, monkeypatch, revocation_kind
+    client, db, monkeypatch, revocation_kind, reconciliation_outcome
 ):
     """HOLD witness: a raced recovery must not audit after losing licence locks.
 
@@ -1774,11 +1775,11 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
     unique(command_id) race and enters reconcile_open_position's recursive
     retry after the full IntegrityError rollback. A third transaction then
     revokes A's licence while that retry is paused. A must not record a
-    BROKER_RECONCILIATION_MATCHED audit after the revocation has committed.
+    MATCHED or CONFLICT reconciliation audit after the revocation has committed.
 
     This never contacts MT5, a broker or a provider and cannot prove external
-    acceptance. XFAIL requires a demonstrated unique race, committed
-    revocation and persisted unauthorized audit; setup errors are not XFAIL.
+    acceptance. Each variant must demonstrate the unique collision, committed
+    revocation and 403 with no post-revocation reconciliation audit.
     """
     if db.get_bind().dialect.name != "postgresql":
         pytest.skip("Requires independent PostgreSQL sessions and unique constraint")
@@ -1803,6 +1804,7 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
     retry_after_rollback = Event()
     release_retry = Event()
     revocation_committed = Event()
+    conflict_observed = Event()
     original_next_id = crud._next_id
     original_reconcile = crud.reconcile_open_position
 
@@ -1826,7 +1828,12 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
             assert release_retry.wait(timeout=15), (
                 "Post-rollback reconciliation retry barrier was not released"
             )
-        return original_reconcile(session, command, payload)
+        try:
+            return original_reconcile(session, command, payload)
+        except crud.BrokerReconciliationConflict:
+            if getattr(role, "name", None) == "recovery" and retry_after_rollback.is_set():
+                conflict_observed.set()
+            raise
 
     try:
         crud.settings.require_license = True
@@ -1838,6 +1845,10 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
         assert issued is not None
         command_id = issued["command_id"]
         ticket = "SYNTHETIC-RECONCILE-RACE-NO-BROKER"
+        winner_ticket = (
+            ticket if reconciliation_outcome == "matched"
+            else "SYNTHETIC-DIFFERENT-TICKET-NO-BROKER"
+        )
         snapshot = BrokerPositionReconcileRequest(
             broker_tickets=[ticket],
             executed_symbol="XAUUSD",
@@ -1847,7 +1858,7 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
         )
         report = ExecutionRequest(
             status="SUCCESS",
-            broker_ticket=ticket,
+            broker_ticket=winner_ticket,
             executed_symbol="XAUUSD",
             executed_direction="BUY",
             executed_price=2345.0,
@@ -1943,9 +1954,12 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
             ).all()
             assert len(executions) == 1
             assert executions[0].status == "SUCCESS"
-            assert executions[0].broker_ticket == ticket
+            assert executions[0].broker_ticket == winner_ticket
             stale_audits = session.query(models.AuditLog).filter(
-                models.AuditLog.event_type == "BROKER_RECONCILIATION_MATCHED",
+                models.AuditLog.event_type.in_((
+                    "BROKER_RECONCILIATION_MATCHED",
+                    "BROKER_RECONCILIATION_CONFLICT",
+                )),
                 models.AuditLog.entity_id == command_id,
             ).count()
             recovered_audits = session.query(models.AuditLog).filter(
@@ -1956,12 +1970,19 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
             )
 
         assert revocation_committed.is_set() and retry_after_rollback.is_set()
+        if reconciliation_outcome == "conflict":
+            assert conflict_observed.is_set(), (
+                "Synthetic mismatched winner ticket did not reach the "
+                "reconciliation conflict branch after the unique collision"
+            )
+        else:
+            assert not conflict_observed.is_set()
         assert stale_result == 403, (
             "Post-rollback reconciliation must revalidate the current EA "
             f"licence before commit; received {stale_result!r}"
         )
         assert stale_audits == 0, (
-            "Post-revocation reconciliation must not persist a MATCHED audit"
+            "Post-revocation reconciliation must not persist a MATCHED/CONFLICT audit"
         )
     finally:
         release_insert.set()
