@@ -2572,8 +2572,31 @@ def test_hosted_delivered_command_relabel_cannot_transfer_execution_receipt(
     assert db.get(models.Command, command_id).status == "FAILED"
 
 
-def test_hosted_delivered_command_account_only_relabel_cannot_forge_execution(
-    client, db, monkeypatch
+@pytest.mark.parametrize(
+    "endpoint,payload,expected_command_status,expected_executions",
+    [
+        ("received", {}, "SENT_TO_EA", 0),
+        (
+            "execution",
+            {"status": "FAILED", "error_code": "SYNTHETIC_ACCOUNT_REJECT"},
+            "FAILED", 1,
+        ),
+        (
+            "reconcile_open_position",
+            {
+                "broker_tickets": ["990349"],
+                "executed_symbol": "EURUSD",
+                "executed_direction": "BUY",
+                "executed_price": 1.0850,
+                "lot_size": 0.1,
+            },
+            "EXECUTED_OPEN", 1,
+        ),
+    ],
+)
+def test_hosted_delivered_account_relabel_refuses_foreign_ea_receipts(
+    client, db, monkeypatch, endpoint, payload,
+    expected_command_status, expected_executions
 ):
     """Historical owner approval must not authorize a foreign trading account.
 
@@ -2581,8 +2604,10 @@ def test_hosted_delivered_command_account_only_relabel_cannot_forge_execution(
     After delivery, a deliberate database-integrity fault changes ONLY the
     Command.account_id to B's legitimate account on the same feed, leaving its
     user, Signal, original YES and licence unchanged. A's licence must not
-    attest an execution attributed to the foreign account. This is synthetic
-    corruption, not an established external mutation primitive or broker fill.
+    attest received, execution or reconciliation evidence against that account.
+    Both licences must fail during the mismatch; restoration must preserve A's
+    legitimate callback path. This is synthetic corruption, not an established
+    external mutation primitive or broker fill.
     """
     from app.routes import commands as command_routes
 
@@ -2633,6 +2658,9 @@ def test_hosted_delivered_command_account_only_relabel_cannot_forge_execution(
     assert yes.signal_id == original.signal_id
     assert yes.decision == "YES"
     assert original.account_id == account_a.id
+    original_audit_count = db.query(models.AuditLog).filter(
+        models.AuditLog.entity_id == command_id
+    ).count()
     db.rollback()
 
     changed = db.get(models.Command, command_id)
@@ -2640,29 +2668,32 @@ def test_hosted_delivered_command_account_only_relabel_cannot_forge_execution(
     db.commit()
     db.rollback()
 
-    payload = {"status": "FAILED", "error_code": "SYNTHETIC_ACCOUNT_REJECT"}
     with monkeypatch.context() as patch:
         patch.setattr(crud.settings, "require_license", True)
         patch.setattr(command_routes.settings, "require_license", True)
         patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_k: None)
-        reported = client.post(
-            f"/commands/{command_id}/execution",
-            headers={
-                **EA_HEADERS,
-                "X-SG-License-Key": subscriber_a["license_key"],
-            },
-            json=payload,
-        )
+        for subscriber in (subscriber_a, subscriber_b):
+            refused = client.post(
+                f"/commands/{command_id}/{endpoint}",
+                headers={**EA_HEADERS, "X-SG-License-Key": subscriber["license_key"]},
+                json=payload,
+            )
+            assert refused.status_code == 403, (endpoint, refused.text)
 
     db.expire_all()
     persisted = db.get(models.Command, command_id)
     execution = db.query(models.Execution).filter(
         models.Execution.command_id == command_id
     ).one_or_none()
-    assert reported.status_code == 403, reported.text
     assert persisted.status == "SENT_TO_EA"
     assert persisted.account_id == account_b.id
     assert execution is None
+    assert db.query(models.AuditLog).filter(
+        models.AuditLog.entity_id == command_id
+    ).count() == original_audit_count
+    assert db.query(models.TradeManagementEvent).filter(
+        models.TradeManagementEvent.command_id == command_id
+    ).count() == 0
     db.rollback()
 
     # Once the deliberate corruption is repaired, the original A receipt
@@ -2676,21 +2707,21 @@ def test_hosted_delivered_command_account_only_relabel_cannot_forge_execution(
         patch.setattr(command_routes.settings, "require_license", True)
         patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_k: None)
         rightful = client.post(
-            f"/commands/{command_id}/execution",
+            f"/commands/{command_id}/{endpoint}",
             headers={
                 **EA_HEADERS,
                 "X-SG-License-Key": subscriber_a["license_key"],
             },
             json=payload,
         )
-    assert rightful.status_code == 200, rightful.text
+    assert rightful.status_code == 200, (endpoint, rightful.text)
     db.expire_all()
-    assert db.get(models.Command, command_id).status == "FAILED"
+    assert db.get(models.Command, command_id).status == expected_command_status
     assert (
         db.query(models.Execution)
         .filter(models.Execution.command_id == command_id)
         .count()
-    ) == 1
+    ) == expected_executions
 
 
 def test_hosted_delivered_account_relabel_refuses_foreign_management_receipt(
