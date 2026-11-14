@@ -233,6 +233,17 @@ def test_postgresql_duplicate_execution_and_tp_close_preserve_lock_order(
     with SessionLocal() as session:
         command = session.get(models.Command, command_id)
         assert command is not None and command.status == "PARTIAL_TP1_DONE"
+        # Both concurrent retry paths must preserve the TP1 ledger milestone;
+        # command status and a valid audit chain alone cannot detect regression.
+        ledger = session.scalar(
+            select(models.PerformanceLedger).where(
+                models.PerformanceLedger.command_id == command_id
+            )
+        )
+        assert ledger is not None and ledger.result_status == "TP1_HIT"
+        assert ledger.r_result == 4.0, (
+            "Synthetic TP1 R must use execution entry 2345, SL 2343, TP1 2353"
+        )
         assert session.scalar(
             select(models.Execution.id).where(models.Execution.command_id == command_id)
         ) is not None
