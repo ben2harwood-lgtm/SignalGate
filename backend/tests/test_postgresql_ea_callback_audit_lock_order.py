@@ -8,6 +8,8 @@ provenance fence that would acquire Command AFTER the audit advisory lock.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+
+from fastapi import HTTPException
 from threading import Event, local
 from time import monotonic, sleep
 
@@ -26,12 +28,13 @@ from .test_provider_export import _headers, _provider
 VALID = "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363"
 
 
+@pytest.mark.parametrize("retry_case", ("matching-duplicate", "conflicting-retry"))
 def test_postgresql_duplicate_execution_and_tp_close_preserve_lock_order(
-    client, db, monkeypatch
+    client, db, monkeypatch, retry_case
 ):
     """A held audit advisory lock must not deadlock with a Command write lock.
 
-    A duplicate execution retry acquires the audit-chain advisory lock and
+    A matching duplicate or mismatched execution retry takes the audit-chain lock and
     deliberately pauses. A concurrent state-changing TP1 close locks Command
     FOR UPDATE, then waits for the audit-chain lock. The duplicate must be
     able to finish while TP1 holds its Command lock; both receipts must commit,
@@ -121,15 +124,28 @@ def test_postgresql_duplicate_execution_and_tp_close_preserve_lock_order(
 
     def duplicate_retry():
         roles.name = "duplicate"
+        # Exercise both paths through _existing_execution_or_conflict:
+        # matching retries append DUPLICATE_EXECUTION_REPORT_IGNORED;
+        # conflicting retries append EXECUTION_REPORT_CONFLICT and return 409.
+        retry_payload = (
+            execution_payload
+            if retry_case == "matching-duplicate"
+            else execution_payload.model_copy(
+                update={"broker_ticket": "OFFLINE-LOCK-ORDER-CONFLICT-NO-BROKER"}
+            )
+        )
         with SessionLocal() as session:
             session.connection().exec_driver_sql("SET LOCAL statement_timeout = '10s'")
-            return command_routes.report_execution(
-                command_id,
-                execution_payload,
-                x_sg_license_key=owner["license_key"],
-                db=session,
-                _ea="offline-test",
-            ).status
+            try:
+                return command_routes.report_execution(
+                    command_id,
+                    retry_payload,
+                    x_sg_license_key=owner["license_key"],
+                    db=session,
+                    _ea="offline-test",
+                ).status
+            except HTTPException as exc:
+                return exc.status_code
 
     def tp_close():
         roles.name = "tp"
@@ -201,7 +217,9 @@ def test_postgresql_duplicate_execution_and_tp_close_preserve_lock_order(
             duplicate_status = duplicate.result(timeout=20)
             management_status = management.result(timeout=20)
 
-    assert duplicate_status == "duplicate_ignored"
+    assert duplicate_status == (
+        "duplicate_ignored" if retry_case == "matching-duplicate" else 409
+    ), "Only the expected duplicate or conflicting retry is permitted"
     assert management_status == "ok"
     assert len(notifications) == 1, (
         "Concurrent duplicate execution must not send a second notification"
@@ -225,9 +243,23 @@ def test_postgresql_duplicate_execution_and_tp_close_preserve_lock_order(
             models.TradeManagementEvent.command_id == command_id,
             models.TradeManagementEvent.event_type == "TP1_CLOSE_SUCCESS",
         ).count() == 1
+        expected_retry_audit = (
+            "DUPLICATE_EXECUTION_REPORT_IGNORED"
+            if retry_case == "matching-duplicate"
+            else "EXECUTION_REPORT_CONFLICT"
+        )
+        unexpected_retry_audit = (
+            "EXECUTION_REPORT_CONFLICT"
+            if retry_case == "matching-duplicate"
+            else "DUPLICATE_EXECUTION_REPORT_IGNORED"
+        )
         assert session.query(models.AuditLog).filter(
-            models.AuditLog.event_type == "DUPLICATE_EXECUTION_REPORT_IGNORED",
+            models.AuditLog.event_type == expected_retry_audit,
             models.AuditLog.entity_id == command_id,
         ).count() == 1
+        assert session.query(models.AuditLog).filter(
+            models.AuditLog.event_type == unexpected_retry_audit,
+            models.AuditLog.entity_id == command_id,
+        ).count() == 0
         verification = crud.verify_audit_chain(session)
         assert verification["valid"], verification
