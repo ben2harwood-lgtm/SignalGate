@@ -1223,20 +1223,25 @@ def test_postgresql_command_account_relabel_serializes_with_callback_receipt(
         )
 
 
+@pytest.mark.parametrize(
+    "report_case", ["first-failed-receipt", "conflicting-failed-retry"]
+)
 def test_postgresql_command_account_relabel_execution_after_auth(
-    client, db, monkeypatch
+    client, db, monkeypatch, report_case
 ):
     """Fail closed if the command account changes after EA callback authorization.
 
     A has a delivered synthetic command. A's valid EA callback resolves and
     retains its customer, signal, approval and original account share locks.
     B changes ONLY Command.account_id in another PostgreSQL session and commits
-    while A is paused. A must not subsequently record a FAILED execution for
-    a now-foreign-account command. FAILED is a fabricated no-order report;
-    no broker, EA, external HTTP request or customer information is involved.
+    while A is paused. A must not subsequently record a first FAILED execution
+    OR an inconsistent-retry conflict audit for a now-foreign-account command.
+    Both reports are fabricated no-order data; no broker, EA, external HTTP
+    request or customer information is involved.
 
-    Until the invariant is fixed, a strict XFAIL is emitted ONLY after both
-    transactions commit and the unauthorized execution/audit are confirmed.
+    Until the invariant is fixed, strict XFAILs are emitted ONLY after both
+    transactions commit and the unauthorized first execution OR conflict audit
+    is independently confirmed.
     Timeout, fixture, constraint and missing-evidence failures remain FAIL.
     """
     if db.get_bind().dialect.name != "postgresql":
@@ -1290,6 +1295,28 @@ def test_postgresql_command_account_relabel_execution_after_auth(
     assert db.get(models.Command, command_id).account_id == account_a_id
     db.rollback()
 
+    if report_case == "conflicting-failed-retry":
+        # Seed the original no-broker FAILED receipt before the account drift.
+        # The post-drift retry must not even commit a conflict audit.
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                command_routes, "notify_user_and_admins",
+                lambda *_a, **_kw: None,
+            )
+            baseline = client.post(
+                f"/commands/{command_id}/execution",
+                headers=EA_HEADERS,
+                json={
+                    "status": "FAILED",
+                    "error_code": "SYNTHETIC_ORIGINAL_NO_ORDER",
+                },
+            )
+        assert baseline.status_code == 200, baseline.text
+        assert baseline.json()["status"] == "ok"
+        db.expire_all()
+        assert db.get(models.Command, command_id).status == "FAILED"
+        db.rollback()
+
     authorized = Event()
     resume_callback = Event()
     rewrite_committed = Event()
@@ -1312,7 +1339,12 @@ def test_postgresql_command_account_relabel_execution_after_auth(
                 return command_routes.report_execution(
                     command_id,
                     ExecutionRequest(
-                        status="FAILED", error_code="SYNTHETIC_NO_ORDER"
+                        status="FAILED",
+                        error_code=(
+                            "SYNTHETIC_CONFLICTING_RETRY"
+                            if report_case == "conflicting-failed-retry"
+                            else "SYNTHETIC_NO_ORDER"
+                        ),
                     ),
                     x_sg_license_key=owner["license_key"],
                     db=session,
@@ -1361,34 +1393,72 @@ def test_postgresql_command_account_relabel_execution_after_auth(
         changed = session.get(models.Command, command_id)
         assert changed is not None and changed.account_id == account_b_id
         assert changed.user_id == owner["id"]
+        command_status_after = changed.status
         executions = session.query(models.Execution).filter(
             models.Execution.command_id == command_id
         ).all()
-        audits = session.query(models.AuditLog).filter(
-            models.AuditLog.event_type == "EXECUTION_RECORDED",
-            models.AuditLog.entity_id == executions[0].id,
-        ).count() if len(executions) == 1 else 0
+        recorded_audits = (
+            session.query(models.AuditLog)
+            .filter(
+                models.AuditLog.event_type == "EXECUTION_RECORDED",
+                models.AuditLog.entity_id == executions[0].id,
+            )
+            .count()
+            if len(executions) == 1 else 0
+        )
+        conflict_audits = session.query(models.AuditLog).filter(
+            models.AuditLog.event_type == "EXECUTION_REPORT_CONFLICT",
+            models.AuditLog.entity_id == command_id,
+        ).count()
 
+    has_prior_receipt = report_case == "conflicting-failed-retry"
     if callback_result == 403:
-        assert not executions, "A denied stale callback must leave no execution"
-        assert audits == 0
+        assert len(executions) == int(has_prior_receipt)
+        assert recorded_audits == int(has_prior_receipt)
+        assert conflict_audits == 0, "Denied stale callback must not log conflict"
+        assert command_status_after == (
+            "FAILED" if has_prior_receipt else "SENT_TO_EA"
+        )
+        if has_prior_receipt:
+            assert executions[0].status == "FAILED"
+            assert executions[0].error_code == "SYNTHETIC_ORIGINAL_NO_ORDER"
         return
 
     if (
-        callback_result == "ok"
+        not has_prior_receipt
+        and callback_result == "ok"
         and len(executions) == 1
         and executions[0].user_id == owner["id"]
         and executions[0].status == "FAILED"
-        and audits == 1
+        and recorded_audits == 1
+        and conflict_audits == 0
     ):
         pytest.xfail(
             "RELEASE HOLD: subscriber A's FAILED execution and audit committed "
             "AFTER subscriber B's Command.account_id reassignment committed"
         )
 
+    if (
+        has_prior_receipt
+        and callback_result == 409
+        and len(executions) == 1
+        and executions[0].user_id == owner["id"]
+        and executions[0].status == "FAILED"
+        and executions[0].error_code == "SYNTHETIC_ORIGINAL_NO_ORDER"
+        and command_status_after == "FAILED"
+        and recorded_audits == 1
+        and conflict_audits == 1
+    ):
+        pytest.xfail(
+            "RELEASE HOLD: subscriber A's conflicting retry committed an audit "
+            "AFTER subscriber B's Command.account_id reassignment committed"
+        )
+
     pytest.fail(
         "Unexpected post-reassignment callback outcome: "
-        f"result={callback_result!r}, executions={len(executions)}, audits={audits}"
+        f"case={report_case}, result={callback_result!r}, "
+        f"executions={len(executions)}, recorded_audits={recorded_audits}, "
+        f"conflict_audits={conflict_audits}, command_status={command_status_after}"
     )
 @pytest.mark.parametrize(
     ("event_type", "stage", "result"),
