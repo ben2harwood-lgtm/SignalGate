@@ -9,9 +9,10 @@ import datetime as dt
 import hashlib
 import json
 import secrets
+from contextlib import nullcontext
 from typing import List, Optional
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -209,7 +210,9 @@ def set_setting(db: Session, key: str, value: str) -> models.Setting:
 
 
 def is_admin_paused(db: Session) -> bool:
-    return (get_setting(db, "admin_paused", "false") or "false").lower() == "true"
+    # Only an explicit persisted lowercase false proves that demo delivery
+    # is unpaused; absent or corrupted state must never look safe to operators.
+    return get_setting(db, "admin_paused") != "false"
 
 
 def get_setting_int(db: Session, key: str, default: int) -> int:
@@ -1880,15 +1883,141 @@ def _create_command(
 
 # --- EA command polling ---------------------------------------------------
 
+def _pending_command_tenant_eligible(db: Session, command: models.Command) -> bool:
+    """Recheck provider command authority at EA claim, not only at approval.
+
+    PostgreSQL shared row locks are held through the caller's SENT_TO_EA audit
+    and commit, serializing the claim with pause, deactivation, subscription
+    revocation and account-status writers. Lock order is global pause (caller),
+    command (caller), original signal, original approval, provider, feed,
+    subscription, account.
+    FOR KEY SHARE
+    would not block pause/status updates to non-key columns.
+    """
+    tenant_ids = (command.provider_id, command.feed_id, command.account_id)
+    # Partial tenant links never imply the historical local-demo identity.
+    if any(tenant_ids) and not all(tenant_ids):
+        return False
+
+    is_postgresql = db.get_bind().dialect.name == "postgresql"
+    # Command links are mutable legacy columns. Bind every claim (including a
+    # fully scoped provider claim) to the original Signal's independent
+    # provider/feed identity; keep its PostgreSQL SHARE lock until claim commit.
+    # This prevents a writer from changing origin mid-claim and preserves the
+    # global pause -> command -> origin -> approval -> provider -> feed ->
+    # membership -> account lock order.
+    origin_query = select(models.Signal.provider_id, models.Signal.feed_id).where(
+        models.Signal.id == command.signal_id
+    )
+    if is_postgresql:
+        origin_query = origin_query.with_for_update(read=True)
+    origin = db.execute(origin_query).one_or_none()
+    if origin is None:
+        return False
+
+    # A current licence and feed membership are not substitute approval from
+    # this subscriber. The original YES is independent of mutable Command
+    # user/account links. SHARE locks protect its provenance until the claim
+    # audit commits, including a concurrent NO/status or ownership rewrite.
+    approval_query = select(models.Approval).where(
+        models.Approval.id == command.approval_id
+    )
+    if is_postgresql:
+        approval_query = approval_query.with_for_update(read=True)
+    approval = db.scalar(approval_query.execution_options(populate_existing=True))
+    if (
+        approval is None
+        or approval.signal_id != command.signal_id
+        or approval.user_id != command.user_id
+        or approval.decision != "YES"
+        or approval.status != "APPROVED"
+    ):
+        return False
+
+    if all(identifier is None for identifier in tenant_ids):
+        # An originally tenantless YES belongs only to local demo mode.
+        # A valid hosted licence must not acquire authority from historical
+        # unscoped rows after a mode change or database migration.
+        return (
+            not settings.require_license
+            and origin.provider_id is None
+            and origin.feed_id is None
+        )
+    if (origin.provider_id, origin.feed_id) != (
+        command.provider_id,
+        command.feed_id,
+    ):
+        return False
+
+    def fresh_locked(statement):
+        if is_postgresql:
+            statement = statement.with_for_update(read=True)
+        return db.scalar(statement.execution_options(populate_existing=True))
+
+    provider = fresh_locked(
+        select(models.Provider).where(models.Provider.id == command.provider_id)
+    )
+    if provider is None or provider.status != "ACTIVE" or provider.paused:
+        return False
+
+    feed = fresh_locked(
+        select(models.Feed).where(
+            models.Feed.id == command.feed_id,
+            models.Feed.provider_id == provider.id,
+        )
+    )
+    if feed is None or feed.status != "ACTIVE" or feed.paused:
+        return False
+
+    subscription = fresh_locked(
+        select(models.Subscription).where(
+            models.Subscription.provider_id == provider.id,
+            models.Subscription.feed_id == feed.id,
+            models.Subscription.user_id == command.user_id,
+            models.Subscription.status == "ACTIVE",
+        )
+    )
+    if subscription is None:
+        return False
+
+    account = fresh_locked(
+        select(models.TradingAccount).where(
+            models.TradingAccount.id == command.account_id,
+            models.TradingAccount.provider_id == provider.id,
+            models.TradingAccount.user_id == command.user_id,
+            models.TradingAccount.status == "ACTIVE",
+        )
+    )
+    return account is not None
+
+
 def get_pending_command_for_user(
     db: Session, user_id: str
 ) -> Optional[models.Command]:
-    """Atomically claim the oldest pending non-expired command for a user.
+    """Claim a pending demo command only while global pause is explicitly clear.
 
-    PostgreSQL uses SELECT ... FOR UPDATE SKIP LOCKED so two EA polls/workers
-    cannot claim the same command concurrently. SQLite keeps the simple local
-    demo path, where the test/demo process is single-worker.
+    PostgreSQL FOR SHARE holds the persisted pause row until the caller's
+    commit, serializing an admin pause/resume UPDATE with this command's
+    SENT_TO_EA state and audit receipt. Missing or malformed pause state
+    fails closed. SQLite retains its single-worker local-demo behaviour.
     """
+    # Lock the pause row BEFORE the command row and retain it through the
+    # caller's transaction commit. FOR KEY SHARE is insufficient: an admin
+    # pause updates a non-key value and would bypass that weaker lock.
+    pause_query = select(models.Setting).where(
+        models.Setting.key == "admin_paused"
+    )
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        pause_query = pause_query.with_for_update(read=True)
+    pause = db.scalar(pause_query.execution_options(populate_existing=True))
+    if pause is None or pause.value != "false":
+        return None
+
+    # Skip an ineligible older command for this poll without changing its
+    # PENDING state or SENT audit. An ordered cursor also handles any number
+    # of revoked older feed memberships without growing an SQL IN list.
+    after_ineligible: tuple[dt.datetime, str] | None = None
     while True:
         query = (
             select(models.Command)
@@ -1896,9 +2025,14 @@ def get_pending_command_for_user(
                 models.Command.user_id == user_id,
                 models.Command.status == "PENDING",
             )
-            .order_by(models.Command.created_at.asc())
+            .order_by(models.Command.created_at.asc(), models.Command.id.asc())
             .limit(1)
         )
+        if after_ineligible is not None:
+            query = query.where(
+                tuple_(models.Command.created_at, models.Command.id)
+                > after_ineligible
+            )
         bind = db.get_bind()
         if bind is not None and bind.dialect.name == "postgresql":
             query = query.with_for_update(skip_locked=True)
@@ -1911,6 +2045,12 @@ def get_pending_command_for_user(
             command.status = "EXPIRED"
             db.flush()
             add_audit(db, "COMMAND_EXPIRED", "command", command.id)
+            continue
+
+        # Never deliver an earlier YES command after a tenant revocation.
+        # Leave ineligible commands PENDING and emit no SENT audit.
+        if not _pending_command_tenant_eligible(db, command):
+            after_ineligible = (command.created_at, command.id)
             continue
 
         command.status = "SENT_TO_EA"
@@ -2044,43 +2184,48 @@ def record_execution(
             "command must have been claimed by the EA first"
         )
 
-    execution = models.Execution(
-        id=_next_id(db, models.Execution),
-        command_id=command.id,
-        user_id=command.user_id,
-        status=payload.status,
-        broker_ticket=payload.broker_ticket,
-        child_tickets_json=payload.child_tickets_json,
-        executed_symbol=payload.executed_symbol,
-        executed_direction=payload.executed_direction,
-        requested_price=payload.requested_price,
-        executed_price=payload.executed_price,
-        lot_size=payload.lot_size,
-        initial_stop_loss=payload.initial_stop_loss,
-        tp1=payload.tp1,
-        tp2=payload.tp2,
-        tp3=payload.tp3,
-        spread_at_execution=payload.spread_at_execution,
-        slippage=payload.slippage,
-        error_code=payload.error_code,
-        error_message=payload.error_message,
-    )
-    db.add(execution)
-
-    if payload.status == "SUCCESS":
-        command.status = "EXECUTED_OPEN"
-        command.processed_at = utcnow()
-    else:
-        command.status = "FAILED"
-        command.last_error = payload.error_message or payload.error_code
-        command.processed_at = utcnow()
-
+    # Preserve the caller's customer authorization lock when PostgreSQL rejects
+    # a raced unique(command_id) insert. A SAVEPOINT isolates the speculative
+    # execution/state update; a full rollback would allow post-revocation audits.
+    savepoint_for_race = db.get_bind().dialect.name == "postgresql"
     try:
-        db.flush()
+        with (db.begin_nested() if savepoint_for_race else nullcontext()):
+            execution = models.Execution(
+                id=_next_id(db, models.Execution),
+                command_id=command.id,
+                user_id=command.user_id,
+                status=payload.status,
+                broker_ticket=payload.broker_ticket,
+                child_tickets_json=payload.child_tickets_json,
+                executed_symbol=payload.executed_symbol,
+                executed_direction=payload.executed_direction,
+                requested_price=payload.requested_price,
+                executed_price=payload.executed_price,
+                lot_size=payload.lot_size,
+                initial_stop_loss=payload.initial_stop_loss,
+                tp1=payload.tp1,
+                tp2=payload.tp2,
+                tp3=payload.tp3,
+                spread_at_execution=payload.spread_at_execution,
+                slippage=payload.slippage,
+                error_code=payload.error_code,
+                error_message=payload.error_message,
+            )
+            db.add(execution)
+
+            if payload.status == "SUCCESS":
+                command.status = "EXECUTED_OPEN"
+                command.processed_at = utcnow()
+            else:
+                command.status = "FAILED"
+                command.last_error = payload.error_message or payload.error_code
+                command.processed_at = utcnow()
+
+            db.flush()
     except IntegrityError:
-        # A simultaneous retry may have won the unique(command_id) race after
-        # our initial lookup. Roll back this transaction and return the winner.
-        db.rollback()
+        # SQLite retains its existing local-demo recovery behaviour.
+        if not savepoint_for_race:
+            db.rollback()
         existing = db.scalar(
             select(models.Execution).where(models.Execution.command_id == command.id)
         )
@@ -2349,6 +2494,14 @@ _EVENT_TO_COMMAND_STATUS = {
     "FAILED_MANAGEMENT": "FAILED",
 }
 
+# Nonterminal execution stages are monotonic even when a delayed callback
+# carries a new, otherwise valid management-event idempotency key.
+_MANAGEMENT_PROGRESS_RANK = {
+    "EXECUTED_OPEN": 0,
+    "PARTIAL_TP1_DONE": 1,
+    "PARTIAL_TP2_DONE": 2,
+}
+
 
 def _management_event_key(command: models.Command, payload) -> str:
     parts = [
@@ -2379,38 +2532,57 @@ def record_management_event(
             db, command, existing, payload
         )
 
-    event = models.TradeManagementEvent(
-        id=_next_id(db, models.TradeManagementEvent),
-        command_id=command.id,
-        idempotency_key=event_key,
-        broker_ticket=payload.broker_ticket,
-        event_type=payload.event_type,
-        stage=payload.stage,
-        requested_action=payload.requested_action,
-        result=payload.result,
-        price=payload.price,
-        lot_size_before=payload.lot_size_before,
-        lot_size_after=payload.lot_size_after,
-        stop_loss_before=payload.stop_loss_before,
-        stop_loss_after=payload.stop_loss_after,
-        error_code=payload.error_code,
-        error_message=payload.error_message,
-    )
-    db.add(event)
-
-    terminal = command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}
-    new_status = _EVENT_TO_COMMAND_STATUS.get(payload.event_type)
-    if new_status and not terminal:
-        command.status = new_status
-        if new_status in {"FULLY_CLOSED", "FAILED"}:
-            command.processed_at = utcnow()
-
+    # Keep the caller's PostgreSQL customer authorization lock through a
+    # raced management-event insert. Rolling back the outer transaction would
+    # permit a revoked licence to commit a subsequent duplicate-event audit.
+    savepoint_for_race = db.get_bind().dialect.name == "postgresql"
     try:
-        db.flush()
+        with (db.begin_nested() if savepoint_for_race else nullcontext()):
+            event = models.TradeManagementEvent(
+                id=_next_id(db, models.TradeManagementEvent),
+                command_id=command.id,
+                idempotency_key=event_key,
+                broker_ticket=payload.broker_ticket,
+                event_type=payload.event_type,
+                stage=payload.stage,
+                requested_action=payload.requested_action,
+                result=payload.result,
+                price=payload.price,
+                lot_size_before=payload.lot_size_before,
+                lot_size_after=payload.lot_size_after,
+                stop_loss_before=payload.stop_loss_before,
+                stop_loss_after=payload.stop_loss_after,
+                error_code=payload.error_code,
+                error_message=payload.error_message,
+            )
+            db.add(event)
+
+            terminal = command.status in {"FULLY_CLOSED", "FAILED", "EXPIRED"}
+            new_status = _EVENT_TO_COMMAND_STATUS.get(payload.event_type)
+            current_rank = _MANAGEMENT_PROGRESS_RANK.get(command.status)
+            incoming_rank = _MANAGEMENT_PROGRESS_RANK.get(new_status)
+            stale_stage = (
+                current_rank is not None
+                and incoming_rank is not None
+                and incoming_rank < current_rank
+            )
+            state_advanced = bool(
+                new_status
+                and not terminal
+                and not stale_stage
+                and new_status != command.status
+            )
+            if state_advanced:
+                command.status = new_status
+                if new_status in {"FULLY_CLOSED", "FAILED"}:
+                    command.processed_at = utcnow()
+
+            db.flush()
     except IntegrityError:
-        # Same event raced us. The unique idempotency key makes the DB the
-        # final arbiter even with multiple API workers.
-        db.rollback()
+        # Same event raced us. Preserve the hosted customer lock through the
+        # duplicate/conflict audit; SQLite keeps its local-demo fallback.
+        if not savepoint_for_race:
+            db.rollback()
         existing = db.scalar(
             select(models.TradeManagementEvent).where(
                 models.TradeManagementEvent.idempotency_key == event_key
@@ -2430,10 +2602,12 @@ def record_management_event(
         {
             "event_type": payload.event_type,
             "command_id": command.id,
-            "state_advanced": bool(new_status and not terminal),
+            "state_advanced": state_advanced,
         },
     )
-    if not terminal:
+    # Persist the distinct late receipt and its non-advancing audit, but never
+    # allow an older TP stage to overwrite a later ledger milestone/R value.
+    if not terminal and not stale_stage:
         ledger.on_management_event(db, command, event)
     return event, True
 
