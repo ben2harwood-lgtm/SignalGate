@@ -150,12 +150,18 @@ def test_postgresql_duplicate_execution_and_tp_close_preserve_lock_order(
                 _ea="offline-test",
             ).status
 
+    # The legitimate TP1-close callback sends one offline notice; the
+    # concurrent duplicate execution receipt must not emit a second notice.
+    notifications = []
     with monkeypatch.context() as patch:
         patch.setattr(crud.settings, "require_license", True)
         patch.setattr(command_routes.settings, "require_license", True)
         patch.setattr(crud, "_lock_audit_chain", pause_duplicate_after_real_advisory_lock)
         patch.setattr(crud, "record_management_event", record_tp_after_command_lock)
-        patch.setattr(command_routes, "notify_user_and_admins", lambda *_a, **_kw: None)
+        patch.setattr(
+            command_routes, "notify_user_and_admins",
+            lambda *_a, **_kw: notifications.append((_a, _kw)),
+        )
         with ThreadPoolExecutor(max_workers=2) as pool:
             duplicate = pool.submit(duplicate_retry)
             try:
@@ -197,6 +203,15 @@ def test_postgresql_duplicate_execution_and_tp_close_preserve_lock_order(
 
     assert duplicate_status == "duplicate_ignored"
     assert management_status == "ok"
+    assert len(notifications) == 1, (
+        "Concurrent duplicate execution must not send a second notification"
+    )
+    assert notifications[0][0][0] == owner["telegram_user_id"], (
+        "TP1-close notice must be scoped to the original synthetic subscriber"
+    )
+    assert "TP1 close" in notifications[0][0][1], (
+        "Only the genuine TP1-close notification is expected"
+    )
     with SessionLocal() as session:
         command = session.get(models.Command, command_id)
         assert command is not None and command.status == "PARTIAL_TP1_DONE"
