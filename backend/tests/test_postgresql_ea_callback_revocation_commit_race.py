@@ -1234,11 +1234,10 @@ def test_postgresql_command_account_relabel_execution_after_auth(
     A has a delivered synthetic command. A's valid EA callback resolves and
     retains its customer, signal, approval and original account share locks.
     B changes ONLY Command.account_id in another PostgreSQL session and commits
-    while A is paused. A must not subsequently record a first FAILED execution
-    a matching retry's acknowledgement OR an inconsistent-retry conflict
-    audit for a now-foreign-account command. These are fabricated no-order
-    reports; no broker, EA, external HTTP
-    request or customer information is involved.
+    while A is paused. A must not subsequently record a first FAILED execution,
+    acknowledge a matching retry with a duplicate audit, or commit an
+    inconsistent-retry conflict audit for a now-foreign-account command.
+    All reports are synthetic no-order data: no EA, broker or external HTTP.
 
     Until the invariant is fixed, strict XFAILs are emitted ONLY after both
     transactions commit and the unauthorized first receipt, matching retry
@@ -1298,7 +1297,8 @@ def test_postgresql_command_account_relabel_execution_after_auth(
 
     if report_case in {"matching-failed-retry", "conflicting-failed-retry"}:
         # Seed the original no-broker FAILED receipt before the account drift.
-        # The post-drift retry must not even commit a conflict audit.
+        # Neither a matching-duplicate audit nor a conflict audit is permitted
+        # after a committed foreign-account reassignment.
         with monkeypatch.context() as patch:
             patch.setattr(
                 command_routes, "notify_user_and_admins",
@@ -1413,12 +1413,17 @@ def test_postgresql_command_account_relabel_execution_after_auth(
             models.AuditLog.event_type == "EXECUTION_REPORT_CONFLICT",
             models.AuditLog.entity_id == command_id,
         ).count()
+        duplicate_audits = session.query(models.AuditLog).filter(
+            models.AuditLog.event_type == "DUPLICATE_EXECUTION_REPORT_IGNORED",
+            models.AuditLog.entity_id == command_id,
+        ).count()
 
     has_prior_receipt = report_case != "first-failed-receipt"
     if callback_result == 403:
         assert len(executions) == int(has_prior_receipt)
         assert recorded_audits == int(has_prior_receipt)
         assert conflict_audits == 0, "Denied stale callback must not log conflict"
+        assert duplicate_audits == 0, "Denied stale callback must not log duplicate"
         assert command_status_after == (
             "FAILED" if has_prior_receipt else "SENT_TO_EA"
         )
@@ -1435,6 +1440,7 @@ def test_postgresql_command_account_relabel_execution_after_auth(
         and executions[0].status == "FAILED"
         and recorded_audits == 1
         and conflict_audits == 0
+        and duplicate_audits == 0
     ):
         pytest.xfail(
             "RELEASE HOLD: subscriber A's FAILED execution and audit committed "
@@ -1451,10 +1457,11 @@ def test_postgresql_command_account_relabel_execution_after_auth(
         and command_status_after == "FAILED"
         and recorded_audits == 1
         and conflict_audits == 0
+        and duplicate_audits == 1
     ):
         pytest.xfail(
             "RELEASE HOLD: subscriber A's matching FAILED retry was acknowledged "
-            "as a duplicate AFTER subscriber B's Command.account_id relabel committed"
+            "with a duplicate audit AFTER subscriber B's account relabel committed"
         )
 
     if (
@@ -1467,6 +1474,7 @@ def test_postgresql_command_account_relabel_execution_after_auth(
         and command_status_after == "FAILED"
         and recorded_audits == 1
         and conflict_audits == 1
+        and duplicate_audits == 0
     ):
         pytest.xfail(
             "RELEASE HOLD: subscriber A's conflicting retry committed an audit "
@@ -1477,7 +1485,8 @@ def test_postgresql_command_account_relabel_execution_after_auth(
         "Unexpected post-reassignment callback outcome: "
         f"case={report_case}, result={callback_result!r}, "
         f"executions={len(executions)}, recorded_audits={recorded_audits}, "
-        f"conflict_audits={conflict_audits}, command_status={command_status_after}"
+        f"conflict_audits={conflict_audits}, duplicate_audits={duplicate_audits}, "
+        f"command_status={command_status_after}"
     )
 @pytest.mark.parametrize(
     ("event_type", "stage", "result"),
