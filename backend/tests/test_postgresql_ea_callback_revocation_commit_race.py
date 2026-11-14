@@ -1367,6 +1367,10 @@ def test_postgresql_command_account_relabel_execution_after_auth(
             session.commit()
             rewrite_committed.set()
 
+    # The initial synthetic receipt is seeded with notifications disabled.
+    # This spy isolates only the racing callback and catches an unsafe send
+    # even if a future code path returns 403 after attempting notification.
+    notifications = []
     with monkeypatch.context() as patch:
         patch.setattr(crud.settings, "require_license", True)
         patch.setattr(command_routes.settings, "require_license", True)
@@ -1375,7 +1379,8 @@ def test_postgresql_command_account_relabel_execution_after_auth(
             pause_after_authorization,
         )
         patch.setattr(
-            command_routes, "notify_user_and_admins", lambda *_a, **_kw: None
+            command_routes, "notify_user_and_admins",
+            lambda *_a, **_kw: notifications.append((_a, _kw)),
         )
         with ThreadPoolExecutor(max_workers=2) as workers:
             execution_future = workers.submit(execution_in_session)
@@ -1424,6 +1429,9 @@ def test_postgresql_command_account_relabel_execution_after_auth(
         assert recorded_audits == int(has_prior_receipt)
         assert conflict_audits == 0, "Denied stale callback must not log conflict"
         assert duplicate_audits == 0, "Denied stale callback must not log duplicate"
+        assert not notifications, (
+            "Denied stale execution callback must not notify customer/admins"
+        )
         assert command_status_after == (
             "FAILED" if has_prior_receipt else "SENT_TO_EA"
         )
