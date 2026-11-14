@@ -2074,3 +2074,205 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
         release_retry.set()
         crud.settings.require_license = prior_crud_mode
         command_routes.settings.require_license = prior_route_mode
+
+def test_postgresql_management_observation_precommit_account_relabel_fence(
+    client, db, monkeypatch
+):
+    """Synthetic callback-first commit-order witness for an audit-only TP1 event.
+
+    The EA-shaped TP1_REACHED observation is staged and flushed but remains
+    uncommitted. Another transaction then attempts to relabel Command.account_id
+    to subscriber B. A correct provenance fence must either serialize B behind
+    A's final commit or deny and roll back A after B commits. A committed stale
+    receipt/audit after B's relabel is a strict XFAIL, never a passing gate.
+    No EA, broker, network traffic, order or customer data is involved.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires two independent PostgreSQL transactions")
+
+    from app.schemas import ManagementEventRequest
+    from .test_provider_export import _provider, _headers
+
+    provider, feed, provider_key = _provider(
+        db, "management-observation-precommit-relabel"
+    )
+    db.commit()
+    owner = register_user(
+        client, "990370", "synthetic_precommit_mgmt_a", "Synthetic A"
+    )
+    foreign = register_user(
+        client, "990371", "synthetic_precommit_mgmt_b", "Synthetic B"
+    )
+    _, account_a = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, owner["id"])
+    )
+    _, account_b = crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, foreign["id"])
+    )
+    account_a_id, account_b_id = account_a.id, account_b.id
+    assert account_a_id != account_b_id
+    db.commit()
+
+    created = client.post(
+        "/signals/create",
+        headers=_headers(provider, provider_key),
+        json={"feed_id": feed.id, "raw_text": VALID},
+    )
+    assert created.status_code == 200, created.text
+    approved = client.post(
+        f"/signals/{created.json()['id']}/approve",
+        json={"telegram_user_id": owner["telegram_user_id"]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+    command_id = approved.json()["command_id"]
+    db.rollback()
+
+    claimed = client.get(
+        "/commands/pending", headers=EA_HEADERS,
+        params={"user_id": owner["id"]},
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["command"]["command_id"] == command_id
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            command_routes, "notify_user_and_admins", lambda *_a, **_kw: None
+        )
+        seeded = client.post(
+            f"/commands/{command_id}/execution",
+            headers=EA_HEADERS,
+            json={
+                "status": "SUCCESS",
+                "broker_ticket": "SYNTHETIC-PRECOMMIT-NO-BROKER",
+                "executed_symbol": "XAUUSD",
+                "executed_direction": "BUY",
+                "executed_price": 2345.0,
+                "lot_size": 0.1,
+            },
+        )
+    assert seeded.status_code == 200, seeded.text
+    assert seeded.json()["status"] == "ok"
+    db.expire_all()
+    initial = db.get(models.Command, command_id)
+    assert initial.status == "EXECUTED_OPEN"
+    assert initial.account_id == account_a_id
+    db.rollback()
+
+    observation_staged = Event()
+    release_commit = Event()
+    rewrite_attempted = Event()
+    rewrite_committed = Event()
+    original_record = crud.record_management_event
+
+    def pause_after_observation_staged(session, command, payload):
+        recorded = original_record(session, command, payload)
+        assert recorded[1], "Expected a new synthetic price observation"
+        session.flush()  # Include its audit in A's uncommitted transaction.
+        observation_staged.set()
+        assert release_commit.wait(timeout=15), (
+            "Observation transaction did not resume after relabel attempt"
+        )
+        return recorded
+
+    def observe_in_independent_transaction():
+        with SessionLocal() as session:
+            session.connection().exec_driver_sql(
+                "SET LOCAL statement_timeout = '12s'"
+            )
+            try:
+                return command_routes.report_management_event(
+                    command_id,
+                    ManagementEventRequest(
+                        event_type="TP1_REACHED",
+                        stage="TP1_REACHED",
+                        result="PENDING",
+                    ),
+                    x_sg_license_key=owner["license_key"],
+                    db=session,
+                    _ea="offline-test",
+                ).status
+            except HTTPException as exc:
+                session.rollback()
+                return exc.status_code
+
+    def rewrite_in_independent_transaction():
+        with SessionLocal() as session:
+            session.connection().exec_driver_sql(
+                "SET LOCAL statement_timeout = '12s'"
+            )
+            changed = session.get(models.Command, command_id)
+            assert changed is not None
+            changed.account_id = account_b_id
+            rewrite_attempted.set()
+            session.commit()
+            rewrite_committed.set()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(
+            crud, "record_management_event", pause_after_observation_staged
+        )
+        patch.setattr(
+            command_routes, "notify_user_and_admins", lambda *_a, **_kw: None
+        )
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            observed = workers.submit(observe_in_independent_transaction)
+            try:
+                assert observation_staged.wait(timeout=8), (
+                    "Price observation never staged its audit"
+                )
+                writer = workers.submit(rewrite_in_independent_transaction)
+                assert rewrite_attempted.wait(timeout=8), (
+                    "Competing account relabel never attempted commit"
+                )
+                writer_overtook = rewrite_committed.wait(timeout=3)
+            finally:
+                release_commit.set()
+            callback_result = observed.result(timeout=22)
+            writer.result(timeout=22)
+
+    with SessionLocal() as session:
+        changed = session.get(models.Command, command_id)
+        assert changed is not None
+        assert changed.account_id == account_b_id
+        assert changed.status == "EXECUTED_OPEN"
+        assert session.query(models.Execution).filter(
+            models.Execution.command_id == command_id
+        ).count() == 1
+        events = session.query(models.TradeManagementEvent).filter(
+            models.TradeManagementEvent.command_id == command_id
+        ).all()
+        audits = (
+            session.query(models.AuditLog).filter(
+                models.AuditLog.event_type == "MANAGEMENT_EVENT",
+                models.AuditLog.entity_id == events[0].id,
+            ).count()
+            if len(events) == 1 else 0
+        )
+
+    if writer_overtook and callback_result == 403:
+        assert not events and audits == 0, (
+            "Denied stale observation must roll back both event and audit"
+        )
+        return
+    if writer_overtook and (
+        callback_result == "ok"
+        and len(events) == 1
+        and events[0].event_type == "TP1_REACHED"
+        and events[0].result == "PENDING"
+        and audits == 1
+    ):
+        pytest.xfail(
+            "RELEASE HOLD: callback-first observation was staged before "
+            "relabel but its receipt/audit committed AFTER B's relabel"
+        )
+    assert not writer_overtook, (
+        "Relabel overtook A's uncommitted receipt without correct denial"
+    )
+    assert callback_result == "ok", (
+        f"Unexpected callback-first outcome: {callback_result!r}"
+    )
+    assert len(events) == 1 and audits == 1, (
+        "Callback-first serialized observation must persist exactly once"
+    )
