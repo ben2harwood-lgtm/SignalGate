@@ -2205,6 +2205,8 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
     assert initial.account_id == account_a_id
     db.rollback()
 
+    # Offline spy: a denied stale callback must never notify anyone.
+    notifications = []
     observation_staged = Event()
     release_commit = Event()
     rewrite_attempted = Event()
@@ -2261,7 +2263,8 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
             crud, "record_management_event", pause_after_observation_staged
         )
         patch.setattr(
-            command_routes, "notify_user_and_admins", lambda *_a, **_kw: None
+            command_routes, "notify_user_and_admins",
+            lambda *_a, **_kw: notifications.append((_a, _kw)),
         )
         with ThreadPoolExecutor(max_workers=2) as workers:
             observed = workers.submit(observe_in_independent_transaction)
@@ -2306,6 +2309,9 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
     if writer_overtook and callback_result == 403:
         assert not events and audits == 0, (
             "Denied stale observation must roll back both event and audit"
+        )
+        assert not notifications, (
+            "Denied stale callback must not send customer/admin notifications"
         )
         return
     if writer_overtook and (
