@@ -167,19 +167,20 @@ def test_postgresql_duplicate_execution_and_tp_close_preserve_lock_order(
                     "State-changing TP never acquired Command FOR UPDATE"
                 )
 
-                # Prove a real PostgreSQL lock wait, not thread timing alone.
+                # Prove specifically an advisory-lock wait, not merely any
+                # PostgreSQL Lock event (e.g. a Command row/transaction lock).
                 tp_waiting_on_audit_lock = False
                 with SessionLocal() as observer:
                     deadline = monotonic() + 5
                     while monotonic() < deadline:
-                        wait_type = observer.execute(
+                        wait_event = observer.execute(
                             text(
-                                "SELECT wait_event_type FROM pg_stat_activity "
-                                "WHERE pid = :pid"
+                                "SELECT wait_event FROM pg_stat_activity "
+                                "WHERE pid = :pid AND wait_event_type = 'Lock'"
                             ),
                             {"pid": tp_pid["value"]},
                         ).scalar_one_or_none()
-                        if wait_type == "Lock":
+                        if wait_event == "advisory":
                             tp_waiting_on_audit_lock = True
                             break
                         sleep(0.05)
