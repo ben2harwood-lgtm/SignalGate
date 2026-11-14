@@ -1390,10 +1390,17 @@ def test_postgresql_command_account_relabel_execution_after_auth(
         "Unexpected post-reassignment callback outcome: "
         f"result={callback_result!r}, executions={len(executions)}, audits={audits}"
     )
+@pytest.mark.parametrize(
+    ("event_type", "stage", "result"),
+    [
+        pytest.param("TP1_REACHED", "TP1_REACHED", "PENDING", id="price-observation"),
+        pytest.param("TP1_CLOSE_SUCCESS", "TP1_CLOSED", "SUCCESS", id="state-advance"),
+    ],
+)
 def test_postgresql_command_account_relabel_management_observation_after_auth(
-    client, db, monkeypatch
+    client, db, monkeypatch, event_type, stage, result
 ):
-    """Synthetic two-session HOLD witness for a TP price observation.
+    """Synthetic two-session HOLD witness for price and state-changing callbacks.
 
     A legitimately delivered demo command and a fabricated prior SUCCESS
     execution belong to subscriber A. The callback resolves A's original
@@ -1499,9 +1506,9 @@ def test_postgresql_command_account_relabel_management_observation_after_auth(
                 return command_routes.report_management_event(
                     command_id,
                     ManagementEventRequest(
-                        event_type="TP1_REACHED",
-                        stage="TP1_REACHED",
-                        result="PENDING",
+                        event_type=event_type,
+                        stage=stage,
+                        result=result,
                     ),
                     x_sg_license_key=owner["license_key"],
                     db=session,
@@ -1551,6 +1558,7 @@ def test_postgresql_command_account_relabel_management_observation_after_auth(
         assert changed is not None
         assert changed.user_id == owner["id"]
         assert changed.account_id == account_b_id
+        command_status_after = changed.status
         executions = session.query(models.Execution).filter(
             models.Execution.command_id == command_id
         ).all()
@@ -1571,17 +1579,24 @@ def test_postgresql_command_account_relabel_management_observation_after_auth(
     if callback_result == 403:
         assert not events, "Denied stale callback must write no management row"
         assert audits == 0
+        assert command_status_after == "EXECUTED_OPEN", (
+            "Denied stale callback must not advance command state"
+        )
         return
 
     if (
         callback_result == "ok"
         and len(events) == 1
-        and events[0].event_type == "TP1_REACHED"
-        and events[0].result == "PENDING"
+        and events[0].event_type == event_type
+        and events[0].result == result
+        and command_status_after == (
+            "PARTIAL_TP1_DONE" if event_type == "TP1_CLOSE_SUCCESS"
+            else "EXECUTED_OPEN"
+        )
         and audits == 1
     ):
         pytest.xfail(
-            "RELEASE HOLD: A's management observation and audit committed "
+            "RELEASE HOLD: A's management callback and audit committed "
             "AFTER B's Command.account_id reassignment committed"
         )
 
