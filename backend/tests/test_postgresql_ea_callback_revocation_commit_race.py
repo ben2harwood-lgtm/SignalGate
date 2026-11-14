@@ -1585,6 +1585,8 @@ def test_postgresql_command_account_relabel_management_observation_after_auth(
     authorized = Event()
     resume_callback = Event()
     rewrite_committed = Event()
+    # Offline spy: a denied stale-account callback must not notify anyone.
+    notifications = []
     original_resolver = command_routes._get_authorized_callback_command
 
     def pause_after_authorization(session, cid, license_key):
@@ -1634,7 +1636,8 @@ def test_postgresql_command_account_relabel_management_observation_after_auth(
             pause_after_authorization,
         )
         patch.setattr(
-            command_routes, "notify_user_and_admins", lambda *_a, **_kw: None
+            command_routes, "notify_user_and_admins",
+            lambda *_a, **_kw: notifications.append((_a, _kw)),
         )
         with ThreadPoolExecutor(max_workers=2) as workers:
             callback_future = workers.submit(observation_in_session)
@@ -1679,6 +1682,9 @@ def test_postgresql_command_account_relabel_management_observation_after_auth(
         assert audits == 0
         assert command_status_after == "EXECUTED_OPEN", (
             "Denied stale callback must not advance command state"
+        )
+        assert not notifications, (
+            "Denied stale callback must not send customer/admin notifications"
         )
         return
 
