@@ -2075,13 +2075,26 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
         crud.settings.require_license = prior_crud_mode
         command_routes.settings.require_license = prior_route_mode
 
+@pytest.mark.parametrize(
+    ("event_type", "stage", "result", "expected_command_status"),
+    [
+        pytest.param(
+            "TP1_REACHED", "TP1_REACHED", "PENDING", "EXECUTED_OPEN",
+            id="price-observation",
+        ),
+        pytest.param(
+            "TP1_CLOSE_SUCCESS", "TP1_CLOSED", "SUCCESS", "PARTIAL_TP1_DONE",
+            id="state-advance-locked",
+        ),
+    ],
+)
 def test_postgresql_management_observation_precommit_account_relabel_fence(
-    client, db, monkeypatch
+    client, db, monkeypatch, event_type, stage, result, expected_command_status
 ):
-    """Synthetic callback-first commit-order witness for an audit-only TP1 event.
+    """Synthetic callback-first commit-order witness for price and state TP1 events.
 
-    The EA-shaped TP1_REACHED observation is staged and flushed but remains
-    uncommitted. Another transaction then attempts to relabel Command.account_id
+    An EA-shaped TP1 price observation or TP1_CLOSE_SUCCESS stage advance is
+    staged and flushed but remains uncommitted. Another transaction then attempts to relabel Command.account_id
     to subscriber B. A correct provenance fence must either serialize B behind
     A's final commit or deny and roll back A after B commits. A committed stale
     receipt/audit after B's relabel is a strict XFAIL, never a passing gate.
@@ -2183,9 +2196,9 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
                 return command_routes.report_management_event(
                     command_id,
                     ManagementEventRequest(
-                        event_type="TP1_REACHED",
-                        stage="TP1_REACHED",
-                        result="PENDING",
+                        event_type=event_type,
+                        stage=stage,
+                        result=result,
                     ),
                     x_sg_license_key=owner["license_key"],
                     db=session,
@@ -2236,7 +2249,7 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
         changed = session.get(models.Command, command_id)
         assert changed is not None
         assert changed.account_id == account_b_id
-        assert changed.status == "EXECUTED_OPEN"
+        assert changed.status == expected_command_status
         assert session.query(models.Execution).filter(
             models.Execution.command_id == command_id
         ).count() == 1
@@ -2259,8 +2272,8 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
     if writer_overtook and (
         callback_result == "ok"
         and len(events) == 1
-        and events[0].event_type == "TP1_REACHED"
-        and events[0].result == "PENDING"
+        and events[0].event_type == event_type
+        and events[0].result == result
         and audits == 1
     ):
         pytest.xfail(
@@ -2274,5 +2287,5 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
         f"Unexpected callback-first outcome: {callback_result!r}"
     )
     assert len(events) == 1 and audits == 1, (
-        "Callback-first serialized observation must persist exactly once"
+        "Callback-first serialized receipt must persist exactly once"
     )
