@@ -2277,7 +2277,12 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
         changed = session.get(models.Command, command_id)
         assert changed is not None
         assert changed.account_id == account_b_id
-        assert changed.status == expected_command_status
+        # A denied callback must leave the pre-existing state intact; only a
+        # committed, authorised TP1 close may advance to PARTIAL_TP1_DONE.
+        expected_final_status = (
+            "EXECUTED_OPEN" if callback_result == 403 else expected_command_status
+        )
+        assert changed.status == expected_final_status
         assert session.query(models.Execution).filter(
             models.Execution.command_id == command_id
         ).count() == 1
