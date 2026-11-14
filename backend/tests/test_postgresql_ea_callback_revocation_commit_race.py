@@ -1318,6 +1318,9 @@ def test_postgresql_command_account_relabel_execution_after_auth(
         assert db.get(models.Command, command_id).status == "FAILED"
         db.rollback()
 
+    with SessionLocal() as audit_session:
+        audit_rows_before = audit_session.query(models.AuditLog).count()
+
     authorized = Event()
     resume_callback = Event()
     rewrite_committed = Event()
@@ -1398,6 +1401,7 @@ def test_postgresql_command_account_relabel_execution_after_auth(
             rewrite_future.result(timeout=22)
 
     with SessionLocal() as session:
+        audit_rows_after = session.query(models.AuditLog).count()
         changed = session.get(models.Command, command_id)
         assert changed is not None and changed.account_id == account_b_id
         assert changed.user_id == owner["id"]
@@ -1425,6 +1429,9 @@ def test_postgresql_command_account_relabel_execution_after_auth(
 
     has_prior_receipt = report_case != "first-failed-receipt"
     if callback_result == 403:
+        assert audit_rows_after == audit_rows_before, (
+            "Denied stale callback must not append ANY audit event type"
+        )
         assert len(executions) == int(has_prior_receipt)
         assert recorded_audits == int(has_prior_receipt)
         assert conflict_audits == 0, "Denied stale callback must not log conflict"
@@ -1590,6 +1597,9 @@ def test_postgresql_command_account_relabel_management_observation_after_auth(
     assert db.get(models.Command, command_id).status == "EXECUTED_OPEN"
     db.rollback()
 
+    with SessionLocal() as audit_session:
+        audit_rows_before = audit_session.query(models.AuditLog).count()
+
     authorized = Event()
     resume_callback = Event()
     rewrite_committed = Event()
@@ -1663,6 +1673,7 @@ def test_postgresql_command_account_relabel_management_observation_after_auth(
             rewrite_future.result(timeout=22)
 
     with SessionLocal() as session:
+        audit_rows_after = session.query(models.AuditLog).count()
         changed = session.get(models.Command, command_id)
         assert changed is not None
         assert changed.user_id == owner["id"]
@@ -1686,6 +1697,9 @@ def test_postgresql_command_account_relabel_management_observation_after_auth(
         )
 
     if callback_result == 403:
+        assert audit_rows_after == audit_rows_before, (
+            "Denied stale callback must not append ANY audit event type"
+        )
         assert not events, "Denied stale callback must write no management row"
         assert audits == 0
         assert command_status_after == "EXECUTED_OPEN", (
@@ -2213,6 +2227,9 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
     assert initial.account_id == account_a_id
     db.rollback()
 
+    with SessionLocal() as audit_session:
+        audit_rows_before = audit_session.query(models.AuditLog).count()
+
     # Offline spy: a denied stale callback must never notify anyone.
     notifications = []
     observation_staged = Event()
@@ -2291,6 +2308,7 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
             writer.result(timeout=22)
 
     with SessionLocal() as session:
+        audit_rows_after = session.query(models.AuditLog).count()
         changed = session.get(models.Command, command_id)
         assert changed is not None
         assert changed.account_id == account_b_id
@@ -2315,6 +2333,9 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
         )
 
     if writer_overtook and callback_result == 403:
+        assert audit_rows_after == audit_rows_before, (
+            "Denied stale callback must not append ANY audit event type"
+        )
         assert not events and audits == 0, (
             "Denied stale observation must roll back both event and audit"
         )
