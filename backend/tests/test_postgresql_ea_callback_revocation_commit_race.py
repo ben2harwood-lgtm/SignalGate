@@ -2546,11 +2546,20 @@ def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_licen
                         "Unique-collision retry did not acquire real advisory lock"
                     )
                 revocation = pool.submit(rotate)
-                if not rotation_entered_audit.wait(timeout=8):
-                    raise RuntimeError("Rotation never flushed its User UPDATE")
-                waiting = False
+                # The current full rollback lets rotation flush the User
+                # UPDATE and then wait on the audit advisory lock. A correct
+                # lock-preserving retry should instead block that UPDATE on
+                # the callback's original customer SHARE lock. Observe BOTH
+                # barriers so a future correct fix does not fail the harness
+                # simply because the dangerous interleaving disappeared.
+                deadline = monotonic() + 8
+                while "value" not in rotation_pid and monotonic() < deadline:
+                    sleep(0.05)
+                if "value" not in rotation_pid:
+                    raise RuntimeError("Revocation session PID unavailable")
+                observed_wait = None
                 with SessionLocal() as observer:
-                    deadline = monotonic() + 5
+                    deadline = monotonic() + 8
                     while monotonic() < deadline:
                         wait_event = observer.execute(
                             text(
@@ -2559,13 +2568,17 @@ def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_licen
                             ),
                             {"pid": rotation_pid["value"]},
                         ).scalar_one_or_none()
-                        if wait_event == "advisory":
-                            waiting = True
+                        if wait_event in {"advisory", "transactionid", "tuple"}:
+                            observed_wait = wait_event
                             break
                         sleep(0.05)
-                if not waiting:
+                if observed_wait is None:
                     raise RuntimeError(
-                        "Rotation did not really wait for recovery's audit lock"
+                        "Revocation did not wait on audit or customer row locks"
+                    )
+                if observed_wait == "advisory":
+                    assert rotation_entered_audit.is_set(), (
+                        "Audit-lock wait occurred before revocation reached audit"
                     )
             finally:
                 release_first_insert.set()
@@ -2594,3 +2607,33 @@ def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_licen
         assert rotation_result == (
             "rotated" if revocation_kind == "rotation" else "deactivated"
         ), rotation_result
+
+        # These conditions are evaluated on a future no-deadlock outcome.
+        # The present strict-XFAIL 40P01 witness remains a release HOLD.
+        with SessionLocal() as session:
+            if revocation_kind == "rotation":
+                assert crud.get_user_by_license(
+                    session, owner["license_key"]
+                ) is None, "Successful rotation must invalidate the old licence"
+            else:
+                customer = crud.get_user_by_telegram(session, "990371")
+                assert customer is not None and customer.status == "INACTIVE"
+            receipts = session.query(models.AuditLog).filter(
+                models.AuditLog.entity_id == command_id,
+                models.AuditLog.event_type.in_((
+                    "BROKER_RECONCILIATION_MATCHED",
+                    "BROKER_RECONCILIATION_CONFLICT",
+                )),
+            ).all()
+            if recovery_result == 403:
+                assert not receipts, (
+                    "Denied stale reconciliation must not leave an audit"
+                )
+            else:
+                expected_event = (
+                    "BROKER_RECONCILIATION_MATCHED"
+                    if reconciliation_outcome == "matched"
+                    else "BROKER_RECONCILIATION_CONFLICT"
+                )
+                assert len(receipts) == 1
+                assert receipts[0].event_type == expected_event
