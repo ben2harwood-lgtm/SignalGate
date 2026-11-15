@@ -2366,3 +2366,214 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
     assert len(events) == 1 and audits == 1, (
         "Callback-first serialized receipt must persist exactly once"
     )
+
+
+class _ReconciliationAuditUserDeadlockObserved(Exception):
+    """Known PostgreSQL lock-order release hold; not a broker acceptance receipt."""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_ReconciliationAuditUserDeadlockObserved,
+    reason=(
+        "RELEASE HOLD: unique-Execution rollback retry holds audit advisory "
+        "lock before re-acquiring customer SHARE; rotation holds customer "
+        "UPDATE before requesting audit advisory lock"
+    ),
+)
+def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_license_rotation(
+    client, db, monkeypatch
+):
+    """Witness the *overlapping* audit/User lock cycle with real PG sessions.
+
+    Unlike the committed-revocation test, this holds the recovery audit lock
+    while rotation's flushed User update is waiting on that audit lock. The
+    recovery then tries its route's licence re-attestation. The expected
+    PostgreSQL 40P01 is an explicit strict XFAIL release hold, never a pass.
+
+    All customers, tickets, commands and receipts are fabricated and offline.
+    No EA, broker, order, external provider or deployment is contacted.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        pytest.skip("Requires independent PostgreSQL transactions")
+
+    from threading import local
+    from time import monotonic, sleep
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+
+    from app.schemas import BrokerPositionReconcileRequest, ExecutionRequest
+
+    owner = register_user(client, "990371")
+    signal = _hosted_provider_signal_for(client, "990371")
+    approval = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "990371"},
+    )
+    assert approval.status_code == 200, approval.text
+    assert approval.json()["result"] == "APPROVED"
+
+    headers = {**EA_HEADERS, "X-SG-License-Key": owner["license_key"]}
+    with monkeypatch.context() as patch:
+        patch.setattr(crud.settings, "require_license", True)
+        patch.setattr(command_routes.settings, "require_license", True)
+        patch.setattr(
+            command_routes, "notify_user_and_admins", lambda *_a, **_kw: None
+        )
+        polled = client.get("/commands/pending", headers=headers)
+        assert polled.status_code == 200, polled.text
+        command_id = polled.json()["command"]["command_id"]
+
+        role = local()
+        recovery_before_insert = Event()
+        release_first_insert = Event()
+        recovery_holds_audit = Event()
+        release_recovery_audit = Event()
+        rotation_entered_audit = Event()
+        rotation_pid = {}
+        original_next_id = crud._next_id
+        original_audit_lock = crud._lock_audit_chain
+
+        def hold_before_unique_insert(session, model):
+            if model is models.Execution and getattr(role, "name", None) == "recovery":
+                recovery_before_insert.set()
+                if not release_first_insert.wait(timeout=15):
+                    raise RuntimeError("First recovery-insert barrier timed out")
+            return original_next_id(session, model)
+
+        def stage_real_advisory_lock(session):
+            if getattr(role, "name", None) == "rotation":
+                # The customer UPDATE has already flushed at this point.
+                rotation_entered_audit.set()
+            original_audit_lock(session)
+            if getattr(role, "name", None) == "recovery":
+                recovery_holds_audit.set()
+                if not release_recovery_audit.wait(timeout=15):
+                    raise RuntimeError("Recovery advisory-lock barrier timed out")
+
+        patch.setattr(crud, "_next_id", hold_before_unique_insert)
+        patch.setattr(crud, "_lock_audit_chain", stage_real_advisory_lock)
+
+        snapshot = BrokerPositionReconcileRequest(
+            broker_tickets=["990371000001"],
+            executed_symbol="XAUUSD",
+            executed_direction="BUY",
+            executed_price=2345.0,
+            lot_size=0.1,
+        )
+        winning_report = ExecutionRequest(
+            status="SUCCESS",
+            broker_ticket="990371000001",
+            executed_symbol="XAUUSD",
+            executed_direction="BUY",
+            executed_price=2345.0,
+            lot_size=0.1,
+        )
+
+        def db_result(action):
+            try:
+                return action()
+            except OperationalError as exc:
+                if getattr(exc.orig, "pgcode", None) == "40P01":
+                    return "40P01"
+                raise
+
+        def recover():
+            role.name = "recovery"
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                return db_result(lambda: command_routes.reconcile_open_position(
+                    command_id, snapshot, x_sg_license_key=owner["license_key"],
+                    db=session, _ea="offline-test",
+                ).status)
+
+        def winning_execution():
+            role.name = "winner"
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                return command_routes.report_execution(
+                    command_id, winning_report,
+                    x_sg_license_key=owner["license_key"],
+                    db=session, _ea="offline-test",
+                ).status
+
+        def rotate():
+            role.name = "rotation"
+            with SessionLocal() as session:
+                session.connection().exec_driver_sql(
+                    "SET LOCAL statement_timeout = '12s'"
+                )
+                rotation_pid["value"] = session.connection().exec_driver_sql(
+                    "SELECT pg_backend_pid()"
+                ).scalar_one()
+                customer = crud.get_user_by_telegram(session, "990371")
+                assert customer is not None
+                return db_result(lambda: _rotate_and_commit(session, customer))
+
+        def _rotate_and_commit(session, customer):
+            assert crud.issue_license(session, customer) != owner["license_key"]
+            session.commit()
+            return "rotated"
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            recovering = pool.submit(recover)
+            try:
+                if not recovery_before_insert.wait(timeout=8):
+                    raise RuntimeError("Recovery did not reach real unique-insert gate")
+                winner = pool.submit(winning_execution)
+                assert winner.result(timeout=22) == "ok"
+                release_first_insert.set()
+                if not recovery_holds_audit.wait(timeout=8):
+                    raise RuntimeError(
+                        "Unique-collision retry did not acquire real advisory lock"
+                    )
+                revocation = pool.submit(rotate)
+                if not rotation_entered_audit.wait(timeout=8):
+                    raise RuntimeError("Rotation never flushed its User UPDATE")
+                waiting = False
+                with SessionLocal() as observer:
+                    deadline = monotonic() + 5
+                    while monotonic() < deadline:
+                        wait_event = observer.execute(
+                            text(
+                                "SELECT wait_event FROM pg_stat_activity "
+                                "WHERE pid = :pid AND wait_event_type = 'Lock'"
+                            ),
+                            {"pid": rotation_pid["value"]},
+                        ).scalar_one_or_none()
+                        if wait_event == "advisory":
+                            waiting = True
+                            break
+                        sleep(0.05)
+                if not waiting:
+                    raise RuntimeError(
+                        "Rotation did not really wait for recovery's audit lock"
+                    )
+            finally:
+                release_first_insert.set()
+                release_recovery_audit.set()
+
+            recovery_result = recovering.result(timeout=22)
+            rotation_result = revocation.result(timeout=22)
+
+        with SessionLocal() as session:
+            executions = session.query(models.Execution).filter(
+                models.Execution.command_id == command_id
+            ).all()
+            assert len(executions) == 1
+            assert executions[0].broker_ticket == "990371000001"
+            assert executions[0].status == "SUCCESS"
+            assert crud.verify_audit_chain(session)["valid"]
+
+        if "40P01" in (recovery_result, rotation_result):
+            raise _ReconciliationAuditUserDeadlockObserved(
+                "Actual PostgreSQL SQLSTATE 40P01 after audit/User lock inversion: "
+                f"recovery={recovery_result}, rotation={rotation_result}"
+            )
+        assert recovery_result in {"matched", 403}, recovery_result
+        assert rotation_result == "rotated", rotation_result
