@@ -1906,27 +1906,26 @@ def test_postgresql_command_account_relabel_recovery_after_auth(
 
 @pytest.mark.parametrize("revocation_kind", ("rotation", "deactivation"))
 @pytest.mark.parametrize("reconciliation_outcome", ("matched", "conflict"))
-def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
+def test_postgresql_reconciliation_savepoint_serializes_revocation(
     client, db, monkeypatch, revocation_kind, reconciliation_outcome
 ):
-    """HOLD witness: a raced recovery must not audit after losing licence locks.
+    """A raced PostgreSQL recovery must serialize with licence revocation.
 
-    Session A authorizes a previously delivered synthetic command, then pauses
-    just before inserting a recovered Execution. Session B commits a fabricated
-    SUCCESS report for that command. A resumes, loses the *real* PostgreSQL
-    unique(command_id) race and enters reconcile_open_position's recursive
-    retry after the full IntegrityError rollback. A third transaction then
-    revokes A's licence while that retry is paused. A must not record a
-    MATCHED or CONFLICT reconciliation audit after the revocation has committed.
-
-    This never contacts MT5, a broker or a provider and cannot prove external
-    acceptance. Each variant must demonstrate the unique collision, committed
-    revocation and 403 with no post-revocation reconciliation audit.
+    Session A holds customer SHARE authorisation, then loses a genuine unique
+    Execution insert to session B. While A's SAVEPOINT retry is paused, a third
+    transaction tries to rotate/deactivate the customer. The revoker MUST wait
+    on A's original customer lock rather than commit ahead of A's evidence.
+    After A commits a single MATCHED/CONFLICT receipt, the revocation commits
+    and the prior licence is invalidated. Both snapshot outcomes and both
+    revocation modes run with fabricated offline data only.
     """
     if db.get_bind().dialect.name != "postgresql":
         pytest.skip("Requires independent PostgreSQL sessions and unique constraint")
 
     from threading import local
+    from time import monotonic, sleep
+
+    from sqlalchemy import text
     from app.schemas import BrokerPositionReconcileRequest, ExecutionRequest
 
     owner = register_user(client, "990369")
@@ -1946,6 +1945,7 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
     retry_after_rollback = Event()
     release_retry = Event()
     revocation_committed = Event()
+    revocation_pid = {}
     conflict_observed = Event()
     original_next_id = crud._next_id
     original_reconcile = crud.reconcile_open_position
@@ -1960,7 +1960,7 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
 
     def observe_actual_rollback_retry(session, command, payload):
         # The initial invocation cannot reach here after before_insert;
-        # only the recursive call after an IntegrityError rollback can do so.
+        # only the recursive call after an IntegrityError SAVEPOINT collision can.
         if (
             getattr(role, "name", None) == "recovery"
             and before_insert.is_set()
@@ -1968,7 +1968,7 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
         ):
             retry_after_rollback.set()
             assert release_retry.wait(timeout=15), (
-                "Post-rollback reconciliation retry barrier was not released"
+                "Post-collision reconciliation retry barrier was not released"
             )
         try:
             return original_reconcile(session, command, payload)
@@ -2050,6 +2050,9 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
                 session.connection().exec_driver_sql(
                     "SET LOCAL statement_timeout = '12s'"
                 )
+                revocation_pid["value"] = session.connection().exec_driver_sql(
+                    "SELECT pg_backend_pid()"
+                ).scalar_one()
                 customer = crud.get_user_by_telegram(session, "990369")
                 assert customer is not None
                 if revocation_kind == "rotation":
@@ -2075,14 +2078,40 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
                     "IntegrityError rollback/retry path"
                 )
                 revoked = workers.submit(revoke_in_session)
-                assert revocation_committed.wait(timeout=8), (
-                    "Licence revocation could not commit after rollback"
+                deadline = monotonic() + 8
+                while "value" not in revocation_pid and monotonic() < deadline:
+                    sleep(0.05)
+                assert "value" in revocation_pid, "Revocation backend PID unavailable"
+                # Confirm an actual PostgreSQL wait, not merely an unscheduled
+                # Python thread. Correct SAVEPOINT logic retains A's original
+                # customer SHARE lock through its audit and outer commit.
+                observed_wait = None
+                with SessionLocal() as observer:
+                    deadline = monotonic() + 8
+                    while monotonic() < deadline:
+                        observed_wait = observer.execute(
+                            text(
+                                "SELECT wait_event FROM pg_stat_activity "
+                                "WHERE pid = :pid AND wait_event_type = 'Lock'"
+                            ),
+                            {"pid": revocation_pid["value"]},
+                        ).scalar_one_or_none()
+                        if observed_wait in {"transactionid", "tuple"}:
+                            break
+                        sleep(0.05)
+                assert observed_wait in {"transactionid", "tuple"}, (
+                    "Revocation did not block on the callback's customer lock: "
+                    f"{observed_wait!r}"
+                )
+                assert not revocation_committed.is_set(), (
+                    "Revocation committed before authorised recovery evidence"
                 )
             finally:
                 release_insert.set()
                 release_retry.set()
-            stale_result = recovering.result(timeout=22)
+            recovered_result = recovering.result(timeout=22)
             revoked.result(timeout=22)
+            assert revocation_committed.is_set()
 
         with SessionLocal() as session:
             user = crud.get_user_by_telegram(session, "990369")
@@ -2099,13 +2128,13 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
             assert len(executions) == 1
             assert executions[0].status == "SUCCESS"
             assert executions[0].broker_ticket == winner_ticket
-            stale_audits = session.query(models.AuditLog).filter(
+            reconciliation_audits = session.query(models.AuditLog).filter(
                 models.AuditLog.event_type.in_((
                     "BROKER_RECONCILIATION_MATCHED",
                     "BROKER_RECONCILIATION_CONFLICT",
                 )),
                 models.AuditLog.entity_id == command_id,
-            ).count()
+            ).all()
             recovered_audits = session.query(models.AuditLog).filter(
                 models.AuditLog.event_type == "EXECUTION_RECOVERED_FROM_BROKER_SNAPSHOT",
             ).count()
@@ -2121,12 +2150,18 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
             )
         else:
             assert not conflict_observed.is_set()
-        assert stale_result == 403, (
-            "Post-rollback reconciliation must revalidate the current EA "
-            f"licence before commit; received {stale_result!r}"
+        expected_status = "matched" if reconciliation_outcome == "matched" else 409
+        assert recovered_result == expected_status, (
+            "Callback-first reconciliation must commit while retaining the "
+            f"original customer lock; received {recovered_result!r}"
         )
-        assert stale_audits == 0, (
-            "Post-revocation reconciliation must not persist a MATCHED/CONFLICT audit"
+        assert len(reconciliation_audits) == 1, (
+            "Authorised callback must append exactly one reconciliation receipt"
+        )
+        assert reconciliation_audits[0].event_type == (
+            "BROKER_RECONCILIATION_MATCHED"
+            if reconciliation_outcome == "matched"
+            else "BROKER_RECONCILIATION_CONFLICT"
         )
     finally:
         release_insert.set()
