@@ -1807,6 +1807,7 @@ def test_postgresql_command_account_relabel_recovery_after_auth(
         )
         return command
 
+    # Ticket 990367000001 is fabricated/offline, but has canonical MT5 decimal shape.
     def recover_in_session():
         with SessionLocal() as session:
             session.connection().exec_driver_sql(
@@ -1816,7 +1817,7 @@ def test_postgresql_command_account_relabel_recovery_after_auth(
                 return command_routes.reconcile_open_position(
                     command_id,
                     BrokerPositionReconcileRequest(
-                        broker_tickets=["SYNTHETIC-NO-BROKER-990367"],
+                        broker_tickets=["990367000001"],
                         executed_symbol="XAUUSD",
                         executed_direction="BUY",
                         executed_price=2345.0,
@@ -1985,10 +1986,12 @@ def test_postgresql_reconciliation_rollback_revocation_cannot_audit(
         issued = claimed.json()["command"]
         assert issued is not None
         command_id = issued["command_id"]
-        ticket = "SYNTHETIC-RECONCILE-RACE-NO-BROKER"
+        # Both ticket IDs are fabricated; decimal shape must survive stricter
+        # broker-snapshot validation without changing matched/conflict semantics.
+        ticket = "990369000001"
         winner_ticket = (
             ticket if reconciliation_outcome == "matched"
-            else "SYNTHETIC-DIFFERENT-TICKET-NO-BROKER"
+            else "990369000002"
         )
         snapshot = BrokerPositionReconcileRequest(
             broker_tickets=[ticket],
