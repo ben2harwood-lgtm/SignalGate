@@ -2372,6 +2372,8 @@ class _ReconciliationAuditUserDeadlockObserved(Exception):
     """Known PostgreSQL lock-order release hold; not a broker acceptance receipt."""
 
 
+@pytest.mark.parametrize("revocation_kind", ("rotation", "deactivation"))
+@pytest.mark.parametrize("reconciliation_outcome", ("matched", "conflict"))
 @pytest.mark.xfail(
     strict=True,
     raises=_ReconciliationAuditUserDeadlockObserved,
@@ -2382,14 +2384,16 @@ class _ReconciliationAuditUserDeadlockObserved(Exception):
     ),
 )
 def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_license_rotation(
-    client, db, monkeypatch
+    client, db, monkeypatch, revocation_kind, reconciliation_outcome
 ):
     """Witness the *overlapping* audit/User lock cycle with real PG sessions.
 
     Unlike the committed-revocation test, this holds the recovery audit lock
     while rotation's flushed User update is waiting on that audit lock. The
-    recovery then tries its route's licence re-attestation. The expected
-    PostgreSQL 40P01 is an explicit strict XFAIL release hold, never a pass.
+    recovery then tries its route's licence re-attestation. Both licence
+    rotation/deactivation and matched/conflicting winning snapshots use this
+    lock order. The expected PostgreSQL 40P01 is an explicit strict XFAIL
+    release hold, never a pass.
 
     All customers, tickets, commands and receipts are fabricated and offline.
     No EA, broker, order, external provider or deployment is contacted.
@@ -2462,9 +2466,13 @@ def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_licen
             executed_price=2345.0,
             lot_size=0.1,
         )
+        winning_ticket = (
+            "990371000001" if reconciliation_outcome == "matched"
+            else "990371000002"
+        )
         winning_report = ExecutionRequest(
             status="SUCCESS",
-            broker_ticket="990371000001",
+            broker_ticket=winning_ticket,
             executed_symbol="XAUUSD",
             executed_direction="BUY",
             executed_price=2345.0,
@@ -2474,6 +2482,8 @@ def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_licen
         def db_result(action):
             try:
                 return action()
+            except HTTPException as exc:
+                return exc.status_code
             except OperationalError as exc:
                 if getattr(exc.orig, "pgcode", None) == "40P01":
                     return "40P01"
@@ -2513,12 +2523,15 @@ def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_licen
                 ).scalar_one()
                 customer = crud.get_user_by_telegram(session, "990371")
                 assert customer is not None
-                return db_result(lambda: _rotate_and_commit(session, customer))
+                return db_result(lambda: _revoke_and_commit(session, customer))
 
-        def _rotate_and_commit(session, customer):
-            assert crud.issue_license(session, customer) != owner["license_key"]
+        def _revoke_and_commit(session, customer):
+            if revocation_kind == "rotation":
+                assert crud.issue_license(session, customer) != owner["license_key"]
+            else:
+                crud.set_user_status(session, customer, "INACTIVE")
             session.commit()
-            return "rotated"
+            return "rotated" if revocation_kind == "rotation" else "deactivated"
 
         with ThreadPoolExecutor(max_workers=3) as pool:
             recovering = pool.submit(recover)
@@ -2566,7 +2579,7 @@ def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_licen
                 models.Execution.command_id == command_id
             ).all()
             assert len(executions) == 1
-            assert executions[0].broker_ticket == "990371000001"
+            assert executions[0].broker_ticket == winning_ticket
             assert executions[0].status == "SUCCESS"
             assert crud.verify_audit_chain(session)["valid"]
 
@@ -2575,5 +2588,9 @@ def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_licen
                 "Actual PostgreSQL SQLSTATE 40P01 after audit/User lock inversion: "
                 f"recovery={recovery_result}, rotation={rotation_result}"
             )
-        assert recovery_result in {"matched", 403}, recovery_result
-        assert rotation_result == "rotated", rotation_result
+        assert recovery_result in (
+            {"matched", 403} if reconciliation_outcome == "matched" else {409, 403}
+        ), recovery_result
+        assert rotation_result == (
+            "rotated" if revocation_kind == "rotation" else "deactivated"
+        ), rotation_result
