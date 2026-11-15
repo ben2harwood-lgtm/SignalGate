@@ -2592,8 +2592,24 @@ def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_licen
                 models.Execution.command_id == command_id
             ).all()
             assert len(executions) == 1
-            assert executions[0].broker_ticket == winning_ticket
-            assert executions[0].status == "SUCCESS"
+            # The losing synthetic reconciliation must never overwrite the
+            # original fill, even when a deadlock aborts one session or a
+            # future lock-order repair serializes both sessions.
+            winner_execution = executions[0]
+            assert winner_execution.status == "SUCCESS"
+            assert winner_execution.user_id == owner["id"]
+            assert winner_execution.broker_ticket == winning_ticket
+            assert winner_execution.child_tickets_json is None
+            assert winner_execution.executed_symbol == "XAUUSD"
+            assert winner_execution.executed_direction == "BUY"
+            assert winner_execution.executed_price == 2345.0
+            assert winner_execution.lot_size == 0.1
+            assert session.query(models.AuditLog).filter(
+                models.AuditLog.event_type
+                == "EXECUTION_RECOVERED_FROM_BROKER_SNAPSHOT",
+            ).count() == 0, (
+                "A losing unique-insert recovery cannot claim a second fill"
+            )
             assert crud.verify_audit_chain(session)["valid"]
 
         if "40P01" in (recovery_result, rotation_result):
