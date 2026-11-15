@@ -2384,14 +2384,30 @@ def reconcile_open_position(
         tp2=command.tp2,
         tp3=command.tp3,
     )
-    db.add(execution)
-    if command.status == "SENT_TO_EA":
-        command.status = "EXECUTED_OPEN"
-        command.processed_at = utcnow()
-    try:
+    def _insert_candidate():
+        db.add(execution)
+        if command.status == "SENT_TO_EA":
+            command.status = "EXECUTED_OPEN"
+            command.processed_at = utcnow()
         db.flush()
+
+    # The original customer/tenant SHARE locks must outlive a PostgreSQL
+    # unique-insert collision. A full rollback releases those locks and can
+    # deadlock with a concurrent licence rotation's User -> audit lock order.
+    # Place ALL speculative ORM writes inside the SAVEPOINT: begin_nested()
+    # flushes any earlier pending ORM state before creating the SAVEPOINT.
+    is_postgresql = db.get_bind().dialect.name == "postgresql"
+    try:
+        if is_postgresql:
+            with db.begin_nested():
+                _insert_candidate()
+        else:
+            _insert_candidate()
     except IntegrityError:
-        db.rollback()
+        # The PostgreSQL SAVEPOINT alone rolled back, retaining the outer
+        # authorisation locks. Preserve the original SQLite demo behaviour.
+        if not is_postgresql:
+            db.rollback()
         existing = db.scalar(
             select(models.Execution).where(models.Execution.command_id == command.id)
         )

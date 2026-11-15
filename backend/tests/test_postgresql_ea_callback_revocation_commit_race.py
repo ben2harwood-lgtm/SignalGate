@@ -2369,20 +2369,11 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
 
 
 class _ReconciliationAuditUserDeadlockObserved(Exception):
-    """Known PostgreSQL lock-order release hold; not a broker acceptance receipt."""
+    """Unexpected PostgreSQL deadlock; not a broker acceptance receipt."""
 
 
 @pytest.mark.parametrize("revocation_kind", ("rotation", "deactivation"))
 @pytest.mark.parametrize("reconciliation_outcome", ("matched", "conflict"))
-@pytest.mark.xfail(
-    strict=True,
-    raises=_ReconciliationAuditUserDeadlockObserved,
-    reason=(
-        "RELEASE HOLD: unique-Execution rollback retry holds audit advisory "
-        "lock before re-acquiring customer SHARE; rotation holds customer "
-        "UPDATE before requesting audit advisory lock"
-    ),
-)
 def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_license_rotation(
     client, db, monkeypatch, revocation_kind, reconciliation_outcome
 ):
@@ -2392,8 +2383,8 @@ def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_licen
     while rotation's flushed User update is waiting on that audit lock. The
     recovery then tries its route's licence re-attestation. Both licence
     rotation/deactivation and matched/conflicting winning snapshots use this
-    lock order. The expected PostgreSQL 40P01 is an explicit strict XFAIL
-    release hold, never a pass.
+    lock order. PostgreSQL SQLSTATE 40P01 must fail this test, not be accepted as
+    an expected outcome. No synthetic result proves broker acceptance.
 
     All customers, tickets, commands and receipts are fabricated and offline.
     No EA, broker, order, external provider or deployment is contacted.
@@ -2625,7 +2616,7 @@ def test_postgresql_reconciliation_uniqueness_retry_does_not_deadlock_with_licen
         ), rotation_result
 
         # These conditions are evaluated on a future no-deadlock outcome.
-        # The present strict-XFAIL 40P01 witness remains a release HOLD.
+        # All four scenarios must now complete without SQLSTATE 40P01.
         with SessionLocal() as session:
             if revocation_kind == "rotation":
                 assert crud.get_user_by_license(
