@@ -255,6 +255,18 @@ def test_postgresql_duplicate_execution_and_tp_close_preserve_lock_order(
         assert session.scalar(
             select(models.Execution.id).where(models.Execution.command_id == command_id)
         ) is not None
+        # A conflicting retry must not overwrite the first synthetic
+        # execution's immutable broker evidence while keeping row count one.
+        persisted_execution = session.scalar(
+            select(models.Execution).where(models.Execution.command_id == command_id)
+        )
+        assert persisted_execution is not None
+        assert persisted_execution.status == "SUCCESS"
+        assert persisted_execution.broker_ticket == execution_payload.broker_ticket, (
+            "Conflicting concurrent retry replaced the original broker ticket"
+        )
+        assert persisted_execution.executed_price == execution_payload.executed_price
+        assert persisted_execution.lot_size == execution_payload.lot_size
         assert session.query(models.Execution).filter(
             models.Execution.command_id == command_id
         ).count() == 1
