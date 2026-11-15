@@ -173,6 +173,50 @@ def _get_authorized_callback_command(
     return command
 
 
+def _command_callback_origin(command: Command) -> tuple[str, ...]:
+    """Capture immutable authorisation provenance before callback mutations."""
+    return (
+        command.user_id, command.provider_id, command.feed_id,
+        command.signal_id, command.approval_id, command.account_id,
+    )
+
+
+def _fence_callback_origin_before_commit(
+    db: Session, command: Command, expected_origin: tuple[str, ...],
+) -> None:
+    """Deny a callback if Command tenancy changed after authorisation.
+
+    Hosted PostgreSQL callbacks may intentionally race at the Execution
+    uniqueness/SAVEPOINT path; locking Command before CRUD would defeat that
+    retry. Instead acquire a shared Command row lock just before committing
+    the callback and its audit. A concurrent account relabel either commits
+    first (this predicate fails and the pending audit is rolled back) or waits
+    until the authorised callback commits. Do not send external notifications
+    before this fence succeeds.
+    """
+    if not settings.require_license or db.get_bind().dialect.name != "postgresql":
+        return
+    user_id, provider_id, feed_id, signal_id, approval_id, account_id = expected_origin
+    unchanged = db.scalar(
+        select(Command.id).where(
+            Command.id == command.id,
+            Command.user_id == user_id,
+            Command.provider_id == provider_id,
+            Command.feed_id == feed_id,
+            Command.signal_id == signal_id,
+            Command.approval_id == approval_id,
+            Command.account_id == account_id,
+        ).with_for_update(read=True)
+    )
+    if unchanged is None:
+        # An event, retry/conflict receipt, or recovery audit may be staged in
+        # this transaction already. None may survive a foreign-account relabel.
+        db.rollback()
+        raise HTTPException(
+            status_code=403, detail="Command does not belong to this EA licence"
+        )
+
+
 @router.get("/commands/pending", response_model=PendingCommandResponse)
 def pending_command(
     user_id: Optional[str] = None,
@@ -260,16 +304,19 @@ def report_execution(
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
     command = _get_authorized_callback_command(db, command_id, x_sg_license_key)
+    authorized_origin = _command_callback_origin(command)
     try:
         execution, created = crud.record_execution(db, command, payload)
     except crud.ExecutionReportConflict as exc:
-        # Keep the conflict audit receipt. The incoming callback does not alter
-        # execution or command state.
+        # Keep a conflict audit only while the original command provenance
+        # remains valid through its transaction commit.
+        _fence_callback_origin_before_commit(db, command, authorized_origin)
         db.commit()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _fence_callback_origin_before_commit(db, command, authorized_origin)
     db.commit()
 
     if not created:
@@ -306,6 +353,7 @@ def reconcile_open_position(
     _ea: str = Depends(require_ea_api_key),
 ) -> BrokerPositionReconcileResponse:
     command = _get_authorized_callback_command(db, command_id, x_sg_license_key)
+    authorized_origin = _command_callback_origin(command)
     try:
         execution, reconciliation_status = crud.reconcile_open_position(
             db, command, payload
@@ -318,6 +366,7 @@ def reconcile_open_position(
             # transaction, releasing the original licence/tenant locks.
             # Re-attest before committing even a conflict audit.
             _get_authorized_callback_command(db, command_id, x_sg_license_key)
+        _fence_callback_origin_before_commit(db, command, authorized_origin)
         db.commit()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if settings.require_license:
@@ -327,6 +376,7 @@ def reconcile_open_position(
         # the new locks must be held through the evidence commit. In particular,
         # never commit a MATCHED audit after licence rotation/deactivation.
         _get_authorized_callback_command(db, command_id, x_sg_license_key)
+    _fence_callback_origin_before_commit(db, command, authorized_origin)
     db.commit()
     return BrokerPositionReconcileResponse(
         status=reconciliation_status,
@@ -364,6 +414,7 @@ def report_management_event(
     _ea: str = Depends(require_ea_api_key),
 ) -> SimpleStatus:
     command = _get_authorized_callback_command(db, command_id, x_sg_license_key)
+    authorized_origin = _command_callback_origin(command)
     # A different callback can close the command after its first authorised
     # SELECT, leaving this Session's Command object stale under PostgreSQL
     # READ COMMITTED. Serialize state-changing management receipts on the
@@ -415,8 +466,10 @@ def report_management_event(
     try:
         _event, created = crud.record_management_event(db, command, payload)
     except crud.ManagementEventConflict as exc:
+        _fence_callback_origin_before_commit(db, command, authorized_origin)
         db.commit()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _fence_callback_origin_before_commit(db, command, authorized_origin)
     db.commit()
     if not created:
         return SimpleStatus(status="duplicate_ignored")
