@@ -1891,7 +1891,12 @@ def test_postgresql_command_account_relabel_recovery_after_auth(
     if callback_result == 403:
         assert not executions, "Denied stale recovery must create no execution"
         assert audits == 0
-        return
+        # Refusing a stale recovery does not restore the delivered Command's
+        # original account: B's unauthorized reparent still committed.
+        pytest.xfail(
+            "RELEASE HOLD: recovery was denied but a delivered Command "
+            "remains permanently reassigned to a foreign subscriber"
+        )
 
     if (
         callback_result == "recovered"
