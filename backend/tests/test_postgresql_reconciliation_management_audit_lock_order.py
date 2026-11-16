@@ -59,6 +59,17 @@ def test_postgresql_reconciliation_audit_vs_management_command_lock(
         assert seeded.status_code == 200, seeded.text
         assert seeded.json()["status"] == "ok"
 
+        # Pin the command's complete origin before the two real PG sessions race.
+        # A successful callback must not silently transfer the approved trade.
+        with SessionLocal() as origin_session:
+            original = origin_session.get(models.Command, command_id)
+            assert original is not None
+            original_origin = (
+                original.account_id, original.provider_id, original.feed_id,
+                original.user_id, original.signal_id, original.approval_id,
+            )
+            assert original.account_id is not None
+
         roles = local()
         audit_locked, release_audit, manager_at_audit = (
             Event(), Event(), Event()
@@ -161,6 +172,12 @@ def test_postgresql_reconciliation_audit_vs_management_command_lock(
         assert execution.lot_size == 0.1
         command = session.get(models.Command, command_id)
         assert command is not None and command.status == "PARTIAL_TP1_DONE"
+        assert (
+            command.account_id, command.provider_id, command.feed_id,
+            command.user_id, command.signal_id, command.approval_id,
+        ) == original_origin, "Concurrent callbacks changed the approved command origin"
+        assert execution.executed_symbol == "XAUUSD"
+        assert execution.executed_direction == "BUY"
         assert session.query(models.TradeManagementEvent).filter(
             models.TradeManagementEvent.command_id == command_id
         ).count() == 1
