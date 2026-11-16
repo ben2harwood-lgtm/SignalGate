@@ -2413,6 +2413,13 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
     assert len(events) == 1 and audits == 1, (
         "Callback-first serialized receipt must persist exactly once"
     )
+    # Lock-order serialization protects the callback, but the independent
+    # writer STILL commits a foreign-account reparent after A finishes.
+    # Do not mistake this ordering proof for immutable delivered provenance.
+    pytest.xfail(
+        "RELEASE HOLD: even with a serialized callback, a delivered Command "
+        "was permanently reassigned to a foreign subscriber afterwards"
+    )
 
 
 class _ReconciliationAuditUserDeadlockObserved(Exception):
