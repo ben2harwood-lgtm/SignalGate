@@ -1445,7 +1445,11 @@ def test_postgresql_command_account_relabel_execution_after_auth(
         if has_prior_receipt:
             assert executions[0].status == "FAILED"
             assert executions[0].error_code == "SYNTHETIC_ORIGINAL_NO_ORDER"
-        return
+        # A denied callback does not undo an already committed tenant reparent.
+        # Preserve a release hold rather than count this as an accepted repair.
+        pytest.xfail(
+            "RELEASE HOLD: callback denied but delivered Command.account_id was successfully reassigned to a foreign subscriber"
+        )
 
     if (
         not has_prior_receipt
@@ -1708,7 +1712,11 @@ def test_postgresql_command_account_relabel_management_observation_after_auth(
         assert not notifications, (
             "Denied stale callback must not send customer/admin notifications"
         )
-        return
+        # A denied callback does not undo an already committed tenant reparent.
+        # Preserve a release hold rather than count this as an accepted repair.
+        pytest.xfail(
+            "RELEASE HOLD: management callback denied but delivered Command.account_id was successfully reassigned to a foreign subscriber"
+        )
 
     if (
         callback_result == "ok"
@@ -2380,7 +2388,11 @@ def test_postgresql_management_observation_precommit_account_relabel_fence(
         assert not notifications, (
             "Denied stale callback must not send customer/admin notifications"
         )
-        return
+        # A denied callback does not undo an already committed tenant reparent.
+        # Preserve a release hold rather than count this as an accepted repair.
+        pytest.xfail(
+            "RELEASE HOLD: precommit callback denied but a foreign-account Command reassignment committed first"
+        )
     if writer_overtook and (
         callback_result == "ok"
         and len(events) == 1
