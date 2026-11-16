@@ -1,12 +1,8 @@
-"""Demo-only release HOLD: generic provider recipient lookup after pause.
+"""Offline provider recipient authorization and pause-state regressions.
 
-The source-bound Telegram endpoint already refuses paused provider/feed scopes.
-This distinct authenticated provider endpoint has no equivalent pause check.
-These synthetic tests document the discrepancy without sending Telegram,
-creating commands, contacting MT5, or changing the implementation.
-
-Strict XFAIL is intentionally not a passing safety claim. A correction should
-make these tests XPASS/CI-red until the owner removes the marker after review.
+The generic authenticated recipient endpoint must deny paused/inactive scopes
+before enumerating users. The synthetic tests have no Telegram delivery, broker,
+real customer or command execution.
 """
 from __future__ import annotations
 
@@ -18,19 +14,7 @@ from .conftest import register_user
 from .test_provider_tenancy import _headers, _provider_fixture
 
 
-class _PausedProviderRecipientEnumeration(AssertionError):
-    """Known policy discrepancy: paused scope still returns recipient IDs."""
-
-
 @pytest.mark.parametrize("paused_scope_name", ("provider", "feed"))
-@pytest.mark.xfail(
-    strict=True,
-    raises=_PausedProviderRecipientEnumeration,
-    reason=(
-        "RELEASE HOLD: generic provider /signals/recipients still enumerates "
-        "subscribers after provider/feed pause; requires source-owner review"
-    ),
-)
 def test_paused_provider_recipient_lookup_refuses_enumeration(
     client, db, paused_scope_name
 ):
@@ -79,23 +63,9 @@ def test_paused_provider_recipient_lookup_refuses_enumeration(
         assert current.status == "ACTIVE" and current.paused is True
 
         paused_response = lookup()
-        # Check these invariants on the actual expected-failure path too.
-        # A strict XFAIL raised below must never mask an execution side effect.
+        # A denied lookup must never create a command or execution.
         assert db.query(models.Command).count() == 0
         assert db.query(models.Execution).count() == 0
-        # Only the *observed* 200 + exact scoped subscriber leak is the
-        # documented XFAIL. Unexpected 4xx/5xx, missing data or broader
-        # enumeration must fail CI rather than masquerade as the known gap.
-        if paused_response.status_code == 200:
-            leaked = paused_response.json().get("recipients")
-            assert isinstance(leaked, list)
-            assert [(row["user_id"], row["telegram_user_id"]) for row in leaked] == [
-                (user["id"], telegram_id)
-            ], "Unexpected paused recipient payload, not the known policy gap"
-            raise _PausedProviderRecipientEnumeration(
-                "Paused generic provider recipient endpoint enumerated "
-                f"the exact synthetic subscriber: scope={paused_scope_name}"
-            )
         assert paused_response.status_code == 403, paused_response.text
         assert "recipients" not in paused_response.json()
         assert "paused" in paused_response.json().get("detail", "").lower()
@@ -211,15 +181,6 @@ def test_active_empty_feed_remains_queryable(client, db):
 
 
 @pytest.mark.parametrize("paused_scope_name", ("provider", "feed"))
-@pytest.mark.xfail(
-    strict=True,
-    raises=_PausedProviderRecipientEnumeration,
-    reason=(
-        "RELEASE HOLD: paused /signals/recipients returns HTTP 200 even "
-        "for an empty subscriber feed; pause denial must not depend on "
-        "whether recipients happen to exist"
-    ),
-)
 def test_paused_empty_feed_refuses_recipient_lookup(client, db, paused_scope_name):
     """Paused feed/provider must fail closed even without subscribers.
 
@@ -248,13 +209,6 @@ def test_paused_empty_feed_refuses_recipient_lookup(client, db, paused_scope_nam
         )
         assert db.query(models.Command).count() == 0
         assert db.query(models.Execution).count() == 0
-        if response.status_code == 200:
-            assert response.json() == {"recipients": []}, (
-                "Unexpected paused empty-feed payload, not the known policy gap"
-            )
-            raise _PausedProviderRecipientEnumeration(
-                f"Paused empty {paused_scope_name} scope returned HTTP 200"
-            )
         assert response.status_code == 403, response.text
         assert "recipients" not in response.json()
         assert "paused" in response.json().get("detail", "").lower()
@@ -262,24 +216,14 @@ def test_paused_empty_feed_refuses_recipient_lookup(client, db, paused_scope_nam
         security.settings.require_license = original_license_setting
 
 
-class _InactiveFeedRecipientEnumeration(AssertionError):
-    """Known policy discrepancy: non-ACTIVE feed still exposes recipients."""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=_InactiveFeedRecipientEnumeration,
-    reason=(
-        "RELEASE HOLD: generic provider /signals/recipients still enumerates "
-        "subscribers when the feed status is not ACTIVE; source-owner review"
-    ),
-)
 def test_inactive_feed_refuses_recipient_lookup(client, db):
     """A disabled feed is not made eligible by a valid provider credential.
 
     This is an offline, invented-identity regression. Source-bound Telegram
     lookup already filters non-ACTIVE feed state. The provider principal remains
-    ACTIVE; only the feed is disabled to isolate the missing state gate.
+    ACTIVE; only the feed is disabled to exercise the inactive-feed gate.
     """
     provider, feed, raw_key = _provider_fixture(db, "recipient-inactive-feed")
     user = register_user(
@@ -316,14 +260,6 @@ def test_inactive_feed_refuses_recipient_lookup(client, db):
         response = lookup()
         assert db.query(models.Command).count() == 0
         assert db.query(models.Execution).count() == 0
-        if response.status_code == 200:
-            assert response.json() == {"recipients": [{
-                "user_id": user["id"],
-                "telegram_user_id": "4681",
-            }]}, "Unexpected inactive-feed payload, not the known policy gap"
-            raise _InactiveFeedRecipientEnumeration(
-                "Non-ACTIVE feed still exposed the exact synthetic recipient"
-            )
         assert response.status_code == 403, response.text
         assert "recipients" not in response.json()
         assert any(term in response.json().get("detail", "").lower()
@@ -332,14 +268,6 @@ def test_inactive_feed_refuses_recipient_lookup(client, db):
         security.settings.require_license = original_license_setting
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=_InactiveFeedRecipientEnumeration,
-    reason=(
-        "RELEASE HOLD: a non-ACTIVE empty feed still receives an HTTP 200 "
-        "recipient lookup response; deny before subscriber enumeration"
-    ),
-)
 def test_inactive_empty_feed_refuses_recipient_lookup(client, db):
     """Inactive feed denial must not depend on having any subscribers.
 
@@ -371,16 +299,9 @@ def test_inactive_empty_feed_refuses_recipient_lookup(client, db):
         assert db.get(models.Provider, provider.id).status == "ACTIVE"
 
         response = lookup()
-        # Assert no execution side effects *before* the deliberate XFAIL.
+        # Denial must have no command or execution side effects.
         assert db.query(models.Command).count() == 0
         assert db.query(models.Execution).count() == 0
-        if response.status_code == 200:
-            assert response.json() == {"recipients": []}, (
-                "Unexpected inactive empty-feed payload, not the known gap"
-            )
-            raise _InactiveFeedRecipientEnumeration(
-                "Inactive empty feed returned HTTP 200 to recipient lookup"
-            )
         assert response.status_code == 403, response.text
         assert "recipients" not in response.json()
         assert any(
@@ -398,11 +319,10 @@ def test_inactive_empty_feed_refuses_recipient_lookup(client, db):
 def test_restricted_feed_authentication_and_tenant_ownership_precede_denial(
     client, db, restricted_state
 ):
-    """An eventual pause fix must not turn bad credentials or foreign feeds into 403.
+    """Pause denial must not turn bad credentials or foreign feeds into 403.
 
     This positive security regression is synthetic and broker-free. The owner
-    endpoint currently lacks pause enforcement; this test intentionally checks
-    only independently required 401/404 precedence, not that known missing gate.
+    endpoint must preserve 401/404 precedence before checking local scope state.
     """
     owner, feed, owner_key = _provider_fixture(
         db, f"recipient-precedence-owner-{restricted_state}"
@@ -524,8 +444,7 @@ def test_rotated_provider_key_stays_unauthorised_for_restricted_feed(
         assert old_access.status_code == 401, old_access.text
         assert "recipients" not in old_access.json()
 
-        # Only check the new credential once the feed is active again: the
-        # restricted-path policy is a *separately held* expected failure.
+        # The new credential must work after scope is reactivated.
         if restricted_state == "provider_paused":
             db.get(models.Provider, provider.id).paused = False
         elif restricted_state == "feed_paused":
