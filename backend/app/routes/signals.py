@@ -6,7 +6,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from .. import crud
+from .. import crud, models
 from ..config import get_settings
 from ..database import get_db
 from ..parser import parse_signal
@@ -165,6 +165,15 @@ def signal_recipients(
         feed = crud.get_feed_for_provider(db, principal.provider_id, feed_id)
         if feed is None:
             raise HTTPException(status_code=404, detail="Feed not found")
+        # Check scope only after provider auth and feed ownership so a foreign
+        # feed never reveals its state to another provider.
+        provider = db.get(models.Provider, principal.provider_id)
+        if provider is None or provider.status != "ACTIVE":
+            raise HTTPException(status_code=401, detail="Invalid provider")
+        if provider.paused or feed.paused:
+            raise HTTPException(status_code=403, detail="Provider/feed is paused")
+        if feed.status != "ACTIVE":
+            raise HTTPException(status_code=403, detail="Feed is inactive")
         users = crud.list_active_users_for_feed(db, principal.provider_id, feed_id)
     else:
         users = crud.list_active_users(db)

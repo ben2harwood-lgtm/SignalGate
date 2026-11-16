@@ -4,7 +4,7 @@ This is the operator sequence for the first real provider pilot. It is intention
 
 ## Entry condition
 
-Do not begin the real-provider cohort until the applicable items in `docs/BETA_ACCEPTANCE.md` have retained evidence.
+**HOLD — no external cohort is authorised by this runbook.** Do not invite a real provider or subscriber into a broker-connected cohort until the independently reviewed, exact-source entry decision and the required receipts in `docs/BETA_ACCEPTANCE.md`, `docs/CONTROLLED_PROVIDER_PILOT.md`, and `docs/ACCEPTANCE_EVIDENCE_INDEX.md` are retained. Frozen RC2 `3b18bfc1ab56ca2c94f6ed9aaa5478d97a06d1a2` failed its official MetaEditor compilation (**18 errors / 4 warnings**) and must not be used for broker-demo acceptance. A new, independently reviewed successor is required; there is no accepted successor yet.
 
 At minimum, confirm:
 
@@ -95,7 +95,9 @@ See `docs/PILOT_PREFLIGHT.md`. Require a recorded PASS for demo-only mode, readi
 
 ## 6. Connect demo execution
 
-Use the accepted demo MT5 setup or the simulator.
+For an actual first-provider cohort, require the separately accepted, exact-candidate **MT5 DEMO-broker** setup: retain the full 40-character candidate SHA, matching green CI, an official MetaEditor **0-error / 0-warning** compile with a fresh nonempty **EX5**, and genuine broker-demo scenario receipts. Include independent safety review and the unresolved PR #60 multi-fill, deal-versus-position identity, TP1/TP2/TP3 exit and uncertain-reconciliation HOLD in the entry decision. An operator must not infer permission to unpause from a synthetic test or a compile alone.
+
+A **simulator is for internal-only, broker-free rehearsal with fictional data**, not a substitute for actual MT5 demo-broker acceptance or authority to activate a real-provider cohort. Label every simulated broker outcome **SYNTHETIC** and every unperformed actual broker scenario **NOT_RUN**. External network/security, legal, privacy, contract and other applicable entry gates remain open until evidenced and approved. No real-money trading or automatic copying.
 
 Before unpausing:
 

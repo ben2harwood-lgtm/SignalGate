@@ -1,9 +1,43 @@
 """Command polling, execution, and management event tests."""
 from __future__ import annotations
 
+import pytest
+
 from .conftest import EA_HEADERS, create_signal, register_user
 
 VALID = "XAUUSD BUY SL 2343 TP1 2353 TP2 2358 TP3 2363"
+
+
+def _hosted_provider_signal_for(client, telegram_id):
+    """Build a real tenant-scoped *synthetic* provider signal for hosted EA tests.
+
+    The existing tests formerly created a tenantless admin/local-demo signal
+    before switching to hosted mode. That does not exercise hosted authority.
+    This fixture creates an authenticated provider/feed and explicit test-only
+    membership for the already-registered subscriber; no broker or external
+    provider is involved. Local-demo tests keep using create_signal unchanged.
+    """
+    from app import crud
+    from app.database import SessionLocal
+    from .test_provider_export import _headers, _provider
+
+    with SessionLocal() as db:
+        provider, feed, key = _provider(db, f"hosted-command-{telegram_id}")
+        user = crud.get_user_by_telegram(db, telegram_id)
+        assert user is not None
+        crud.subscribe_user_to_feed(db, provider, feed, user)
+        db.commit()
+        provider_headers = _headers(provider, key)
+        feed_id = feed.id
+
+    created = client.post(
+        "/signals/create",
+        headers=provider_headers,
+        json={"raw_text": VALID, "feed_id": feed_id},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["parser_status"] == "VALID"
+    return created.json()
 
 
 def _approve(client, telegram_id="123"):
@@ -220,7 +254,7 @@ def test_hosted_callback_is_bound_to_owning_license(client):
 
     owner = register_user(client, "123")
     attacker = register_user(client, "456")
-    sig = create_signal(client, VALID)
+    sig = _hosted_provider_signal_for(client, "123")
     client.post(f"/signals/{sig['id']}/approve", json={"telegram_user_id": "123"})
 
     crud.settings.require_license = True
@@ -568,7 +602,7 @@ def test_hosted_reconciliation_is_bound_to_owning_license(client):
 
     owner = register_user(client, "805")
     attacker = register_user(client, "806")
-    sig = create_signal(client, VALID)
+    sig = _hosted_provider_signal_for(client, "805")
     client.post(
         f"/signals/{sig['id']}/approve",
         json={"telegram_user_id": "805"},
@@ -601,3 +635,307 @@ def test_hosted_reconciliation_is_bound_to_owning_license(client):
         assert allowed.json()["status"] == "recovered"
     finally:
         crud.settings.require_license = False
+
+
+
+def test_rotated_license_refuses_execution_and_reconciliation_after_claim(client):
+    """A revoked customer licence cannot report a broker outcome after EA claim.
+
+    Both endpoints receive synthetic payloads; no real broker is contacted.
+    """
+    from app import crud, models
+    from app.database import SessionLocal
+
+    owner = register_user(client, "809")
+    sig = _hosted_provider_signal_for(client, "809")
+    approved = client.post(
+        f"/signals/{sig['id']}/approve",
+        json={"telegram_user_id": "809"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["result"] == "APPROVED"
+
+    original_hosted = crud.settings.require_license
+    crud.settings.require_license = True
+    try:
+        old_headers = {**EA_HEADERS, "X-SG-License-Key": owner["license_key"]}
+        claimed = client.get("/commands/pending", headers=old_headers)
+        assert claimed.status_code == 200
+        command = claimed.json()["command"]
+        assert command is not None
+        cid = command["command_id"]
+
+        with SessionLocal() as db:
+            account = crud.get_user_by_telegram(db, "809")
+            assert account is not None
+            fresh_key = crud.issue_license(db, account)
+            db.commit()
+        assert fresh_key != owner["license_key"]
+        fresh_headers = {**EA_HEADERS, "X-SG-License-Key": fresh_key}
+
+        snapshot = {
+            "broker_tickets": ["8091"],
+            "executed_symbol": "XAUUSD",
+            "executed_direction": "BUY",
+            "executed_price": 2345.0,
+            "lot_size": 0.04,
+        }
+        # Missing customer authority and a formerly valid, rotated-out key
+        # must both be rejected after claim, without any callback side effects.
+        for endpoint, payload in (
+            ("execution", {"status": "FAILED", "error_code": "STALE_KEY"}),
+            ("reconcile_open_position", snapshot),
+        ):
+            for credential_case, headers in (
+                ("missing", EA_HEADERS),
+                ("revoked", old_headers),
+            ):
+                denied = client.post(
+                    f"/commands/{cid}/{endpoint}", json=payload, headers=headers
+                )
+                assert denied.status_code == 403, (
+                    endpoint, credential_case, denied.text
+                )
+
+        with SessionLocal() as db:
+            assert crud.get_command(db, cid).status == "SENT_TO_EA"
+            assert (
+                db.query(models.Execution)
+                .filter(models.Execution.command_id == cid)
+                .count() == 0
+            )
+            assert (
+                db.query(models.AuditLog)
+                .filter(
+                    models.AuditLog.entity_id == cid,
+                    models.AuditLog.event_type == "BROKER_RECONCILIATION_CONFLICT",
+                )
+                .count() == 0
+            )
+
+        # A current key can still report an existing synthetic broker snapshot.
+        allowed = client.post(
+            f"/commands/{cid}/reconcile_open_position",
+            json=snapshot,
+            headers=fresh_headers,
+        )
+        assert allowed.status_code == 200, allowed.text
+        assert allowed.json()["status"] == "recovered"
+    finally:
+        crud.settings.require_license = original_hosted
+
+
+def test_hosted_ack_and_management_reject_missing_or_foreign_customer_license(client):
+    """Synthetic EA callback isolation: a shared EA key is not user authority.
+
+    The existing hosted tests cover execution reports and open-position
+    reconciliation. This adds negative coverage for the other two callback
+    endpoints, without talking to a broker or creating a real execution.
+    """
+    from app import crud, models
+    from app.database import SessionLocal
+
+    owner = register_user(client, "807")
+    other = register_user(client, "808")
+    sig = _hosted_provider_signal_for(client, "807")
+    approval = client.post(
+        f"/signals/{sig['id']}/approve",
+        json={"telegram_user_id": "807"},
+    )
+    assert approval.status_code == 200
+    assert approval.json()["result"] == "APPROVED"
+
+    original_hosted = crud.settings.require_license
+    crud.settings.require_license = True
+    try:
+        owner_headers = {**EA_HEADERS, "X-SG-License-Key": owner["license_key"]}
+        foreign_headers = {**EA_HEADERS, "X-SG-License-Key": other["license_key"]}
+        claimed = client.get("/commands/pending", headers=owner_headers)
+        assert claimed.status_code == 200
+        command = claimed.json()["command"]
+        assert command is not None
+        cid = command["command_id"]
+
+        # Rotate after EA claim: the previous owner's key is now revoked.
+        # A formerly valid key must not retain callback authority.
+        with SessionLocal() as db:
+            account = crud.get_user_by_telegram(db, "807")
+            assert account is not None
+            rotated_key = crud.issue_license(db, account)
+            db.commit()
+        assert rotated_key != owner["license_key"]
+        rotated_headers = {**EA_HEADERS, "X-SG-License-Key": rotated_key}
+
+        for headers in (EA_HEADERS, foreign_headers, owner_headers):
+            for endpoint, payload in (
+                ("received", {}),
+                ("management_event", {"event_type": "TP1_REACHED", "result": "PENDING"}),
+            ):
+                denied = client.post(
+                    f"/commands/{cid}/{endpoint}",
+                    json=payload,
+                    headers=headers,
+                )
+                assert denied.status_code == 403, (endpoint, denied.text)
+
+        with SessionLocal() as db:
+            assert crud.get_command(db, cid).status == "SENT_TO_EA"
+            assert (
+                db.query(models.TradeManagementEvent)
+                .filter(models.TradeManagementEvent.command_id == cid)
+                .count() == 0
+            )
+            assert (
+                db.query(models.AuditLog)
+                .filter(
+                    models.AuditLog.event_type == "COMMAND_RECEIVED_BY_EA",
+                    models.AuditLog.entity_id == cid,
+                )
+                .count() == 0
+            )
+            assert (
+                db.query(models.Execution)
+                .filter(models.Execution.command_id == cid)
+                .count() == 0
+            )
+
+        # The freshly rotated owner credential works; stale credentials do not.
+        allowed = client.post(
+            f"/commands/{cid}/received", json={}, headers=rotated_headers
+        )
+        assert allowed.status_code == 200
+        assert allowed.json()["status"] == "received"
+    finally:
+        crud.settings.require_license = original_hosted
+
+
+@pytest.mark.parametrize("credential_case", ("foreign", "missing", "revoked", "inactive_customer"))
+@pytest.mark.parametrize(
+    "endpoint,payload",
+    (
+        ("received", {}),
+        ("execution", {"status": "FAILED", "error_code": "SYNTHETIC"}),
+        (
+            "reconcile_open_position",
+            {
+                "broker_tickets": ["811001"],
+                "executed_symbol": "XAUUSD",
+                "executed_direction": "BUY",
+                "executed_price": 2345.0,
+                "lot_size": 0.04,
+            },
+        ),
+        ("management_event", {"event_type": "TP1_REACHED", "result": "PENDING"}),
+    ),
+)
+def test_hosted_callback_does_not_reveal_foreign_command_existence(
+    client, endpoint, payload, credential_case, monkeypatch
+):
+    """Offline tenant privacy witness, not an externally accepted security fix.
+
+    Check all four callbacks using a foreign, absent, revoked-after-claim,
+    or deactivated-after-claim customer licence. A shared EA key is not tenant
+    authority. Both foreign
+    and absent command IDs must return identical 403 bodies with no mutation.
+    This is an offline regression, not independent security acceptance.
+    """
+    from app import crud, models
+    from app.database import SessionLocal
+
+    owner = register_user(client, "812")
+    nonowner = register_user(client, "813")
+    signal = _hosted_provider_signal_for(client, "812")
+    approved = client.post(
+        f"/signals/{signal['id']}/approve",
+        json={"telegram_user_id": "812"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["result"] == "APPROVED"
+
+    original_hosted = crud.settings.require_license
+    crud.settings.require_license = True
+    try:
+        owner_headers = {**EA_HEADERS, "X-SG-License-Key": owner["license_key"]}
+        other_headers = {**EA_HEADERS, "X-SG-License-Key": nonowner["license_key"]}
+        claimed = client.get("/commands/pending", headers=owner_headers)
+        assert claimed.status_code == 200, claimed.text
+        command = claimed.json()["command"]
+        assert command is not None
+        command_id = command["command_id"]
+        absent_id = command_id + "-not-created"
+        with SessionLocal() as db:
+            assert crud.get_command(db, absent_id) is None
+            assert crud.get_command(db, command_id).status == "SENT_TO_EA"
+
+        if credential_case == "foreign":
+            probe_headers = other_headers
+        elif credential_case == "missing":
+            probe_headers = EA_HEADERS
+        elif credential_case == "revoked":
+            # Revocation after an EA claim must not permit an existence probe.
+            with SessionLocal() as db:
+                owner_account = crud.get_user_by_telegram(db, "812")
+                assert owner_account is not None
+                replacement = crud.issue_license(db, owner_account)
+                db.commit()
+            assert replacement != owner["license_key"]
+            probe_headers = owner_headers
+        else:
+            # A deactivated customer must lose authority even when their
+            # hashed licence still matches the last-issued credential.
+            assert credential_case == "inactive_customer"
+            with SessionLocal() as db:
+                owner_account = crud.get_user_by_telegram(db, "812")
+                assert owner_account is not None
+                crud.set_user_status(db, owner_account, "INACTIVE")
+                db.commit()
+            probe_headers = owner_headers
+
+        # Hosted routing must not fetch another customer's command globally,
+        # even if it would later hide the result in an HTTP 403.
+        def forbid_global_command_lookup(*_args, **_kwargs):
+            raise AssertionError("Hosted callback used a global command lookup")
+
+        with monkeypatch.context() as scope:
+            scope.setattr(crud, "get_command", forbid_global_command_lookup)
+            foreign = client.post(
+                f"/commands/{command_id}/{endpoint}",
+                json=payload, headers=probe_headers,
+            )
+            absent = client.post(
+                f"/commands/{absent_id}/{endpoint}",
+                json=payload, headers=probe_headers,
+            )
+        assert foreign.status_code in (403, 404), (endpoint, foreign.text)
+        assert absent.status_code in (403, 404), (endpoint, absent.text)
+        with SessionLocal() as db:
+            assert crud.get_command(db, command_id).status == "SENT_TO_EA"
+            assert (
+                db.query(models.Execution)
+                .filter(models.Execution.command_id == command_id)
+                .count() == 0
+            )
+            assert (
+                db.query(models.TradeManagementEvent)
+                .filter(models.TradeManagementEvent.command_id == command_id)
+                .count() == 0
+            )
+            assert (
+                db.query(models.AuditLog)
+                .filter(
+                    models.AuditLog.event_type == "COMMAND_RECEIVED_BY_EA",
+                    models.AuditLog.entity_id == command_id,
+                )
+                .count() == 0
+            )
+
+        # A nonowner, absent or revoked licence gets the exact same denial
+        # whether the opaque command ID belongs to another tenant or is absent.
+        assert foreign.status_code == absent.status_code == 403, (
+            endpoint, credential_case, foreign.text, absent.text
+        )
+        assert foreign.json() == absent.json() == {
+            "detail": "Command does not belong to this EA licence"
+        }
+    finally:
+        crud.settings.require_license = original_hosted

@@ -11,6 +11,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse
+from sqlalchemy import select
 
 from .config import get_settings, local_demo_http_ingress_is_loopback
 from .database import SessionLocal, init_db
@@ -58,13 +59,32 @@ DEFAULT_SETTINGS = {
 
 
 def seed_settings() -> None:
-    """Idempotently seed default settings rows."""
-    from . import crud
+    """Seed fresh demo defaults without reopening a damaged established pause.
+
+    On an established database, absence of the global pause is untrusted:
+    require an explicit authenticated admin resume before new EA delivery.
+    A truly empty first-install database retains its original demo default.
+    """
+    from . import crud, models
 
     db = SessionLocal()
     try:
+        established = any(
+            db.scalar(select(model.id).limit(1)) is not None
+            for model in (
+                models.Setting,
+                models.User,
+                models.Organization,
+                models.Provider,
+                models.Signal,
+                models.Command,
+                models.AuditLog,
+            )
+        )
         for key, value in DEFAULT_SETTINGS.items():
             if crud.get_setting(db, key) is None:
+                if key == "admin_paused" and established:
+                    value = "true"
                 crud.set_setting(db, key, value)
         db.commit()
     finally:

@@ -182,6 +182,78 @@ def test_source_status_returns_effective_expiry_for_bot(client, db):
     assert abs((expires_at - created_at).total_seconds() - 23 * 60) < 5
 
 
+def test_screenshot_preview_uses_same_effective_expiry_as_status_and_signal(
+    client, db, monkeypatch,
+):
+    """Synthetic screenshot parsing must use the persisted operator override.
+
+    Source status and final signal creation already consult this value when a
+    feed has no explicit expiry. No model, Telegram API or broker is contacted.
+    """
+    from types import SimpleNamespace
+    from app.parser import parse_signal as original_parse_signal
+    from app.routes import provider_sources
+
+    provider, feed, key = _provider(db, "source-image-db-expiry")
+    feed.expiry_minutes = None
+    crud.set_setting(db, "default_signal_expiry_minutes", "23")
+    db.commit()
+    binding = _connect(
+        client, _source_invite(client, provider, feed, key), "9213"
+    ).json()
+    assert binding["status"] == "ACTIVE"
+
+    class OfflineExtractor:
+        engine = "offline-test"
+
+        def extract(self, image_bytes, *, mime):
+            assert image_bytes == _FAKE_PNG
+            assert mime == "image/png"
+            return SimpleNamespace(
+                engine=self.engine,
+                readable=True,
+                confidence="high",
+                notes="synthetic",
+                raw_text=EUR_BUY,
+            )
+
+    observed_expiries = []
+
+    def record_expiry(raw_text, *, expiry_minutes, allowed_symbols=None):
+        observed_expiries.append(expiry_minutes)
+        return original_parse_signal(
+            raw_text,
+            expiry_minutes=expiry_minutes,
+            allowed_symbols=allowed_symbols,
+        )
+
+    monkeypatch.setattr(provider_sources, "get_extractor", OfflineExtractor)
+    monkeypatch.setattr(provider_sources, "parse_signal", record_expiry)
+
+    for expected in (23, 11):
+        status = client.get(
+            "/provider-sources/telegram/status",
+            params={"telegram_user_id": "9213"},
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()["expiry_minutes"] == expected
+
+        preview = client.post(
+            "/provider-sources/telegram/extract",
+            params={"telegram_user_id": "9213", **_source_claim(binding)},
+            files={"file": ("chart.png", io.BytesIO(_FAKE_PNG), "image/png")},
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["parser_status"] == "VALID"
+        assert observed_expiries[-1] == expected
+
+        # An explicit feed setting always overrides the operator default.
+        feed.expiry_minutes = 11
+        db.commit()
+
+    assert observed_expiries == [23, 11]
+
+
 @pytest.mark.parametrize("competing_action", ["connect", "revoke"])
 def test_source_invite_concurrent_claim_or_revoke_postgresql(
     client, db, competing_action
@@ -582,6 +654,301 @@ def test_rebind_refuses_stale_source_claim_before_cross_tenant_signal_write(clie
     assert current.json()["feed_id"] == f2.id
     assert current.json()["newly_created"] is True
     assert db.query(models.Signal).count() == 1
+
+
+
+def test_rebind_replay_uses_new_tenant_namespace(client, db):
+    """Reusing a Telegram message ID after an A->B source rebind must not
+    return tenant A's already-stored signal as tenant B's replay receipt.
+
+    This is synthetic API/database proof, not actual Telegram or broker proof.
+    """
+    provider_a, feed_a, key_a = _provider(db, "replay-rebind-a")
+    provider_b, feed_b, key_b = _provider(db, "replay-rebind-b")
+    telegram_id = "9448"
+    message_id = "9448:same-message-id"
+
+    first_binding = _connect(
+        client, _source_invite(client, provider_a, feed_a, key_a), telegram_id
+    )
+    assert first_binding.status_code == 200, first_binding.text
+    first = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": message_id,
+            **_source_claim(first_binding.json()),
+        },
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["newly_created"] is True
+    assert first.json()["provider_id"] == provider_a.id
+
+    rebound = _connect(
+        client, _source_invite(client, provider_b, feed_b, key_b), telegram_id
+    )
+    assert rebound.status_code == 200, rebound.text
+    assert rebound.json()["binding_id"] == first_binding.json()["binding_id"]
+    assert rebound.json()["authorization_epoch"] != first_binding.json()["authorization_epoch"]
+
+    # Same binding ID, same message ID AND same content. A replay lookup that
+    # drops the feed namespace would incorrectly return A's private ledger row.
+    second = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": message_id,
+            **_source_claim(rebound.json()),
+        },
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["newly_created"] is True
+    assert second.json()["id"] != first.json()["id"]
+    assert second.json()["provider_id"] == provider_b.id
+    assert second.json()["feed_id"] == feed_b.id
+    assert second.json()["source"] != first.json()["source"]
+
+    # A retry in B is still idempotent and neither response can change
+    # the original A signal's provider/feed ownership.
+    retry = client.post(
+        "/provider-sources/telegram/signals",
+        json={
+            "telegram_user_id": telegram_id,
+            "raw_text": EUR_BUY,
+            "source_message_id": message_id,
+            **_source_claim(rebound.json()),
+        },
+    )
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["newly_created"] is False
+    assert retry.json()["id"] == second.json()["id"]
+    db.expire_all()
+    stored_a = db.get(models.Signal, first.json()["id"])
+    stored_b = db.get(models.Signal, second.json()["id"])
+    assert (stored_a.provider_id, stored_a.feed_id) == (provider_a.id, feed_a.id)
+    assert (stored_b.provider_id, stored_b.feed_id) == (provider_b.id, feed_b.id)
+    assert db.query(models.Signal).count() == 2
+
+
+def test_rebind_replay_uses_new_feed_namespace_within_provider(client, db):
+    """Two feeds of one provider must not share source-message replay identity.
+
+    This is synthetic local API/database proof, never Telegram or broker proof.
+    """
+    provider, first_feed, key = _provider(db, "replay-two-feeds")
+    second_feed = crud.create_feed(
+        db, provider, "replay two feeds secondary", "replay-two-feeds-secondary"
+    )
+    db.commit()
+    telegram_id = "9449"
+    message_id = "9449:same-message-id"
+
+    first_binding = _connect(
+        client, _source_invite(client, provider, first_feed, key), telegram_id
+    )
+    assert first_binding.status_code == 200, first_binding.text
+
+    def post_from(binding):
+        return client.post(
+            "/provider-sources/telegram/signals",
+            json={
+                "telegram_user_id": telegram_id,
+                "raw_text": EUR_BUY,
+                "source_message_id": message_id,
+                **_source_claim(binding),
+            },
+        )
+
+    initial = post_from(first_binding.json())
+    assert initial.status_code == 200, initial.text
+    assert initial.json()["newly_created"] is True
+    assert initial.json()["feed_id"] == first_feed.id
+
+    rebound = _connect(
+        client, _source_invite(client, provider, second_feed, key), telegram_id
+    )
+    assert rebound.status_code == 200, rebound.text
+    assert rebound.json()["binding_id"] == first_binding.json()["binding_id"]
+    assert rebound.json()["provider_id"] == provider.id
+    assert rebound.json()["authorization_epoch"] != first_binding.json()["authorization_epoch"]
+
+    # Same provider and source binding, but a different feed. A provider-only
+    # replay namespace would incorrectly return the first feed's private row.
+    stale = post_from(first_binding.json())
+    assert stale.status_code == 409, stale.text
+    assert db.query(models.Signal).count() == 1
+
+    moved = post_from(rebound.json())
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["newly_created"] is True
+    assert moved.json()["id"] != initial.json()["id"]
+    assert moved.json()["provider_id"] == provider.id
+    assert moved.json()["feed_id"] == second_feed.id
+    assert moved.json()["source"] != initial.json()["source"]
+
+    retried = post_from(rebound.json())
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["newly_created"] is False
+    assert retried.json()["id"] == moved.json()["id"]
+
+    db.expire_all()
+    stored_first = db.get(models.Signal, initial.json()["id"])
+    stored_second = db.get(models.Signal, moved.json()["id"])
+    assert (stored_first.provider_id, stored_first.feed_id) == (
+        provider.id, first_feed.id
+    )
+    assert (stored_second.provider_id, stored_second.feed_id) == (
+        provider.id, second_feed.id
+    )
+    assert db.query(models.Signal).count() == 2
+
+
+
+def test_same_feed_reconnect_replay_is_not_new_delivery(client, db):
+    """Rotating source authority on the same feed must not re-mint a signal.
+
+    Identical message identity/content after reconnect returns the original
+    ledger receipt with newly_created=False. Neither that retry nor a changed
+    payload may create a second authorisation to broadcast a Telegram card.
+    Synthetic HTTP and database only; no Telegram network or broker call.
+    """
+    provider, feed, key = _provider(db, "same-feed-replay-epoch")
+    telegram_id = "9450"
+    original = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert original.status_code == 200, original.text
+    old_claim = _source_claim(original.json())
+    payload = {
+        "telegram_user_id": telegram_id,
+        "raw_text": EUR_BUY,
+        "source_message_id": "9450:original-message",
+        **old_claim,
+    }
+    created = client.post("/provider-sources/telegram/signals", json=payload)
+    assert created.status_code == 200, created.text
+    assert created.json()["newly_created"] is True
+
+    # A fresh one-time token rotates authority, even if tenant/feed do not.
+    reconnected = _connect(
+        client, _source_invite(client, provider, feed, key), telegram_id
+    )
+    assert reconnected.status_code == 200, reconnected.text
+    assert reconnected.json()["binding_id"] == original.json()["binding_id"]
+    assert reconnected.json()["authorization_epoch"] != old_claim[
+        "expected_authorization_epoch"
+    ]
+
+    refused = client.post("/provider-sources/telegram/signals", json=payload)
+    assert refused.status_code == 409, refused.text
+    assert db.query(models.Signal).count() == 1
+
+    current_payload = {**payload, **_source_claim(reconnected.json())}
+    duplicate = client.post(
+        "/provider-sources/telegram/signals", json=current_payload
+    )
+    assert duplicate.status_code == 200, duplicate.text
+    assert duplicate.json()["id"] == created.json()["id"]
+    assert duplicate.json()["newly_created"] is False
+    assert duplicate.json()["source"] == created.json()["source"]
+
+    conflicting = client.post(
+        "/provider-sources/telegram/signals",
+        json={**current_payload, "raw_text": GBPJPY_SELL},
+    )
+    assert conflicting.status_code == 409, conflicting.text
+    db.expire_all()
+    stored = db.get(models.Signal, created.json()["id"])
+    assert stored.raw_text == EUR_BUY
+    assert (stored.provider_id, stored.feed_id) == (provider.id, feed.id)
+    assert db.query(models.Signal).count() == 1
+
+    # A genuinely new message under current authority remains allowed.
+    fresh = client.post(
+        "/provider-sources/telegram/signals",
+        json={**current_payload, "source_message_id": "9450:new-message"},
+    )
+    assert fresh.status_code == 200, fresh.text
+    assert fresh.json()["newly_created"] is True
+    assert fresh.json()["id"] != created.json()["id"]
+    assert db.query(models.Signal).count() == 2
+
+
+
+def test_return_to_original_feed_does_not_rebroadcast_old_message(client, db):
+    """A->B->A changes authority but must not re-mint A's old Telegram message.
+
+    The returning source gets a new authorization epoch, while feed-bound
+    replay identity remains stable. Synthetic backend/database only.
+    """
+    provider_a, feed_a, key_a = _provider(db, "replay-aba-source-a")
+    provider_b, feed_b, key_b = _provider(db, "replay-aba-source-b")
+    telegram_id = "9451"
+    message_id = "9451:before-reconnect"
+
+    def connect(provider, feed, key):
+        response = _connect(
+            client, _source_invite(client, provider, feed, key), telegram_id
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def submit(binding, *, raw_text=EUR_BUY):
+        return client.post(
+            "/provider-sources/telegram/signals",
+            json={
+                "telegram_user_id": telegram_id,
+                "raw_text": raw_text,
+                "source_message_id": message_id,
+                **_source_claim(binding),
+            },
+        )
+
+    first_a = connect(provider_a, feed_a, key_a)
+    first = submit(first_a)
+    assert first.status_code == 200, first.text
+    assert first.json()["newly_created"] is True
+    assert first.json()["provider_id"] == provider_a.id
+    assert first.json()["feed_id"] == feed_a.id
+
+    binding_b = connect(provider_b, feed_b, key_b)
+    second = submit(binding_b)
+    assert second.status_code == 200, second.text
+    assert second.json()["newly_created"] is True
+    assert second.json()["id"] != first.json()["id"]
+    assert second.json()["provider_id"] == provider_b.id
+
+    returning_a = connect(provider_a, feed_a, key_a)
+    assert returning_a["binding_id"] == first_a["binding_id"]
+    assert returning_a["authorization_epoch"] not in {
+        first_a["authorization_epoch"],
+        binding_b["authorization_epoch"],
+    }
+
+    # Matching tenant/feed/binding names cannot resurrect a stale epoch.
+    stale = submit(first_a)
+    assert stale.status_code == 409, stale.text
+
+    # Current authority can see A's old message only as a non-fresh replay:
+    # no second subscriber-card authority, regardless of intervening B use.
+    replay = submit(returning_a)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["newly_created"] is False
+    assert replay.json()["id"] == first.json()["id"]
+    assert replay.json()["source"] == first.json()["source"]
+    assert replay.json()["id"] != second.json()["id"]
+
+    conflicting = submit(returning_a, raw_text=GBPJPY_SELL)
+    assert conflicting.status_code == 409, conflicting.text
+    db.expire_all()
+    stored_a = db.get(models.Signal, first.json()["id"])
+    stored_b = db.get(models.Signal, second.json()["id"])
+    assert stored_a.raw_text == stored_b.raw_text == EUR_BUY
+    assert (stored_a.provider_id, stored_a.feed_id) == (provider_a.id, feed_a.id)
+    assert (stored_b.provider_id, stored_b.feed_id) == (provider_b.id, feed_b.id)
+    assert db.query(models.Signal).count() == 2
 
 
 def test_hosted_signal_post_pins_source_binding(client, db, monkeypatch):
@@ -1711,3 +2078,118 @@ def test_same_feed_reconnect_during_extraction_refuses_old_epoch_postgresql(
     assert db.query(models.AuditLog).filter(
         models.AuditLog.event_type == "PROVIDER_SOURCE_IMAGE_EXTRACTED"
     ).count() == before, "Old-epoch extraction was incorrectly audited"
+
+def test_paused_source_cannot_replay_or_create_signals(client, db):
+    """A pause blocks both new source messages and replay of old VALID rows.
+
+    A previously persisted signal cannot be returned as an apparently usable
+    receipt while either the feed or its provider is paused. Synthetic HTTP
+    and database only; no Telegram sends, brokerage, or execution.
+    """
+    provider, feed, key = _provider(db, "paused-source-replay")
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), "9452"
+    )
+    assert connected.status_code == 200, connected.text
+    payload = {
+        "telegram_user_id": "9452",
+        "raw_text": EUR_BUY,
+        "source_message_id": "9452:original",
+        **_source_claim(connected.json()),
+    }
+    first = client.post("/provider-sources/telegram/signals", json=payload)
+    assert first.status_code == 200, first.text
+    assert first.json()["newly_created"] is True
+    assert first.json()["status"] == "VALID"
+    signal_id = first.json()["id"]
+
+    for paused_scope in (feed, provider):
+        paused_scope.paused = True
+        db.commit()
+        for message_id in ("9452:original", "9452:new-while-paused"):
+            response = client.post(
+                "/provider-sources/telegram/signals",
+                json={**payload, "source_message_id": message_id},
+            )
+            assert response.status_code == 400, response.text
+            assert "paused" in response.json()["detail"].lower()
+        db.expire_all()
+        assert db.query(models.Signal).count() == 1
+        assert db.query(models.AuditLog).filter(
+            models.AuditLog.event_type == "SIGNAL_CREATED",
+            models.AuditLog.entity_id == signal_id,
+        ).count() == 1
+        paused_scope.paused = False
+        db.commit()
+
+    # Unpausing restores access but never grants new-delivery authority
+    # for the original message, even though the persisted row was VALID.
+    replay = client.post("/provider-sources/telegram/signals", json=payload)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == signal_id
+    assert replay.json()["newly_created"] is False
+    assert db.query(models.Signal).count() == 1
+
+def test_inactive_provider_or_feed_blocks_existing_source_receipts(client, db):
+    """A source binding alone cannot enumerate recipients or replay signals
+    after its owning feed/provider is deactivated.
+
+    This is synthetic HTTP/SQLite/PostgreSQL regression proof only.
+    """
+    provider, feed, key = _provider(db, "inactive-source-receipt")
+    subscriber = register_user(
+        client, "9454", "inactive_recipient", "Inactive Recipient"
+    )
+    crud.subscribe_user_to_feed(
+        db, provider, feed, db.get(models.User, subscriber["id"])
+    )
+    db.commit()
+    connected = _connect(
+        client, _source_invite(client, provider, feed, key), "9455"
+    )
+    assert connected.status_code == 200, connected.text
+    payload = {
+        "telegram_user_id": "9455",
+        "raw_text": EUR_BUY,
+        "source_message_id": "9455:original",
+        **_source_claim(connected.json()),
+    }
+    created = client.post("/provider-sources/telegram/signals", json=payload)
+    assert created.status_code == 200, created.text
+    assert created.json()["newly_created"] is True
+
+    lookup_params = {"telegram_user_id": "9455"}
+    initial_recipients = client.get(
+        "/provider-sources/telegram/recipients", params=lookup_params
+    )
+    assert initial_recipients.status_code == 200, initial_recipients.text
+    assert [r["telegram_user_id"] for r in initial_recipients.json()["recipients"]] == [
+        "9454"
+    ]
+
+    for inactive_scope in (feed, provider):
+        inactive_scope.status = "INACTIVE"
+        db.commit()
+        for message_id in ("9455:original", "9455:fresh-while-inactive"):
+            denied = client.post(
+                "/provider-sources/telegram/signals",
+                json={**payload, "source_message_id": message_id},
+            )
+            assert denied.status_code == 403, denied.text
+        denied_recipients = client.get(
+            "/provider-sources/telegram/recipients", params=lookup_params
+        )
+        assert denied_recipients.status_code == 403, denied_recipients.text
+        assert "recipients" not in denied_recipients.json()
+        db.expire_all()
+        assert db.query(models.Signal).count() == 1
+        inactive_scope.status = "ACTIVE"
+        db.commit()
+
+    # Restoring eligibility cannot turn the original message into a new
+    # subscriber-card authority; it remains an idempotent replay.
+    replay = client.post("/provider-sources/telegram/signals", json=payload)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == created.json()["id"]
+    assert replay.json()["newly_created"] is False
+    assert db.query(models.Signal).count() == 1

@@ -178,6 +178,14 @@ Preview confirmation and final signal creation independently recheck identity.
 Tests are synthetic FastAPI/offline-bot and PostgreSQL transaction checks,
 not real Telegram delivery or MT5 broker-demo acceptance.
 
+Screenshot parsing also uses the **effective** feed expiry policy. A feed with
+an explicit expiry keeps that value; a feed without one uses the current
+operator-managed `default_signal_expiry_minutes` database setting, matching
+source status and final signal creation rather than silently falling back to
+an older environment default. This does not make independent preview/creation
+requests atomic: if policy changes between them, the **persisted** signal's
+own expiry is authoritative. The regression uses synthetic images only.
+
 ## Broadcast recipient ownership and source rebinds (offline guard)
 
 Signal creation returns a persisted provider/feed/source identity and a
