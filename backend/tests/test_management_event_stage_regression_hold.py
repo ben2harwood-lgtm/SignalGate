@@ -140,7 +140,8 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client, monkeypatch
             signal_id=signal["id"]
         ).one()
         assert ledger_row.result_status == "TP2_HIT"
-        assert ledger_row.r_result == pytest.approx(6.5)
+        # A TP2 milestone does not prove whole-trade realised R (#122).
+        assert ledger_row.r_result is None
 
     # An accepted stale TP1 receipt must not send a misleading second
     # "TP1 hit / SL moved" notification after TP2 has completed.
@@ -183,7 +184,8 @@ def test_late_tp1_success_cannot_regress_committed_tp2_stage(client, monkeypatch
             signal_id=signal["id"]
         ).one()
         assert ledger_row.result_status == "TP2_HIT"
-        assert ledger_row.r_result == pytest.approx(6.5)
+        # The late receipt must preserve that unverified outcome as well.
+        assert ledger_row.r_result is None
         audit = session.query(models.AuditLog).filter_by(
             event_type="MANAGEMENT_EVENT",
             entity_type="management_event",
