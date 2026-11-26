@@ -61,7 +61,7 @@ def test_bare_fully_closed_is_not_fabricated_as_win(client):
     assert row["r_result"] is None
 
 
-def test_stop_out_remains_visible_as_loss(client):
+def test_stop_out_is_visible_but_realised_r_unverified(client):
     user = register_user(client, "712")
     sig = create_signal(client, VALID)
     decision = client.post(
@@ -98,6 +98,46 @@ def test_stop_out_remains_visible_as_loss(client):
             .one()
         )
         assert row.result_status == "STOPPED_OUT"
-        assert row.r_result == -1.0
+        assert row.r_result is None
+        assert "unverified" in row.final_notes
     finally:
         db.close()
+
+
+def test_partial_tp_followed_by_stop_has_no_invented_whole_trade_r(client):
+    user = register_user(client, "713")
+    sig = create_signal(client, VALID)
+    decision = client.post(
+        f"/signals/{sig['id']}/approve", json={"telegram_user_id": "713"}
+    ).json()
+    command = client.get(
+        "/commands/pending",
+        params={"user_id": user["id"]},
+        headers=EA_HEADERS,
+    ).json()["command"]
+    cid = decision["command_id"]
+    assert command["command_id"] == cid
+    opened = client.post(
+        f"/commands/{cid}/execution",
+        json={"status": "SUCCESS", "executed_price": 2345.0,
+              "lot_size": 0.04, "initial_stop_loss": 2343.0},
+        headers=EA_HEADERS,
+    )
+    assert opened.status_code == 200
+    partial = client.post(
+        f"/commands/{cid}/management_event",
+        json={"event_type": "TP1_CLOSE_SUCCESS", "result": "SUCCESS"},
+        headers=EA_HEADERS,
+    )
+    assert partial.status_code == 200
+    stopped = client.post(
+        f"/commands/{cid}/management_event",
+        json={"event_type": "STOP_LOSS_HIT", "result": "SUCCESS", "price": 2343.0},
+        headers=EA_HEADERS,
+    )
+    assert stopped.status_code == 200
+    rows = client.get("/admin/ledger", headers=ADMIN_HEADERS).json()["ledger"]
+    row = next(item for item in rows if item["command_id"] == cid)
+    assert row["result_status"] == "STOPPED_OUT"
+    assert row["r_result"] is None
+    assert "unverified" in row["final_notes"]

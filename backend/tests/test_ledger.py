@@ -82,8 +82,9 @@ def test_execution_and_tp_events_update_ledger(client):
     )
     led = _ledger_for_signal(sig["id"])
     assert led.result_status == "TP1_HIT"
-    # R should be positive: (2353-2345)/(2345-2343) = 8/2 = 4.0
-    assert led.r_result is not None and led.r_result > 0
+    # Partial TP does not establish a realised return for the full position.
+    assert led.r_result is None
+    assert "unverified" in led.final_notes
 
     client.post(
         f"/commands/{cid}/management_event",
@@ -92,3 +93,5 @@ def test_execution_and_tp_events_update_ledger(client):
     )
     led = _ledger_for_signal(sig["id"])
     assert led.result_status == "TP3_HIT"
+    assert led.r_result is None
+    assert "unverified" in led.final_notes
